@@ -98,9 +98,53 @@ L'image a été construite et testée en arm64 : une boucle y est calculée hors
 5. **Élagage** sans perte d'optimalité : ponts au sens de Tarjan, composante de s, portée
    d(s,u) + l + d(v,s) ≤ Lmax, puis filtre de pente et nouvel élagage.
 6. **Solveur** : boucle = sous-graphe connexe pair contenant s, D+ = Σ (montée+descente)/2.
-   - ≤ `EXACT_MAX_EDGES` arêtes : 20 % du budget en recuit pour un warm-start, puis CP-SAT
-     (parité, connexité par flot, 2 workers) ;
-   - au-delà : recuit simulé sur tout le budget.
+   Trois régimes selon la taille du graphe :
+   - jusqu'à `EXACT_MAX_EDGES` (1 000) arêtes : 20 % du budget en recuit pour un warm-start,
+     puis CP-SAT (parité, connexité par flot, 2 workers) ;
+   - de 1 000 à 5 000 arêtes : recuit classique (60 % du budget), puis affinage par faces ;
+   - au-delà : recuit par faces seul, avec départs multiples.
+
+   En mode cible, le recuit classique tourne toujours d'abord : le recuit par faces seul vise
+   mal un couple (distance, D+).
+
+### Grandes zones
+
+Le recuit classique (remplacer un segment par un plus court chemin) se noie dans les grands
+graphes : à Massy, 100 km, il donnait moins de D+ sur 25 km de rayon que sur 7 km. Trois
+changements, issus d'une étude mesurée (`scripts/experiments/`, hors dépôt) :
+
+- **Recuit par faces** (`trailopt/solvers/faces.py`), d'après Gemsa, Pajor, Wagner, Zündorf,
+  « Efficient Computation of Jogging Routes » (SEA 2013). La boucle est modifiée par différence
+  symétrique avec une face du graphe, un « pâté de maisons ». Les degrés restent pairs par
+  construction, sans plus court chemin : un mouvement coûte la taille de la face. Départs
+  multiples : plus petite face au départ, et couloirs aller-retour vers les cellules de 1 km
+  les plus denses en D+.
+- **Réduction du graphe** (heuristique, mode max) : au-delà de 5 000 arêtes, on ne garde que les
+  arêtes les plus pentues, jusqu'à 8 × Lmax de longueur, plus de quoi les relier au départ. La
+  pente est lue sur le RGE ALTI rééchantillonné à 50 m, en une seule requête pour toute la zone.
+- **Chaîne réordonnée** : les arêtes ne sont densifiées (5 m) et échantillonnées sur le LiDAR
+  qu'après élagage et réduction. Le départ est projeté sur les segments, pas sur les sommets.
+
+Téléchargement et cache :
+
+- **BD TOPO** : dalles fixes de 0,06° × 0,04°, paginées si pleines, converties aussitôt en
+  tableaux numpy compacts. 515 000 tronçons : 39 s à froid, 1 s à chaud, 55 Mo.
+- **Altitude** : dalles fixes de 2,5 km sur une grille Lambert-93.
+- Les deux grilles sont indépendantes de la zone demandée : le cache sert d'un calcul à l'autre.
+
+Mesures, boucle de 100 km, source IGN, « + petites routes » :
+
+| Cas | Avant | Après |
+|---|---|---|
+| Massy, rayon 9,9 km, D+ | 2 653 m | 4 007 m |
+| Massy, rayon 25 km, D+ | 2 104 m | 4 254 à 4 486 m |
+| Massy, rayon 25 km, pic RSS | 2,0 Go | 955 Mo |
+| Massy, rayon 25 km, tronçons à froid | 176 s | 39 s |
+| Les Deux Alpes, rayon 25 km, D+ (1 147 arêtes) | 8 544 à 8 744 m | 9 221 m |
+
+Les D+ « avant » de Massy étaient en plus gonflés par le bug des altitudes en bordure de trou
+de données, corrigé depuis. Les temps ont été mesurés sur une machine chargée : la mémoire est
+fiable, les durées sont indicatives.
 
 ### Rayon libre autour du départ et option « carrefours uniques »
 
@@ -197,9 +241,9 @@ avec petites routes, presque tout passe par le recuit. CP-SAT sert surtout en mo
 | Plafond | Valeur | Raison |
 |---|---|---|
 | distance | 2 à 100 km | anti-abus |
-| zone utile | rayon de 25 km au plus (1 965 km²), réduite tant qu'elle compte plus de 110 000 tronçons IGN ou 130 000 voies OSM | mémoire et temps ; voir mesures ci-dessous |
-| budget solveur | 5 à 60 s, défaut 20 s | 2 cœurs partagés |
-| distance de plus de 25 km | budget solveur forcé à 60 s, avec avertissement | grands graphes |
+| zone utile | rayon de 25 km au plus (1 965 km²). Réduite automatiquement au-delà de 650 000 tronçons IGN en mode max, de 110 000 en mode cible, ou de 130 000 voies OSM | mémoire et temps |
+| budget solveur | 5 à 180 s, défaut 20 s | 2 cœurs partagés |
+| distance de plus de 25 km | budget solveur forcé à 180 s, avec avertissement | grands graphes |
 | calculs simultanés | 1 | verrou global, le second utilisateur est prié de réessayer |
 
 Mémoire mesurée sur le pire cas autorisé : 25 km, zone par défaut de 148 km² à Massy avec
@@ -212,17 +256,6 @@ petites routes, soit environ 39 000 arêtes après élagage.
 | pic RSS pour 100 km, source IGN, disque par défaut (19 400 arêtes) | 461 Mo |
 | pic RSS observé avec CP-SAT forcé sur 44 600 arêtes | 1,1 Go |
 
-Grandes zones, boucle de 100 km à Massy, source IGN :
-
-| Zone | Tronçons téléchargés | Arêtes | Temps total | Pic RSS | D+ |
-|---|---|---|---|---|---|
-| rayon 6,9 km | 19 400 après élagage | 19 400 | ~30 s | 461 Mo | 2 915 m (20 s de solveur) |
-| rayon 9,9 km (réduction automatique) | 84 000 | 41 600 | 90 s | 882 Mo | 2 653 m (60 s) |
-| rayon 25 km, sans réduction | 414 000 | 227 000 | 5 min 30 | 2,0 Go | 2 104 m (20 s) |
-
-Agrandir la zone coûte cher et dégrade le résultat : le recuit se noie dans le graphe. D'où la
-réduction automatique, en attendant un prétraitement plus sélectif.
-
 C'est loin des 2,7 Go de Streamlit Cloud, donc les plafonds ne sont pas abaissés. CP-SAT
 n'est jamais lancé au-delà du seuil en mode automatique.
 
@@ -231,9 +264,12 @@ n'est jamais lancé au-delà du seuil en mode automatique.
 - **Artefacts du MNT** : un passage sous une voie ferrée ou une route non taguée `bridge` ou
   `tunnel` produit des pics de quelques mètres. Le mode « Maximiser le D+ » peut les exploiter.
   Le lissage sur 3 points ne les efface pas.
-- **Grands graphes** : à 55 000 arêtes, le recuit ne fait que ~2 700 itérations en 20 s. Le
-  résultat est valide mais probablement loin de l'optimum. Des redémarrages multiples aideraient,
-  car un warm-start de 4 s bat parfois un recuit de 20 s.
+- **Grands graphes** : le recuit par faces et la réduction du graphe sont des heuristiques.
+  L'écart à l'optimum n'est pas connu : la borne disponible est trop lâche pour le mesurer.
+- **D+ sans doute surestimé en terrain vallonné** : le calcul à 5 m compte le micro-relief.
+  40 m/km autour de Massy mérite une vérification sur une trace GPS réelle.
+- **OSM sur grande zone** : la source OSM n'a pas été passée en dalles. Sa zone reste réduite
+  dès 130 000 voies.
 - **Overpass** : les instances publiques renvoient souvent 504 sous charge. L'ordre des
   endpoints et les tentatives avec backoff limitent le problème. Le cache disque est éphémère
   sur Streamlit Cloud.

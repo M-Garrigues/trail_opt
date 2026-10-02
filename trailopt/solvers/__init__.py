@@ -7,9 +7,15 @@ from dataclasses import dataclass, field
 from ..graph import Problem, euler_circuit
 from . import exact
 from .anneal import Annealer
+from .faces import FaceSearch
 
 # Seuil calibré par scripts/bench_exact.py (voir README).
 EXACT_MAX_EDGES = 1000
+# Au-delà d'EXACT_MAX_EDGES : recuit par faces. Jusqu'à FACES_ONLY_EDGES, il part de la solution
+# du recuit classique (meilleur en réseau clairsemé, type montagne) ; au-delà, il travaille
+# seul, avec départs multiples (le recuit classique se noie dans les grands graphes).
+FACES_ONLY_EDGES = 5000
+ANNEAL_SHARE = 0.6
 
 
 @dataclass
@@ -24,7 +30,8 @@ class SolveResult:
 
 def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_EDGES,
              seed: int = 0, workers: int = 2, solver: str = "auto", cancel=None) -> SolveResult:
-    """solver : "auto", "exact" (warm-start + CP-SAT) ou "anneal" (recuit seul)."""
+    """solver : "auto", "exact" (warm-start + CP-SAT), "anneal" (recuit classique seul)
+    ou "faces" (recuit par faces seul)."""
     m = len(P.len)
     ann = Annealer(P, seed=seed)
     use_exact = solver == "exact" or (solver == "auto" and m <= exact_max_edges)
@@ -60,12 +67,34 @@ def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_
                       if r["chosen"] else f"recuit simulé (CP-SAT : {r['status']})")
         dbg["solver"] = "CP-SAT"
     else:
-        circuit = ann.run(budget, cancel)
+        use_faces = solver == "faces" or solver == "auto"
+        # Mode cible : le recuit par faces seul vise mal un couple (distance, D+) ; il ne fait
+        # qu'affiner la solution du recuit classique, quelle que soit la taille du graphe.
+        share = 1.0 if not use_faces else (
+            ANNEAL_SHARE if (solver == "auto" and (m <= FACES_ONLY_EDGES or P.mode == "target"))
+            else 0.0)
+        circuit = ann.run(share * budget, cancel) if share > 0 else None
         dbg["anneal_iterations"] = ann.iterations
         dbg["solver"] = "recuit simulé"
+        method = f"recuit simulé ({ann.iterations} itérations)"
+        if use_faces:
+            fs = FaceSearch(P, seed)
+            c2, st = fs.solve(max(1.0, budget - (time.time() - t0)), cancel,
+                              warm=[e for e, _, _ in circuit] if circuit else None)
+            dbg["faces"] = st
+            if c2 is not None:
+                sc2 = P.score([e for e, _, _ in c2])
+                sc1 = ann.evaluate(circuit) if circuit else None
+                if sc1 is None or (sc2[3], sc2[0]) >= (sc1[3], sc1[0]):
+                    circuit = c2
+                    dbg["solver"] = "recuit par faces"
+                    method = (f"recuit par faces ({st['iterations']} itérations, "
+                              f"départ : {st['depart']})")
+            if circuit is None:     # aucune face exploitable : recuit classique sur le temps restant
+                circuit = ann.run(max(1.0, budget - (time.time() - t0)), cancel)
+                method = f"recuit simulé ({ann.iterations} itérations)"
         if circuit is None:
             raise RuntimeError("aucune boucle trouvée")
-        method = f"recuit simulé ({ann.iterations} itérations)"
     dbg["solve_time_s"] = round(time.time() - t0, 2)
 
     ids = [e for e, _, _ in circuit]

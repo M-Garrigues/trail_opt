@@ -23,7 +23,7 @@ def main(argv=None):
                          "(toujours via OSM) ; minor = + petites routes (défaut)")
     ap.add_argument("--source", choices=["ign", "osm"], default="ign",
                     help="réseau de chemins : BD TOPO IGN (défaut) ou OpenStreetMap")
-    ap.add_argument("--solver", choices=["auto", "exact", "anneal"], default="auto")
+    ap.add_argument("--solver", choices=["auto", "exact", "anneal", "faces"], default="auto")
     ap.add_argument("--exact-max-edges", type=int)
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--no-revisit", action="store_true",

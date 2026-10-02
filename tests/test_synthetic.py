@@ -58,3 +58,43 @@ def test_grade_filter_removes_steep_edges():
     assert all(e.max_grade <= thr for e in P1.g.edges.values())
     res = optimize(P1, budget=2.0, solver="anneal")
     check_loop(P1, res.circuit)
+
+
+@pytest.mark.parametrize("mode", ["max", "target"])
+@pytest.mark.parametrize("node_simple", [False, True])
+def test_faces_solver_valid(mode, node_simple):
+    """Recuit par faces : boucle valide dans les deux modes, avec ou sans carrefours uniques."""
+    L = 2400.0
+    P, _ = build(L, mode=mode, D=70.0 if mode == "target" else None, n=9, node_simple=node_simple)
+    if mode == "max":
+        res = optimize(P, budget=4.0, solver="faces", seed=1)
+        assert res.debug["solver"] == "recuit par faces"
+    else:   # mode cible : recuit classique puis affinage par faces (exact désactivé)
+        res = optimize(P, budget=5.0, solver="auto", exact_max_edges=0, seed=1)
+        assert "faces" in res.debug
+    length, dplus = check_loop(P, res.circuit)
+    assert P.Lmin <= length <= P.Lmax
+    if mode == "target":    # jamais pire que le recuit classique seul sur la même durée d'amorce
+        ref = optimize(P, budget=3.0, solver="anneal", seed=1)
+        assert P.err(length, dplus) <= P.err(ref.length, ref.dplus) + 0.02
+
+
+def test_faces_not_worse_than_tiny_loop_and_cancellable():
+    import threading, time
+    P, _ = build(3000.0, n=9)
+    cancel = threading.Event()
+    threading.Timer(0.8, cancel.set).start()
+    t = time.time()
+    res = optimize(P, budget=30.0, solver="faces", cancel=cancel)
+    assert time.time() - t < 6.0
+    check_loop(P, res.circuit)
+
+
+def test_faces_enumeration_on_grid():
+    from trailopt.solvers.faces import FaceSearch
+    P, _ = build(2400.0, n=6)
+    fs = FaceSearch(P)
+    assert len(fs.F) >= 20                      # une grille 6x6 a 25 mailles
+    for f in fs.F[:10]:                         # chaque face est un cycle fermé simple
+        assert f[0][1] == f[-1][2]
+        assert all(a[2] == b[1] for a, b in zip(f, f[1:]))

@@ -65,7 +65,7 @@ MAP_CSS = f"""<style>
 .leaflet-container:has(.mode-zone), .leaflet-container:has(.mode-zone) .leaflet-interactive
   {{ cursor: {CURSOR_ZONE}, crosshair !important; }}
 </style>"""
-STEPS = {"chemins": "Réseau de chemins…", "altitude": "Altitude IGN…",
+STEPS = {"chemins": "Réseau de chemins…", "criblage": "Repérage du relief…", "altitude": "Altitude IGN…",
          "élagage": "Élagage du graphe…", "solveur": "Optimisation…"}
 ROADS = {"Sentiers (non revêtus)": "unpaved", "Voies piétonnes": "pedestrian",
          "+ petites routes": "minor", "+ toutes routes": "all"}

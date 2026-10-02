@@ -48,7 +48,7 @@ def test_limits_rejected():
     with pytest.raises(UserError):
         plan_loop(Params(*START, distance_km=150))
     with pytest.raises(UserError):
-        plan_loop(Params(*START, distance_km=10, time_s=120))
+        plan_loop(Params(*START, distance_km=10, time_s=400))
     big = [(1.5, 48.3), (3.0, 48.3), (3.0, 49.2), (1.5, 49.2)]     # ~110 x 100 km
     with pytest.raises(UserError, match="trop grande"):
         plan_loop(Params(*START, distance_km=100, polygon=big, tol=0.2))

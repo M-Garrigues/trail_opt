@@ -21,29 +21,28 @@ LAYERS = [
     "ELEVATION.ELEVATIONGRIDCOVERAGE.HIGHRES",                    # RGE ALTI, nodata -99999
 ]
 RES = 5.0          # m / pixel
-TILE_PX = 1000     # <= MaxWidth/MaxHeight annoncés (5010)
-SNAP = 100.0       # bbox arrondie vers l'extérieur à 100 m (clé de cache)
+TILE_PX = 500      # dalles de 2,5 km, <= MaxWidth/MaxHeight annoncés (5010)
 MARGIN_PX = 2      # recouvrement pour le bilinéaire en bord de dalle
+RES_COARSE = 50.0  # modèle de terrain grossier, pour le criblage des grands graphes
+COARSE_SNAP = 5000.0
 USER_AGENT = "trailopt/1.0"
 
 
 def _tiles(X, Y):
-    """Découpe la bbox (arrondie) des points en dalles de <= TILE_PX pixels."""
-    x0, y0 = math.floor(X.min() / SNAP) * SNAP, math.floor(Y.min() / SNAP) * SNAP
-    x1, y1 = math.ceil(X.max() / SNAP) * SNAP + SNAP, math.ceil(Y.max() / SNAP) * SNAP + SNAP
+    """Dalles d'une grille FIXE (Lambert-93, pas de TILE_PX × RES) qui contiennent des points.
+    Fixe, donc réutilisable en cache d'un calcul à l'autre, quelle que soit la zone."""
     span = TILE_PX * RES
-    nx, ny = math.ceil((x1 - x0) / span), math.ceil((y1 - y0) / span)
-    for i in range(nx):
-        for j in range(ny):
-            yield (x0 + i * span, y0 + j * span,
-                   min(x1, x0 + (i + 1) * span), min(y1, y0 + (j + 1) * span))
+    cells = np.unique(np.column_stack([np.floor(X / span), np.floor(Y / span)]).astype(np.int64), axis=0)
+    for ix, iy in cells.tolist():
+        yield (ix * span, iy * span, (ix + 1) * span, (iy + 1) * span)
 
 
-def _fetch_tile(layer, core, stats):
-    """Renvoie les octets GeoTIFF (gzip) de la dalle `core` élargie de MARGIN_PX."""
-    m = MARGIN_PX * RES
+def _fetch_tile(layer, core, stats, res=RES, margin_px=MARGIN_PX):
+    """Renvoie (bbox, chemin du GeoTIFF gzip en cache) de la dalle `core` élargie de la marge."""
+    m = margin_px * res
     bb = (core[0] - m, core[1] - m, core[2] + m, core[3] + m)
-    p = cache.path("dem", f"{layer[:40]}_{bb[0]:.0f}_{bb[1]:.0f}_{bb[2]:.0f}_{bb[3]:.0f}.tif.gz")
+    tag = "" if res == RES else f"r{res:.0f}_"
+    p = cache.path("dem", f"{layer[:40]}_{tag}{bb[0]:.0f}_{bb[1]:.0f}_{bb[2]:.0f}_{bb[3]:.0f}.tif.gz")
     if p.exists():
         stats["cache_hits"] += 1
         return bb, p
@@ -51,7 +50,7 @@ def _fetch_tile(layer, core, stats):
         raise RuntimeError(f"hors ligne et dalle d'altitude absente du cache ({p})")
     params = dict(SERVICE="WMS", VERSION="1.3.0", REQUEST="GetMap", LAYERS=layer, STYLES="",
                   CRS="EPSG:2154", BBOX=",".join(f"{v:.2f}" for v in bb),
-                  WIDTH=round((bb[2] - bb[0]) / RES), HEIGHT=round((bb[3] - bb[1]) / RES),
+                  WIDTH=round((bb[2] - bb[0]) / res), HEIGHT=round((bb[3] - bb[1]) / res),
                   FORMAT="image/geotiff")
     last = None
     for attempt in range(4):
@@ -71,7 +70,7 @@ def _fetch_tile(layer, core, stats):
     raise RuntimeError(f"WMS-R altitude indisponible : {last}")
 
 
-def _read(p):
+def _read(p, mask=True):
     from rasterio.io import MemoryFile
     with MemoryFile(gzip.decompress(p.read_bytes())) as mf, mf.open() as ds:
         a = ds.read(1).astype(np.float64)
@@ -79,7 +78,7 @@ def _read(p):
     if nd is not None:
         a[a == nd] = np.nan
     a[a < -1000] = np.nan
-    return mask_unreliable(a)
+    return mask_unreliable(a) if mask else a
 
 
 # En bordure d'une zone sans données (base militaire, plan d'eau, limite de couverture), le
@@ -115,11 +114,11 @@ def mask_unreliable(a: np.ndarray) -> np.ndarray:
     return a
 
 
-def bilinear(grid, bb, X, Y):
+def bilinear(grid, bb, X, Y, res=RES):
     """Interpolation bilinéaire, centres de pixels ; NaN si un voisin manque."""
     h, w = grid.shape
-    c = (X - bb[0]) / RES - 0.5
-    r = (bb[3] - Y) / RES - 0.5
+    c = (X - bb[0]) / res - 0.5
+    r = (bb[3] - Y) / res - 0.5
     c0 = np.clip(np.floor(c).astype(int), 0, w - 2)
     r0 = np.clip(np.floor(r).astype(int), 0, h - 2)
     fc = np.clip(c - c0, 0.0, 1.0)
@@ -145,11 +144,30 @@ def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
                        & (Y[todo] >= core[1]) & (Y[todo] < core[3])]
             if len(sel):
                 tiles.append((core, sel))
-        with ThreadPoolExecutor(4) as ex:  # téléchargements en parallèle, lecture séquentielle (RAM)
+        with ThreadPoolExecutor(6) as ex:  # téléchargements en parallèle, lecture séquentielle (RAM)
             files = list(ex.map(lambda t: _fetch_tile(layer, t[0], stats), tiles))
         for (core, sel), (bb, p) in zip(tiles, files):
             z[sel] = bilinear(_read(p), bb, X[sel], Y[sel])
     return z
+
+
+def sample_coarse_l93(X, Y, stats: dict | None = None) -> np.ndarray:
+    """Altitudes approchées (RGE ALTI rééchantillonné à 50 m) : UNE requête pour toute la zone.
+    Sert au criblage des grands graphes, jamais au D+ final."""
+    stats = stats if stats is not None else cache.new_stats()
+    X, Y = np.asarray(X, float), np.asarray(Y, float)
+    g = COARSE_SNAP
+    core = (math.floor(X.min() / g) * g, math.floor(Y.min() / g) * g,
+            math.ceil(X.max() / g) * g + g, math.ceil(Y.max() / g) * g + g)
+    bb, p = _fetch_tile(LAYERS[1], core, stats, res=RES_COARSE, margin_px=1)
+    return bilinear(_read(p, mask=False), bb, X, Y, res=RES_COARSE)
+
+
+def coarse_sampler_for(frame, stats: dict | None = None):
+    def sample(xy):
+        X, Y = frame.to_l93(xy)
+        return sample_coarse_l93(X, Y, stats)
+    return sample
 
 
 def sampler_for(frame, stats: dict | None = None):

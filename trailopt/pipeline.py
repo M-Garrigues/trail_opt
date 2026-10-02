@@ -24,9 +24,12 @@ MAX_AREA_KM2 = 1965.0     # disque de 25 km de rayon
 # noie dans le graphe. Mesuré à Massy : 414 000 tronçons IGN sur 25 km de rayon = 5 min 30,
 # 2,0 Go, et un D+ plus faible qu'avec une zone de 7 km de rayon.
 MAX_WAYS = {"ign": 110_000, "osm": 130_000}
+# Source IGN en mode max : les tronçons arrivent en tableaux compacts et le graphe est réduit
+# avant l'altitude fine ; un rayon de 25 km en zone dense reste traitable.
+MAX_WAYS_IGN_MAX = 650_000
 FALLBACK_AREA_KM2 = 150.0  # plafond d'aire si le comptage des voies est indisponible
 LONG_KM = 25.0            # au-delà : temps de calcul maximal imposé, avec avertissement
-TIME_S = (5.0, 60.0)
+TIME_S = (5.0, 180.0)
 START_BUFFER_M = 50.0
 OSM_MARGIN_M = 200.0
 
@@ -142,8 +145,10 @@ def base_edges(raw, region, dbg=None) -> dict:
     raw = graph.contract_degree2(raw)
     dbg["edges_simplified"] = len(raw)
     edges, eid = {}, 0
+    # Géométrie brute : la densification (5 m) n'a lieu qu'après élagage et réduction, sur
+    # les arêtes réellement gardées (assign_elevation s'en charge).
     for u, v, xy, flat in raw:
-        r = graph.densify(xy, elevation.RES)
+        r = graph.polyline(xy)
         if r is not None:
             edges[eid] = graph.Edge(u, v, r[0], r[1], flat)
             eid += 1
@@ -152,8 +157,12 @@ def base_edges(raw, region, dbg=None) -> dict:
     return edges
 
 
+REDUCE_K = 8.0            # longueur d'arêtes pentues gardées, en multiples de Lmax
+REDUCE_MIN_EDGES = 5000   # en dessous, pas de réduction (le recuit classique s'en sort)
+
+
 def build_candidate(edges, Lmin, Lmax, sampler, max_grade=None, node_z=None, info=None,
-                    step=lambda s: None, access=None):
+                    step=lambda s: None, access=None, coarse=None):
     """Graphe de boucles depuis le point de `edges` le plus proche du point cliqué.
     Renvoie (graphe réindexé, nœud de départ) ou None si aucune boucle de longueur
     >= Lmin n'est possible (test nécessaire, sans altitude). `info` reçoit le détail."""
@@ -187,6 +196,17 @@ def build_candidate(edges, Lmin, Lmax, sampler, max_grade=None, node_z=None, inf
     if total < Lmin:
         info["status"] = "réseau trop court"
         return None
+    if coarse is not None and len(g.edges) > REDUCE_MIN_EDGES and total > 1.25 * REDUCE_K * Lmax:
+        # Grand graphe : on ne garde que les arêtes les plus pentues et de quoi les relier,
+        # repérées sur un modèle de terrain grossier (une seule requête). Le LiDAR fin n'est
+        # ensuite échantillonné que sur ce graphe réduit. Heuristique, voir steep_reduction.
+        step("criblage")
+        keep = graph.steep_reduction(g, s, Lmax, graph.screening_w(g, coarse), REDUCE_K)
+        g = graph.prune(g.sub(keep), s, Lmax)
+        info["edges_reduced"] = len(g.edges)
+        if sum(e.length for e in g.edges.values()) < Lmin:
+            info["status"] = "réseau trop court après réduction"
+            return None
     step("altitude")
     info["elevation_points"] = graph.assign_elevation(g, sampler, node_z=node_z)
     step("élagage")
@@ -317,7 +337,7 @@ MAX_ATTEMPTS = 8      # sous-réseaux résolus au plus (les trop courts ne compt
 
 
 def search_loop(raw, region, p: Params, L, Lmax, sampler, dbg, timings, step=lambda s: None,
-                cancel=None, access=None):
+                cancel=None, access=None, coarse=None):
     """Premier sous-réseau, du plus proche au plus lointain, qui donne une boucle
     à la bonne distance. Renvoie (Problem, graphe, SolveResult, info du candidat, accès).
     `access` : voir make_access ; l'accès retenu est None si la boucle part du point cliqué."""
@@ -338,7 +358,8 @@ def search_loop(raw, region, p: Params, L, Lmax, sampler, dbg, timings, step=lam
         for acc_fn in ((access, None) if access is not None else (None,)):
             info = {"kind": kind, "solved": False}
             attempts.append(info)
-            r = build_candidate(sub, Lmin, Lmax, sampler, p.max_grade, node_z, info, step, acc_fn)
+            r = build_candidate(sub, Lmin, Lmax, sampler, p.max_grade, node_z, info, step, acc_fn,
+                                coarse)
             acc = info.pop("access", None)      # tableaux : hors du rapport de debug
             if r is not None or acc is None:
                 break
@@ -424,15 +445,16 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
         # Grande zone : on compte les voies avant de télécharger, et on réduit si c'est trop dense.
         radius0 = radius = float(np.hypot(*np.asarray(region.exterior.coords).T).max()) \
             if hasattr(region, "exterior") else math.sqrt(region.area / math.pi)
+        cap = MAX_WAYS_IGN_MAX if (source == "ign" and p.mode == "max") else MAX_WAYS[source]
         for _ in range(4):
             n = (ign.count(bbox, net["wfs_ign"]) if source == "ign"
                  else osm.count(bbox, p.roads, net["overpass"]))
             if n is None:       # comptage indisponible : on retombe sur un plafond d'aire prudent
                 radius = min(radius, math.sqrt(FALLBACK_AREA_KM2 * 1e6 / math.pi))
-            elif n <= MAX_WAYS[source]:
+            elif n <= cap:
                 break
             else:
-                radius *= 0.95 * math.sqrt(MAX_WAYS[source] / n)
+                radius *= 0.95 * math.sqrt(cap / n)
             region = region.intersection(graph.disk(radius))
             bbox = bbox_of(region)
             if n is None:
@@ -460,10 +482,13 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
 
     dbg["source"] = "IGN BD TOPO" if source == "ign" else "OpenStreetMap"
     dbg["source_ways"] = nways
+    # Criblage par relief : en mode max seulement (en mode cible, le plat peut être utile).
+    coarse = elevation.coarse_sampler_for(frame, net["wms_r"]) if p.mode == "max" else None
     P, g, res, info, acc = search_loop(raw, region, p, L, Lmax, sampler, dbg, timings, step,
-                                       cancel, make_access(raw_access, region, sampler))
+                                       cancel, make_access(raw_access, region, sampler), coarse)
     del raw, data
-    for k in ("start_snap_m", "edges_doubled_near_start", "edges_pruned", "edges_after_grade"):
+    for k in ("start_snap_m", "edges_doubled_near_start", "edges_pruned", "edges_reduced",
+              "edges_after_grade"):
         dbg[k] = info.get(k)
     dbg["elevation_points"] = sum(a.get("elevation_points", 0) for a in dbg["attempts"])
     snap = info["start_snap_m"]

@@ -39,6 +39,7 @@ class Edge:
     w: float = 0.0          # (montée + descente) / 2
     max_grade: float = 0.0
     twin: "Edge | None" = None  # original dont cette arête est la copie (rayon libre)
+    dense: bool = False     # géométrie densifiée (un point tous les 5 m au plus)
 
     @property
     def length(self) -> float:
@@ -85,6 +86,60 @@ def densify(xy, step: float):
     xy = np.vstack(parts)
     s = np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))])
     return xy, s
+
+
+def polyline(xy):
+    """(xy sans points doublés, abscisse curviligne) ou None si la polyligne est dégénérée."""
+    xy = np.asarray(xy, float)
+    if len(xy) < 2:
+        return None
+    d = np.hypot(*np.diff(xy, axis=0).T)
+    if (d <= 1e-6).any():
+        xy = xy[np.concatenate([[True], d > 1e-6])]
+        if len(xy) < 2:
+            return None
+        d = np.hypot(*np.diff(xy, axis=0).T)
+    return xy, np.concatenate([[0.0], np.cumsum(d)])
+
+
+def densify_many(polys, step: float):
+    """Densifie d'un coup une liste de polylignes (sommets conservés, espacement <= step).
+    Renvoie (points concaténés, offsets de début de chaque polyligne, longueur n+1).
+    Vectorisé : sur des centaines de milliers d'arêtes, la boucle Python par segment coûtait
+    plus que tout le reste de la préparation."""
+    n = np.fromiter((len(p) for p in polys), np.int64, len(polys))
+    A = np.vstack(polys)
+    off = np.concatenate([[0], np.cumsum(n)])
+    seg = np.ones(len(A) - 1, bool)
+    seg[off[1:-1] - 1] = False                      # pas de segment entre deux polylignes
+    a, b = A[:-1][seg], A[1:][seg]
+    k = np.maximum(1, np.ceil(np.hypot(*(b - a).T) / step)).astype(np.int64)
+    edge_of_seg = np.repeat(np.arange(len(polys)), n - 1)
+    total = int(k.sum())
+    seg_of_pt = np.repeat(np.arange(len(k)), k)
+    rank = np.arange(total) - np.repeat(np.cumsum(k) - k, k)
+    pts_seg = a[seg_of_pt] + ((rank + 1) / k[seg_of_pt])[:, None] * (b - a)[seg_of_pt]
+    per_edge = np.bincount(edge_of_seg, weights=k, minlength=len(polys)).astype(np.int64) + 1
+    new_off = np.concatenate([[0], np.cumsum(per_edge)])
+    out = np.empty((int(new_off[-1]), 2))
+    out[new_off[:-1]] = A[off[:-1]]                 # premier sommet de chaque polyligne
+    out[np.arange(total) + edge_of_seg[seg_of_pt] + 1] = pts_seg
+    return out, new_off
+
+
+def densify_edges(edges, step: float = 5.0) -> int:
+    """Densifie en place les arêtes qui ne le sont pas encore. Renvoie le nombre traité."""
+    todo = [e for e in edges if not e.dense]
+    if not todo:
+        return 0
+    pts, off = densify_many([e.xy for e in todo], step)
+    d = np.hypot(*np.diff(pts, axis=0).T)
+    for i, e in enumerate(todo):
+        a, b = off[i], off[i + 1]
+        e.xy = pts[a:b]
+        e.s = np.concatenate([[0.0], np.cumsum(d[a:b - 1])])
+        e.dense = True
+    return len(todo)
 
 
 def disk(R: float):
@@ -307,6 +362,77 @@ def parallel_pairs(g: Graph, center=(0.0, 0.0)) -> dict[int, set[int]]:
     return out
 
 
+def screening_w(g: Graph, coarse_sampler, step: float = 50.0) -> dict[int, float]:
+    """D+ approché de chaque arête, (montée + descente)/2, lu sur un modèle de terrain grossier
+    (un point tous les `step` m). Sert seulement à CHOISIR les arêtes à garder : le D+ final
+    vient toujours du LiDAR fin."""
+    ids = list(g.edges)
+    pts, off = densify_many([g.edges[k].xy for k in ids], step)
+    z = np.asarray(coarse_sampler(pts), float)
+    if not np.isfinite(z).any():
+        return {k: 0.0 for k in ids}
+    z = np.where(np.isfinite(z), z, np.nanmedian(z))
+    dz = np.abs(np.diff(z))
+    dz[off[1:-1] - 1] = 0.0                         # pas de dénivelé entre deux arêtes
+    w = np.add.reduceat(np.concatenate([dz, [0.0]]), off[:-1]) / 2.0
+    out = {}
+    for i, k in enumerate(ids):
+        e = g.edges[k]
+        out[k] = abs(float(z[off[i + 1] - 1] - z[off[i]])) / 2.0 if e.flat else float(w[i])
+    return out
+
+
+def steep_reduction(g: Graph, s: int, Lmax: float, w: dict, k: float = 8.0, n_trees: int = 2,
+                    penal: float = 3.0) -> set[int]:
+    """HEURISTIQUE (peut écarter une arête d'une boucle optimale). Garde les arêtes les plus
+    pentues (w/l décroissant) jusqu'à k × Lmax de longueur cumulée, plus des connecteurs : le
+    chemin de chacune vers le départ dans `n_trees` arbres de plus courts chemins. Le 2e arbre
+    pénalise les arêtes du 1er, pour offrir un aller et un retour distincts. Les arêtes doublées
+    près du départ sont gardées avec leur original. Renvoie les ids à garder."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import dijkstra
+    ids = np.array(list(g.edges))
+    E = [g.edges[i] for i in ids.tolist()]
+    idx = {n: i for i, n in enumerate(g.adj)}
+    u = np.fromiter((idx[e.u] for e in E), np.int64, len(E))
+    v = np.fromiter((idx[e.v] for e in E), np.int64, len(E))
+    ln = np.fromiter((e.length for e in E), float, len(E))
+    ww = np.fromiter((w[i] for i in ids.tolist()), float, len(E))
+    order = np.argsort(-ww / np.maximum(ln, 1.0))
+    cut = int(np.searchsorted(np.cumsum(ln[order]), k * Lmax)) + 1
+    keep = np.zeros(len(E), bool)
+    keep[order[:cut]] = True
+    targets = np.unique(np.concatenate([u[keep], v[keep]])).tolist()
+    N, src = len(idx), idx[s]
+    cost = ln.copy()
+    a, b = np.minimum(u, v), np.maximum(u, v)
+    for _ in range(n_trees):
+        o = np.lexsort((cost, b, a))                # multi-arêtes : la moins chère
+        first = np.concatenate([[True], (a[o][1:] != a[o][:-1]) | (b[o][1:] != b[o][:-1])]) & (a[o] != b[o])
+        sel = o[first]
+        A = coo_matrix((np.maximum(cost[sel], 1e-9), (a[sel], b[sel])), shape=(N, N)).tocsr()
+        _, pred = dijkstra(A, directed=False, indices=src, return_predecessors=True)
+        emap = {(int(a[e]), int(b[e])): e for e in sel.tolist()}
+        mark = np.zeros(N, bool)
+        mark[src] = True
+        pl, tree = pred.tolist(), []
+        for n in targets:
+            while not mark[n] and pl[n] >= 0:
+                mark[n] = True
+                p = pl[n]
+                tree.append(emap[(n, p) if n < p else (p, n)])
+                n = p
+        keep[tree] = True
+        cost[tree] *= penal
+    pos = {id(e): i for i, e in enumerate(E)}
+    for i, e in enumerate(E):                       # copies du rayon libre et leurs originaux
+        if e.twin is not None:
+            keep[i] = True
+            if id(e.twin) in pos:
+                keep[pos[id(e.twin)]] = True
+    return set(ids[keep].tolist())
+
+
 def loop_components(g: Graph) -> list[set[int]]:
     """Composantes 2-arête-connexes (après retrait des ponts) : les seuls
     sous-réseaux où une boucle sans arête répétée peut exister."""
@@ -364,26 +490,51 @@ def euler_circuit(g: Graph, eids, s):
 # Construction
 # ---------------------------------------------------------------------------
 def insert_start(edges: dict[int, Edge], next_id: int, point=(0.0, 0.0), node: int = START):
-    """Coupe l'arête la plus proche de `point` (défaut : le point cliqué, à l'origine) et y
-    insère le nœud `node`. Renvoie (nœud, distance à `point`, position du nœud)."""
+    """Projette `point` (défaut : le point cliqué, à l'origine) sur l'arête la plus proche,
+    la coupe à cet endroit et y insère le nœud `node`. La projection se fait sur les
+    segments, pas seulement sur les sommets : les arêtes n'ont pas besoin d'être densifiées.
+    Renvoie (nœud, distance à `point`, position du nœud)."""
     if not edges:
         raise RuntimeError("aucune voie dans la zone")
     ids = list(edges)
-    lens = [len(edges[k].xy) for k in ids]
+    n = np.fromiter((len(edges[k].xy) for k in ids), np.int64, len(ids))
     allxy = np.vstack([edges[k].xy for k in ids])
-    d = np.hypot(allxy[:, 0] - point[0], allxy[:, 1] - point[1])
+    starts = np.concatenate([[0], np.cumsum(n)])
+    a, b = allxy[:-1], allxy[1:]
+    ab = b - a
+    p = np.asarray(point, float)
+    t = np.clip(((p - a) * ab).sum(1) / np.maximum((ab * ab).sum(1), 1e-12), 0.0, 1.0)
+    q = a + t[:, None] * ab
+    d = np.hypot(q[:, 0] - p[0], q[:, 1] - p[1])
+    d[starts[1:-1] - 1] = INF                       # faux segments entre deux arêtes
     j = int(np.argmin(d))
-    starts = np.cumsum([0] + lens)
     k = int(np.searchsorted(starts, j, side="right") - 1)
-    eid, i = ids[k], j - int(starts[k])
+    eid, i, tj = ids[k], j - int(starts[k]), float(t[j])
     e = edges[eid]
-    pos = allxy[j].copy()
-    if i == 0:
-        return e.u, float(d[j]), pos
-    if i == len(e.xy) - 1:
-        return e.v, float(d[j]), pos
-    edges[eid] = Edge(e.u, node, e.xy[: i + 1], e.s[: i + 1], e.flat)
-    edges[next_id] = Edge(node, e.v, e.xy[i:], e.s[i:] - e.s[i], e.flat)
+    pos = q[j].copy()
+    seg = float(np.hypot(*ab[j]))
+    if tj * seg < 0.5:                              # sur le sommet de début du segment
+        cut_lo = cut_hi = i
+    elif (1 - tj) * seg < 0.5:                      # sur le sommet de fin
+        cut_lo = cut_hi = i + 1
+    else:
+        cut_lo, cut_hi = i, i + 1                   # entre deux sommets : nouveau point
+    if cut_lo == cut_hi:
+        pos = e.xy[cut_lo].copy()
+        if cut_lo == 0:
+            return e.u, float(d[j]), pos
+        if cut_lo == len(e.xy) - 1:
+            return e.v, float(d[j]), pos
+        xy1, xy2 = e.xy[: cut_lo + 1], e.xy[cut_lo:]
+    else:
+        xy1 = np.vstack([e.xy[: cut_lo + 1], pos])
+        xy2 = np.vstack([pos, e.xy[cut_hi:]])
+
+    def piece(u, v, xy):
+        return Edge(u, v, xy, np.concatenate([[0.0], np.cumsum(np.hypot(*np.diff(xy, axis=0).T))]),
+                    e.flat, dense=e.dense)
+    edges[eid] = piece(e.u, node, xy1)
+    edges[next_id] = piece(node, e.v, xy2)
     return node, float(d[j]), pos
 
 
@@ -427,7 +578,7 @@ def duplicate_near_start(edges: dict[int, Edge], next_id: int, center=(0.0, 0.0)
     near = [k for k in near if k in forced]
     for i, k in enumerate(near):
         e = edges[k]
-        edges[next_id + i] = Edge(e.u, e.v, e.xy, e.s, e.flat, twin=e)
+        edges[next_id + i] = Edge(e.u, e.v, e.xy, e.s, e.flat, twin=e, dense=e.dense)
     return len(near)
 
 
@@ -469,6 +620,7 @@ def assign_elevation(g: Graph, sampler, smooth=3, grade_win=25.0, node_z=None) -
     ids = [k for k, e in g.edges.items() if e.z is None]
     if not ids:
         return 0
+    densify_edges([g.edges[k] for k in ids])
     allxy = np.vstack([g.edges[k].xy for k in ids])
     z = np.asarray(sampler(allxy), float)
     if not np.isfinite(z).any():
