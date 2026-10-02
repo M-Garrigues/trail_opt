@@ -79,6 +79,39 @@ def _read(p):
     if nd is not None:
         a[a == nd] = np.nan
     a[a < -1000] = np.nan
+    return mask_unreliable(a)
+
+
+# En bordure d'une zone sans données (base militaire, plan d'eau, limite de couverture), le
+# serveur rééchantillonne en mélangeant la valeur « vide » (-9999) avec les vraies altitudes :
+# on obtient une rampe de valeurs fausses mais d'apparence plausible, sur ~100 m. Mesuré au
+# nord de la base de Villacoublay : -9473, -7972, -3709, -1205... puis 54, 28 m au lieu de 177.
+HOLE_MARGIN_PX = 30      # 150 m autour d'un trou : valeurs non fiables
+MAX_STEP_M = 15.0        # saut d'altitude impossible entre deux pixels voisins (pente 300 %)
+
+
+def mask_unreliable(a: np.ndarray) -> np.ndarray:
+    """Met à NaN les pixels proches d'un trou et ceux pris dans une pente impossible.
+    Ils seront comblés par la couche de repli (RGE ALTI), puis par interpolation."""
+    from scipy import ndimage
+    hole = ~np.isfinite(a)
+    bad = hole.copy()
+    if hole.any() and not hole.all():
+        bad |= ndimage.distance_transform_edt(~hole) <= HOLE_MARGIN_PX
+    # Rampe dont le trou est hors de la dalle : repérée par ses sauts d'altitude.
+    f = np.where(hole, 0.0, a)
+    jump = np.zeros(a.shape, bool)
+    dy = (np.abs(np.diff(f, axis=0)) > MAX_STEP_M) & ~hole[1:] & ~hole[:-1]
+    dx = (np.abs(np.diff(f, axis=1)) > MAX_STEP_M) & ~hole[:, 1:] & ~hole[:, :-1]
+    jump[1:] |= dy
+    jump[:-1] |= dy
+    jump[:, 1:] |= dx
+    jump[:, :-1] |= dx
+    if jump.any():
+        bad |= ndimage.binary_dilation(jump, iterations=2)
+    if bad.any():
+        a = a.copy()
+        a[bad] = np.nan
     return a
 
 

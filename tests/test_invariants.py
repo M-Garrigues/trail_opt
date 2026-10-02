@@ -91,3 +91,24 @@ def test_clip_to_region_cuts_edges_at_boundary():
     u, v, xy, flat = out[3]
     assert flat and u < 0 and v < 0 and xy[:, 1].max() <= 50
     assert len({n for e in out for n in e[:2] if n < 0}) == 5    # nœuds de coupe tous distincts
+
+
+def test_elevation_masks_blended_values_near_holes():
+    """Bord d'un trou de données : la rampe -9999 -> altitude réelle ne doit pas passer
+    pour du relief (cas réel au nord de la base de Villacoublay)."""
+    from trailopt import elevation as el
+    a = np.full((120, 120), 177.0)
+    a[:, :40] = np.nan                                   # trou (nodata déjà converti)
+    ramp = np.array([-900.0, -600.0, -300.0, -80.0, 30.0, 110.0, 150.0, 170.0])
+    a[:, 40:48] = ramp                                   # mélanges d'apparence plausible
+    m = el.mask_unreliable(a)
+    assert np.isnan(m[:, 40:48]).all()                   # toute la rampe est invalidée
+    assert np.isnan(m[:, :40 + el.HOLE_MARGIN_PX]).all()
+    assert np.allclose(m[:, 40 + el.HOLE_MARGIN_PX + 2:], 177.0)   # loin du trou : inchangé
+
+    b = np.full((60, 60), 300.0) + np.arange(60)[None, :] * 2.0     # pente de 40 % : relief réel
+    assert np.array_equal(el.mask_unreliable(b), b)
+
+    c = np.full((60, 60), 177.0)
+    c[:, :3] = [-700.0, -200.0, 60.0]                    # rampe dont le trou est hors dalle
+    assert np.isnan(el.mask_unreliable(c)[:, :4]).all()
