@@ -19,7 +19,7 @@ from streamlit_folium import st_folium
 from trailopt import geocode
 from trailopt.geo import LocalFrame
 from trailopt.maplayers import ProfileLink, ScaleControl, add_ign_layers
-from trailopt.pipeline import (DIST_KM, MAX_AREA_KM2, TIME_S, Cancelled, Params, UserError, _rings,
+from trailopt.pipeline import (DIST_KM, LONG_KM, TIME_S, Cancelled, Params, UserError, _rings,
                                build_region, plan_loop)
 
 DEFAULT_CENTER = (48.7303, 2.2725)  # Massy (91), centre-ville
@@ -51,6 +51,10 @@ MAP_CSS = f"""<style>
 .leaflet-bottom .trail-profile {{ margin-bottom: 3px; }}
 .leaflet-container:has(.trail-profile) .leaflet-bottom.leaflet-right {{ margin-bottom: 126px; }}
 .trail-profile canvas {{ cursor: crosshair !important; touch-action: none; }}
+.trail-summary {{ display: none; font: 700 15px sans-serif; color: #111; line-height: 1.2;
+  padding: 7px 8px 3px 8px; }}
+.trail-full .trail-summary {{ display: block; }}
+.trail-full .leaflet-container:has(.trail-summary) .leaflet-bottom.leaflet-right {{ margin-bottom: 154px; }}
 .leaflet-bar a.trail-fs {{ width: 44px; height: 44px; line-height: 44px; font-size: 22px;
   text-align: center; color: #333; }}
 .trail-full, .trail-full body, .trail-full #parent, .trail-full #map_div, .trail-full #map_div2,
@@ -122,8 +126,11 @@ def params_form(compact: bool = False) -> dict:
             if v["roads"] == "pedestrian" and v["source"] == "ign":
                 st.caption("Voies piétonnes : OpenStreetMap est utilisé, car l'IGN ne décrit pas "
                            "les trottoirs ni les petites voies piétonnes.")
-        st.caption(f"Zone ≤ {MAX_AREA_KM2:g} km² après découpe au rayon atteignable. "
-                   "Données © IGN, © contributeurs OpenStreetMap.")
+        st.caption("Zone : rayon de 25 km au plus, réduite automatiquement si elle contient trop "
+                   "de voies. Données © IGN, © contributeurs OpenStreetMap.")
+    if v["distance"] > LONG_KM:
+        st.warning(f"Plus de {LONG_KM:g} km : temps de calcul porté au maximum ({TIME_S[1]:g} s), "
+                   "et chargement des données plus long.")
     return v
 
 
@@ -133,7 +140,8 @@ def make_params(v: dict) -> Params:
         lat=ss.start[0] if ss.start else 0.0, lon=ss.start[1] if ss.start else 0.0,
         distance_km=v["distance"], polygon=ss.polygon if len(ss.polygon or []) >= 3 else None,
         mode=v["mode"], target_dplus=v["target"],
-        max_grade=v["grade"] / 100 if v["grade"] > 0 else None, time_s=float(v["time_s"]),
+        max_grade=v["grade"] / 100 if v["grade"] > 0 else None,
+        time_s=float(TIME_S[1] if v["distance"] > LONG_KM else v["time_s"]),
         tol=v["tol"] / 100, roads=v["roads"], node_simple=v["node_simple"], source=v["source"])
 
 
@@ -238,7 +246,8 @@ def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
         # passe par le `except BaseException` ci-dessous, qui arrête vraiment le solveur.
         st.button(cancel_label, help="Annuler (ou touche Échap)", key="btn-cancel",
                   on_click=lambda: ss.update(cancelled=True))
-        expected = params.time_s + 6.0          # budget solveur + chargement des données
+        # budget solveur + chargement des données (bien plus long sur les grandes zones)
+        expected = params.time_s + (30.0 if params.distance_km > LONG_KM else 6.0)
         t0 = time.time()
         cancel = threading.Event()
         with ThreadPoolExecutor(1) as ex:
@@ -306,7 +315,9 @@ def render_map(v: dict, click_mode: str, height: int, touch: bool = False, extra
             folium.CircleMarker((res.lat[0], res.lon[0]), radius=7, color="#d62728", fill=True).add_to(fg)
         keep = np.unique(np.linspace(0, len(res.dist) - 1, 800).astype(int))
         profile = {"d": np.round(res.dist[keep] / 1000, 3).tolist(), "z": np.round(res.ele[keep], 1).tolist(),
-                   "lat": np.round(res.lat[keep], 6).tolist(), "lon": np.round(res.lon[keep], 6).tolist()}
+                   "lat": np.round(res.lat[keep], 6).tolist(), "lon": np.round(res.lon[keep], 6).tolist(),
+                   "summary": (f"{res.length / 1000:.2f} km · D+ {res.dplus:.0f} m · "
+                               f"{res.dplus / res.length * 1000:.0f} m/km")}
     ProfileLink(profile, touch).add_to(fg)  # toujours présent : sans résultat, il retire l'ancien profil
     out = st_folium(m, height=height, use_container_width=True, key="map", feature_group_to_add=fg,
                     center=ss.view[:2] if ss.view else None, zoom=ss.view[2] if ss.view else None,

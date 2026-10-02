@@ -63,6 +63,23 @@ def build_query(bbox, roads: str) -> str:
             f"({s:.3f},{w:.3f},{n:.3f},{e:.3f});out body geom qt;")
 
 
+def count(bbox, roads: str, stats: dict | None = None) -> int | None:
+    """Nombre de ways de la requête, sans les télécharger (`out count`). None si échec."""
+    stats = stats if stats is not None else cache.new_stats()
+    q = build_query(bbox, roads).replace("out body geom qt;", "out count;").replace("timeout:60", "timeout:25")
+    if cache.offline():
+        return None
+    for url in ENDPOINTS:
+        try:
+            stats["requests"] += 1
+            r = requests.post(url, data={"data": q}, timeout=(10, 30), headers={"User-Agent": USER_AGENT})
+            r.raise_for_status()
+            return int(r.json()["elements"][0]["tags"]["ways"])
+        except Exception:
+            continue
+    return None
+
+
 def fetch(query: str, stats: dict | None = None, retries: int = 3) -> dict:
     stats = stats if stats is not None else cache.new_stats()
     key = hashlib.sha1(query.encode()).hexdigest()[:20]

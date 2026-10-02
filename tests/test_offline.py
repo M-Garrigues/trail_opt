@@ -49,9 +49,9 @@ def test_limits_rejected():
         plan_loop(Params(*START, distance_km=150))
     with pytest.raises(UserError):
         plan_loop(Params(*START, distance_km=10, time_s=120))
-    big = [(2.0, 48.6), (2.5, 48.6), (2.5, 48.9), (2.0, 48.9)]
+    big = [(1.5, 48.3), (3.0, 48.3), (3.0, 49.2), (1.5, 49.2)]     # ~110 x 100 km
     with pytest.raises(UserError, match="trop grande"):
-        plan_loop(Params(*START, distance_km=25, polygon=big))
+        plan_loop(Params(*START, distance_km=100, polygon=big, tol=0.2))
 
 
 def test_pedestrian_always_uses_osm():

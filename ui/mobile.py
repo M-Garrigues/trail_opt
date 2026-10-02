@@ -8,7 +8,6 @@ from . import common as ui
 from .common import ss
 
 CSS = """<style>
-:root { --trail-bar: 60px; }   /* en plein écran, la carte s'arrête au-dessus de la barre du bas */
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none; }
 .block-container { padding: 3.1rem .7rem 7rem .7rem !important; }
 .m-title { font-size: 1.15rem; font-weight: 700; margin: 0 0 .2rem 0; }

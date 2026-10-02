@@ -18,7 +18,14 @@ from .solvers import EXACT_MAX_EDGES, optimize
 
 # Plafonds anti-abus (app publique, Streamlit Community Cloud : 2 cœurs, 2,7 Go).
 DIST_KM = (2.0, 100.0)
-MAX_AREA_KM2 = 150.0
+MAX_AREA_KM2 = 1965.0     # disque de 25 km de rayon
+# La zone est en plus réduite (disque plus petit autour du départ) tant qu'elle contient trop
+# de voies : au-delà, le chargement prend des minutes, la mémoire explose et le recuit se
+# noie dans le graphe. Mesuré à Massy : 414 000 tronçons IGN sur 25 km de rayon = 5 min 30,
+# 2,0 Go, et un D+ plus faible qu'avec une zone de 7 km de rayon.
+MAX_WAYS = {"ign": 110_000, "osm": 130_000}
+FALLBACK_AREA_KM2 = 150.0  # plafond d'aire si le comptage des voies est indisponible
+LONG_KM = 25.0            # au-delà : temps de calcul maximal imposé, avec avertissement
 TIME_S = (5.0, 60.0)
 START_BUFFER_M = 50.0
 OSM_MARGIN_M = 200.0
@@ -172,7 +179,7 @@ def build_candidate(edges, Lmin, Lmax, sampler, max_grade=None, node_z=None, inf
             edges = dict(edges_in)
             s, snap, pos = graph.insert_start(edges, max(edges) + 1)
             info["start_snap_m"] = round(snap, 1)
-    info["edges_doubled_near_start"] = graph.duplicate_near_start(edges, max(edges) + 1, pos)
+    info["edges_doubled_near_start"] = graph.duplicate_near_start(edges, max(edges) + 1, pos, s)
     g = graph.prune(graph.Graph(edges), s, Lmax)
     info["edges_pruned"] = len(g.edges)
     total = sum(e.length for e in g.edges.values())
@@ -384,6 +391,10 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
             progress(name)
     validate(p)
     dbg, warns, timings = {}, [], {}
+    if p.enforce_limits and p.distance_km > LONG_KM and p.time_s < TIME_S[1]:
+        p.time_s = TIME_S[1]
+        warns.append(f"Distance de plus de {LONG_KM:g} km : temps de calcul porté au maximum "
+                     f"({TIME_S[1]:g} s). Le chargement des données est aussi plus long.")
     net = {"overpass": cache.new_stats(), "wfs_ign": cache.new_stats(), "wms_r": cache.new_stats()}
     L = p.distance_km * 1000.0
     frame = LocalFrame(p.lat, p.lon)
@@ -397,14 +408,39 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
     # Réseau de chemins : BD TOPO IGN ou OpenStreetMap
     step("chemins")
     t = time.time()
-    minx, miny, maxx, maxy = region.bounds
-    m = OSM_MARGIN_M
-    corners = np.array([[minx - m, miny - m], [maxx + m, miny - m],
-                        [minx - m, maxy + m], [maxx + m, maxy + m]])
-    lon, lat = frame.to_wgs(corners)
-    bbox = (min(lat), min(lon), max(lat), max(lon))
     # La BD TOPO n'a ni trottoirs ni petites voies piétonnes : ce mode passe toujours par OSM.
     source = "osm" if p.roads == "pedestrian" else p.source
+
+    def bbox_of(reg):
+        minx, miny, maxx, maxy = reg.bounds
+        m = OSM_MARGIN_M
+        corners = np.array([[minx - m, miny - m], [maxx + m, miny - m],
+                            [minx - m, maxy + m], [maxx + m, maxy + m]])
+        lon, lat = frame.to_wgs(corners)
+        return (min(lat), min(lon), max(lat), max(lon))
+
+    bbox = bbox_of(region)
+    if p.enforce_limits and area_km2 > FALLBACK_AREA_KM2:
+        # Grande zone : on compte les voies avant de télécharger, et on réduit si c'est trop dense.
+        radius0 = radius = float(np.hypot(*np.asarray(region.exterior.coords).T).max()) \
+            if hasattr(region, "exterior") else math.sqrt(region.area / math.pi)
+        for _ in range(4):
+            n = (ign.count(bbox, net["wfs_ign"]) if source == "ign"
+                 else osm.count(bbox, p.roads, net["overpass"]))
+            if n is None:       # comptage indisponible : on retombe sur un plafond d'aire prudent
+                radius = min(radius, math.sqrt(FALLBACK_AREA_KM2 * 1e6 / math.pi))
+            elif n <= MAX_WAYS[source]:
+                break
+            else:
+                radius *= 0.95 * math.sqrt(MAX_WAYS[source] / n)
+            region = region.intersection(graph.disk(radius))
+            bbox = bbox_of(region)
+            if n is None:
+                break
+        if radius < radius0 - 1.0:
+            dbg["zone_km2"] = round(region.area / 1e6, 2)
+            warns.append(f"Zone trop dense en voies : réduite à un rayon de {radius / 1000:.1f} km "
+                         f"autour du départ ({region.area / 1e6:.0f} km²) pour garder un calcul rapide.")
     if source == "ign":
         data = ign.fetch(bbox, net["wfs_ign"])
         raw, nways = ign.to_edges(data, frame, p.roads)

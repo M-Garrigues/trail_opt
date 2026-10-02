@@ -12,7 +12,7 @@ from conftest import build, check_loop, dead_end_raw
 def test_dead_end_start_allows_out_and_back(solver, node_simple):
     # impasse 150 m (aller-retour 300 m) + carré 1600 m
     P, dbg = build(1900, raw=dead_end_raw(), node_simple=node_simple)
-    assert dbg["edges_doubled_near_start"] == 2
+    assert dbg["edges_doubled_near_start"] == 1      # seul le tronçon d'accès, pas le cul-de-sac
     res = optimize(P, budget=3.0, solver=solver)
     length, _ = check_loop(P, res.circuit)
     assert P.Lmin <= length <= P.Lmax
@@ -48,3 +48,21 @@ def test_node_simple_cpsat_never_beats_unconstrained():
     assert r0["status"] == "OPTIMAL" and r1["chosen"]
     assert P1.score(r1["chosen"])[2] <= P0.score(r0["chosen"])[2] + 1e-6
     check_loop(P1, graph.euler_circuit(P1.g, r1["chosen"], P1.s))
+
+
+def test_no_out_and_back_farming_near_start():
+    """Sur une grille (aucun accès obligé), rien n'est doublé près du départ : la boucle
+    ne peut pas reprendre deux fois la même arête pour gagner du D+."""
+    P, dbg = build(2000)
+    assert dbg["edges_doubled_near_start"] == 0
+    assert all(e.twin is None for e in P.g.edges.values())
+
+
+def test_access_bridges_ignore_dead_ends():
+    import numpy as np
+    def E(u, v):
+        xy = np.array([[u * 10.0, 0.0], [v * 10.0, 5.0]])
+        return graph.Edge(u, v, xy, np.array([0.0, np.hypot(*(xy[1] - xy[0]))]))
+    # s=0 -1- 1 -2- 2, triangle 2-3-4, impasse 1-9, impasse 4-8
+    edges = {0: E(0, 1), 1: E(1, 2), 2: E(2, 3), 3: E(3, 4), 4: E(4, 2), 5: E(1, 9), 6: E(4, 8)}
+    assert graph.access_bridges(graph.Graph(edges), 0) == {0, 1}

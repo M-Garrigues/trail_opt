@@ -8,6 +8,7 @@ from __future__ import annotations
 import gzip
 import json
 import math
+import re
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -63,14 +64,36 @@ def _page(bbox_str: str, start: int, stats: dict) -> dict:
     raise RuntimeError(f"WFS BD TOPO indisponible : {last}")
 
 
+def _round_bbox(bbox) -> str:
+    s, w, n, e = bbox
+    s, w = math.floor(s * 1000) / 1000, math.floor(w * 1000) / 1000
+    n, e = math.ceil(n * 1000) / 1000, math.ceil(e * 1000) / 1000
+    return f"{w:.3f},{s:.3f},{e:.3f},{n:.3f}"
+
+
+def count(bbox, stats: dict | None = None) -> int | None:
+    """Nombre de tronçons dans la bbox, sans les télécharger (WFS resultType=hits).
+    None si le service ne répond pas."""
+    stats = stats if stats is not None else cache.new_stats()
+    if cache.offline():
+        return None
+    try:
+        stats["requests"] += 1
+        r = requests.get(WFS_URL, timeout=(10, 30), headers={"User-Agent": USER_AGENT}, params=dict(
+            SERVICE="WFS", VERSION="2.0.0", REQUEST="GetFeature", TYPENAMES=LAYER, RESULTTYPE="hits",
+            BBOX=f"{_round_bbox(bbox)},urn:ogc:def:crs:OGC:1.3:CRS84"))
+        r.raise_for_status()
+        m = re.search(r'numberMatched="(\d+)"', r.text)
+        return int(m.group(1)) if m else None
+    except Exception:
+        return None
+
+
 def fetch(bbox, stats: dict | None = None) -> list:
     """Tous les tronçons de la bbox (sud, ouest, nord, est), arrondie à 1e-3°.
     Le cache ne dépend pas du type de voies : le filtrage est local."""
     stats = stats if stats is not None else cache.new_stats()
-    s, w, n, e = bbox
-    s, w = math.floor(s * 1000) / 1000, math.floor(w * 1000) / 1000
-    n, e = math.ceil(n * 1000) / 1000, math.ceil(e * 1000) / 1000
-    bbox_str = f"{w:.3f},{s:.3f},{e:.3f},{n:.3f}"
+    bbox_str = _round_bbox(bbox)
     p = cache.path("ign", f"troncons_{bbox_str.replace(',', '_')}.json.gz")
     if p.exists():
         stats["cache_hits"] += 1

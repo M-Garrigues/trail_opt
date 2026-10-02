@@ -197,8 +197,9 @@ avec petites routes, presque tout passe par le recuit. CP-SAT sert surtout en mo
 | Plafond | Valeur | Raison |
 |---|---|---|
 | distance | 2 à 100 km | anti-abus |
-| aire de la zone utile | 150 km² | anti-abus ; le disque par défaut est plafonné à ~148 km² (rayon 6,9 km) |
+| zone utile | rayon de 25 km au plus (1 965 km²), réduite tant qu'elle compte plus de 110 000 tronçons IGN ou 130 000 voies OSM | mémoire et temps ; voir mesures ci-dessous |
 | budget solveur | 5 à 60 s, défaut 20 s | 2 cœurs partagés |
+| distance de plus de 25 km | budget solveur forcé à 60 s, avec avertissement | grands graphes |
 | calculs simultanés | 1 | verrou global, le second utilisateur est prié de réessayer |
 
 Mémoire mesurée sur le pire cas autorisé : 25 km, zone par défaut de 148 km² à Massy avec
@@ -210,6 +211,17 @@ petites routes, soit environ 39 000 arêtes après élagage.
 | pic RSS avec l'ancien demi-disque (55 500 arêtes) | 463 Mo |
 | pic RSS pour 100 km, source IGN, disque par défaut (19 400 arêtes) | 461 Mo |
 | pic RSS observé avec CP-SAT forcé sur 44 600 arêtes | 1,1 Go |
+
+Grandes zones, boucle de 100 km à Massy, source IGN :
+
+| Zone | Tronçons téléchargés | Arêtes | Temps total | Pic RSS | D+ |
+|---|---|---|---|---|---|
+| rayon 6,9 km | 19 400 après élagage | 19 400 | ~30 s | 461 Mo | 2 915 m (20 s de solveur) |
+| rayon 9,9 km (réduction automatique) | 84 000 | 41 600 | 90 s | 882 Mo | 2 653 m (60 s) |
+| rayon 25 km, sans réduction | 414 000 | 227 000 | 5 min 30 | 2,0 Go | 2 104 m (20 s) |
+
+Agrandir la zone coûte cher et dégrade le résultat : le recuit se noie dans le graphe. D'où la
+réduction automatique, en attendant un prétraitement plus sélectif.
 
 C'est loin des 2,7 Go de Streamlit Cloud, donc les plafonds ne sont pas abaissés. CP-SAT
 n'est jamais lancé au-delà du seuil en mode automatique.

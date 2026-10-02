@@ -387,15 +387,44 @@ def insert_start(edges: dict[int, Edge], next_id: int, point=(0.0, 0.0), node: i
     return node, float(d[j]), pos
 
 
-def duplicate_near_start(edges: dict[int, Edge], next_id: int, center=(0.0, 0.0),
+def access_bridges(g: Graph, s: int) -> set[int]:
+    """Ponts « d'accès » : ceux qu'une boucle partant de s doit emprunter à l'aller ET au
+    retour, faute d'autre chemin. Ce sont les ponts qui restent après effeuillage des
+    culs-de-sac (un pont menant à une impasse ne mène à aucune boucle), s étant protégé."""
+    bridges = find_bridges(g)
+    deg = {n: len(a) for n, a in g.adj.items()}
+    alive = set(g.edges)
+    leaves = [n for n, d in deg.items() if d == 1 and n != s]
+    while leaves:
+        n = leaves.pop()
+        if deg[n] != 1 or n == s:
+            continue
+        for eid, nb in g.adj[n]:
+            if eid in alive:
+                alive.discard(eid)
+                deg[n] -= 1
+                deg[nb] -= 1
+                if deg[nb] == 1 and nb != s:
+                    leaves.append(nb)
+                break
+    return bridges & alive
+
+
+def duplicate_near_start(edges: dict[int, Edge], next_id: int, center=(0.0, 0.0), s: int = START,
                          radius: float | None = None) -> int:
-    """Double (copie parallèle) chaque arête entièrement à moins de `radius` du départ
-    `center` : une boucle sans arête répétée peut alors l'emprunter deux fois.
-    Renvoie le nombre de copies."""
+    """Double (copie parallèle) les arêtes d'accès proches du départ : entièrement à moins de
+    `radius` de `center`, et sans autre chemin possible (voir access_bridges). Une boucle
+    sans arête répétée peut alors faire l'aller-retour sur un accès en impasse. Les autres
+    arêtes proches ne sont pas doublées : sinon l'optimiseur multiplie les allers-retours
+    autour du départ pour gagner du D+. Renvoie le nombre de copies."""
     radius = FREE_RADIUS if radius is None else radius
     cx, cy = center
     near = [k for k, e in edges.items()
             if np.hypot(e.xy[:, 0] - cx, e.xy[:, 1] - cy).max() <= radius]
+    if not near:
+        return 0
+    forced = access_bridges(Graph(edges), s)
+    near = [k for k in near if k in forced]
     for i, k in enumerate(near):
         e = edges[k]
         edges[next_id + i] = Edge(e.u, e.v, e.xy, e.s, e.flat, twin=e)

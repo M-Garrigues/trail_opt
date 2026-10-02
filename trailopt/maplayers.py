@@ -163,6 +163,10 @@ class ProfileLink(MacroElement):
           }
           ctl.onAdd = function () {
             var div = L.DomUtil.create('div', 'trail-profile');
+            if (D.summary) {      // résumé de la boucle, affiché en plein écran seulement (CSS)
+              var sum = L.DomUtil.create('div', 'trail-summary', div);
+              sum.textContent = D.summary;
+            }
             canvas = L.DomUtil.create('canvas', '', div);
             L.DomEvent.disableClickPropagation(div); L.DomEvent.disableScrollPropagation(div);
             function pick(clientX) {
@@ -204,7 +208,8 @@ class ProfileLink(MacroElement):
           setTimeout(function () { if (window.__trailProfile && window.__trailProfile.hit === hit) hit.bringToFront(); }, 50);
           var onResize = function () { draw(); };
           map.on('resize', onResize);
-          window.__trailProfile = {ctl: ctl, dot: dot, hit: hit, onResize: onResize};
+          window.__trailProfile = {ctl: ctl, dot: dot, hit: hit, onResize: onResize,
+                                   showAt: function (ll) { show(nearest(ll)); }};
         })();
         {% endmacro %}
     """)
@@ -228,7 +233,9 @@ class FullscreenToggle(MacroElement):
     """Bouton « plein écran » : la carte occupe toute la fenêtre, un second appui (ou Échap)
     la remet en place. Pas le plein écran natif du navigateur (refusé par iOS hors vidéo) :
     le cadre de la carte est étendu en position fixe par une règle CSS posée dans la page.
-    `--trail-bar` (défini par la vue mobile) réserve la barre d'action du bas."""
+    C'est un mode consultation : les clics sur la carte n'y posent ni départ ni point de zone
+    (ils ne sont pas transmis à l'app), on ne peut pas y relancer un calcul, et le résumé de
+    la boucle s'affiche en bas avec le profil."""
     _template = Template("""
         {% macro script(this, kwargs) %}
         (function () {
@@ -242,9 +249,8 @@ class FullscreenToggle(MacroElement):
               st.textContent =
                 'body[data-trail-full] iframe[title="streamlit_folium.st_folium"] {' +
                 ' position: fixed !important; top: 0 !important; left: 0 !important;' +
-                ' width: 100vw !important; height: calc(100dvh - var(--trail-bar, 0px)) !important;' +
-                ' z-index: 1000000 !important; }' +
-                'body[data-trail-full] .st-key-calcbar { z-index: 1000001 !important; }';
+                ' width: 100vw !important; height: 100dvh !important;' +
+                ' z-index: 1000000 !important; }';
               pd.head.appendChild(st);
             }
             if (on) pd.body.setAttribute('data-trail-full', '1');
@@ -253,6 +259,10 @@ class FullscreenToggle(MacroElement):
             link.innerHTML = on ? '&#x2715;' : '&#x26F6;';
             link.title = on ? 'Quitter le plein écran' : 'Plein écran';
             [60, 300, 700].forEach(function (t) { setTimeout(function () { map.invalidateSize(); }, t); });
+            if (on) setTimeout(function () {      // recadre sur la boucle, au-dessus du profil
+              var pr = window.__trailProfile;
+              if (pr) map.fitBounds(pr.hit.getBounds(), {paddingTopLeft: [24, 24], paddingBottomRight: [24, 185]});
+            }, 400);
           }
           var Ctl = L.Control.extend({
             options: {position: 'topright'},
@@ -267,6 +277,15 @@ class FullscreenToggle(MacroElement):
             }
           });
           map.addControl(new Ctl());
+          // Mode consultation : en plein écran, un clic sur la carte est arrêté avant Leaflet,
+          // donc jamais transmis à l'app. Seul un appui sur le tracé reste utile : il situe
+          // le point sur le profil. Les contrôles (zoom, couches, profil) restent actifs.
+          map.getContainer().addEventListener('click', function (e) {
+            if (!isOn() || e.target.closest('.leaflet-control')) return;
+            e.stopPropagation();
+            var pr = window.__trailProfile;
+            if (pr && e.target === pr.hit._path) pr.showAt(map.mouseEventToLatLng(e));
+          }, true);
           if (isOn()) toggle(true);    // carte rechargée alors que le plein écran était actif
           document.addEventListener('keydown', function (e) {
             if (e.key === 'Escape' && isOn()) toggle(false);
