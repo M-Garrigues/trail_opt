@@ -24,6 +24,16 @@ from trailopt.pipeline import (DIST_KM, LONG_KM, TIME_S, Cancelled, Params, User
 
 DEFAULT_CENTER = (48.7303, 2.2725)  # Massy (91), centre-ville
 START_COLOR, ZONE_COLOR = "#1a9e3f", "#1f6feb"
+# Palette tab20 (matplotlib), teintes foncées d'abord : plus lisibles sur une carte.
+TAB20 = ["#1f77b4", "#aec7e8", "#ff7f0e", "#ffbb78", "#2ca02c", "#98df8a", "#d62728", "#ff9896",
+         "#9467bd", "#c5b0d5", "#8c564b", "#c49c94", "#e377c2", "#f7b6d2", "#7f7f7f", "#c7c7c7",
+         "#bcbd22", "#dbdb8d", "#17becf", "#9edae5"]
+LOOP_COLORS = TAB20[0::2] + TAB20[1::2]
+SINGLE_COLOR = "#d62728"       # une seule boucle : rouge, comme avant
+
+
+def loop_color(res, i: int) -> str:
+    return SINGLE_COLOR if len(res.candidates) < 2 else LOOP_COLORS[i % len(LOOP_COLORS)]
 SEARCH_LABEL = "Chercher une adresse, une ville, un lieu ou « lat, lon »"
 CLICK_MODES = ["le départ", "un point de zone"]
 
@@ -64,6 +74,12 @@ MAP_CSS = f"""<style>
   {{ cursor: {CURSOR_START}, crosshair !important; }}
 .leaflet-container:has(.mode-zone), .leaflet-container:has(.mode-zone) .leaflet-interactive
   {{ cursor: {CURSOR_ZONE}, crosshair !important; }}
+/* Plusieurs boucles proposées : la carte ne pose plus de point, seuls les tracés se cliquent. */
+.leaflet-container:has(.mode-view), .leaflet-container:has(.mode-view) .leaflet-interactive
+  {{ cursor: default !important; }}
+.leaflet-container:has(.mode-view) path.trail-cand {{ cursor: pointer !important; }}
+path.trail-active {{ animation: trail-march 1.5s linear infinite; pointer-events: none; }}
+@keyframes trail-march {{ to {{ stroke-dashoffset: -24; }} }}
 </style>"""
 STEPS = {"chemins": "Réseau de chemins…", "criblage": "Repérage du relief…", "altitude": "Altitude IGN…",
          "élagage": "Élagage du graphe…", "solveur": "Optimisation…"}
@@ -112,10 +128,15 @@ def params_form(compact: bool = False) -> dict:
                  "reprendre la même route (accès en impasse).")
         with (st.container() if compact else st.expander("Options avancées")):
             v["grade"] = st.number_input("Pente max (%) — 0 = aucune", 0.0, 100.0, 0.0, 1.0)
-            # Valeur conseillée selon la distance ; le curseur y revient quand la distance change.
+            v["n_candidates"] = st.number_input(
+                "Nombre de boucles proposées", 1, 4, 1,
+                help="Boucles réellement différentes (moins de la moitié en commun). Chaque "
+                     "boucle en plus ajoute la moitié du temps de calcul.")
+            # Valeur conseillée selon la distance et le nombre de boucles ; le curseur y revient quand la distance change.
             v["time_s"] = st.slider("Temps de calcul (s)", int(TIME_S[0]), int(TIME_S[1]),
-                                    int(suggested_time(v["distance"])), step=5,
-                                    help="Ajusté à la distance : 20 s jusqu'à 10 km, 60 s à 100 km. "
+                                    int(suggested_time(v["distance"], v["n_candidates"])), step=5,
+                                    help="Ajusté à la distance (20 s jusqu'à 10 km, 60 s à 100 km) "
+                                         "et au nombre de boucles (moitié en plus par boucle). "
                                          "Au-delà de 60 s, le gain de D+ mesuré est d'environ 1 %.")
             v["tol"] = st.slider("Tolérance distance, mode max (± %)", 1, 20, 5)
             source = st.radio("Source des chemins", ["IGN (BD TOPO)", "OpenStreetMap"],
@@ -134,7 +155,7 @@ def params_form(compact: bool = False) -> dict:
                    "de voies. Données © IGN, © contributeurs OpenStreetMap.")
     if v["distance"] > LONG_KM:
         st.caption(f"Plus de {LONG_KM:g} km : chargement des données et calcul plus longs "
-                   f"(environ {suggested_time(v['distance']):.0f} s de calcul).")
+                   f"(environ {suggested_time(v['distance'], v['n_candidates']):.0f} s de calcul).")
     return v
 
 
@@ -146,7 +167,50 @@ def make_params(v: dict) -> Params:
         mode=v["mode"], target_dplus=v["target"],
         max_grade=v["grade"] / 100 if v["grade"] > 0 else None,
         time_s=float(v["time_s"]),
-        tol=v["tol"] / 100, roads=v["roads"], node_simple=v["node_simple"], source=v["source"])
+        tol=v["tol"] / 100, roads=v["roads"], node_simple=v["node_simple"], source=v["source"],
+        n_candidates=int(v["n_candidates"]))
+
+
+def selected(res) -> int:
+    """Indice de la boucle mise en avant (la première, au plus grand D+, par défaut)."""
+    return min(int(ss.get("cand", 0)), len(res.candidates) - 1)
+
+
+def locked() -> bool:
+    """Plusieurs boucles proposées : les clics sur la carte ne servent qu'à en choisir une
+    (« Tout effacer » ou un nouveau calcul pour replacer départ et zone)."""
+    return ss.result is not None and len(ss.result.candidates) > 1
+
+
+def shown_loop(res):
+    return res.candidates[selected(res)]
+
+
+def candidate_list(res, v: dict, compact: bool = False) -> None:
+    """Une ligne par boucle proposée : un clic sur la ligne (couleur, chiffres) l'affiche,
+    le bouton GPX la télécharge. La ligne de la boucle affichée est mise en avant."""
+    sel = selected(res)
+    css = []
+    for i, c in enumerate(res.candidates):
+        color = loop_color(res, i)
+        on = i == sel
+        css.append(
+            f".st-key-show{i} button {{ justify-content:flex-start; text-align:left; "
+            + (f"border:2px solid {color}; background:{color}1f; font-weight:700;" if on else "")
+            + f" }} .st-key-show{i} button p::before {{ content:''; display:inline-block; width:14px; "
+            f"height:14px; border-radius:50%; background:{color}; margin-right:.55rem; vertical-align:-2px; }}"
+            + (f" .st-key-show{i} button p {{ font-weight:700; }}" if on else ""))
+        text = (f"Boucle {i + 1} — {c.length / 1000:.2f} km · D+ {c.dplus:.0f} m · "
+                f"{c.dplus / c.length * 1000:.0f} m/km")
+        with st.container(key=f"row-cand-{i}"):
+            a, d = st.columns([4.3, 1.2] if not compact else [4.2, 1], vertical_alignment="center")
+            if a.button(text, key=f"show{i}", use_container_width=True) and not on:
+                ss.cand = i
+                st.rerun()
+            d.download_button("GPX", c.gpx, file_name=f"boucle_{v['distance']:g}km_{i + 1}.gpx",
+                              mime="application/gpx+xml", key=f"gpx{i}", use_container_width=True,
+                              type="primary" if on else "secondary")
+    st.markdown(f"<style>{' '.join(css)}</style>", unsafe_allow_html=True)
 
 
 # ---------------------------------------------------------------- recherche
@@ -225,7 +289,7 @@ def fit_view(lat, lon, width_px=900, height_px=410, profile_px=125):
 
 def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
                cancel_label: str = "Annuler") -> None:
-    """Bouton Calculer (dès qu'un départ est posé), barre de progression, Annuler, messages.
+    """Bouton Calculer (grisé tant qu'aucun départ n'est posé), barre de progression, Annuler, messages.
     À appeler dans un conteneur fixe : rien ne doit décaler la suite de la page, sinon le
     navigateur recharge le cadre de la carte."""
     if ss.pop("cancelled", False):
@@ -234,7 +298,9 @@ def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
         if full_width:
             st.caption("Touche la carte pour placer le départ.")
         else:
-            st.info("Clique sur la carte pour placer le départ : le bouton Calculer apparaîtra ici.")
+            # Bouton déjà là, grisé : poser le départ ne décale pas la carte sous le curseur.
+            st.button("Calculer", type="primary", disabled=True, key="btn-calc-off",
+                      help="Clique d'abord sur la carte pour placer le départ.")
         return
     if not st.button("Calculer", type="primary", use_container_width=full_width, key="btn-calc"):
         return
@@ -265,6 +331,7 @@ def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
                 cancel.set()        # le fil de calcul s'arrête, puis le verrou est rendu
                 raise
             ss.result = fut.result()
+        ss.cand = 0                             # nouveau calcul : boucle au plus grand D+
         bar.progress(1.0, text="Terminé")
         ss.view = fit_view(ss.result.lat, ss.result.lon, **(fit or {}))
         ss.scroll_to_result = True
@@ -284,13 +351,16 @@ def render_map(v: dict, click_mode: str, height: int, touch: bool = False, extra
     """Carte + calques dynamiques + profil lié. Renvoie (retour st_folium, erreur de zone).
     Le fond est statique (jamais rechargé : vue et zoom restent en place) ; tout ce qui
     bouge passe par `feature_group_to_add`."""
-    m = folium.Map(location=DEFAULT_CENTER, zoom_start=13, tiles=None)
+    # keyboard=False : sinon Leaflet prend le focus au premier appui, la page défile pour
+    # montrer toute la carte, et le clic se pose décalé d'autant.
+    m = folium.Map(location=DEFAULT_CENTER, zoom_start=13, tiles=None, keyboard=False)
     ScaleControl().add_to(m)
     add_ign_layers(m)
     m.get_root().header.add_child(folium.Element(MAP_CSS + extra_css))
     fg = folium.FeatureGroup(name="calques", control=False)
     folium.CircleMarker(ss.start or DEFAULT_CENTER, radius=0, opacity=0, fill_opacity=0,
-                        class_name="mode-start" if click_mode == CLICK_MODES[0] else "mode-zone").add_to(fg)
+                        class_name="mode-view" if locked() else
+                        "mode-start" if click_mode == CLICK_MODES[0] else "mode-zone").add_to(fg)
     # Les clics sur les tracés remontent à la carte (bubblingMouseEvents, défaut Leaflet).
     zone_error = None
     pts = ss.polygon or []
@@ -301,8 +371,8 @@ def render_map(v: dict, click_mode: str, height: int, touch: bool = False, extra
     for lo, la in pts:
         folium.CircleMarker((la, lo), radius=4, color="#555", fill=True, fill_opacity=1).add_to(fg)
     if ss.start:
-        folium.Marker(ss.start, tooltip="Départ",
-                      icon=folium.Icon(color="green", icon="play")).add_to(fg)
+        folium.Marker(ss.start, icon=folium.Icon(color="green", icon="play"),
+                      interactive=False).add_to(fg)
         try:
             frame = LocalFrame(*ss.start)
             Lmax = v["distance"] * 1000 * ((1 + v["tol"] / 100) if v["mode"] == "max" else 1.3)
@@ -314,26 +384,55 @@ def render_map(v: dict, click_mode: str, height: int, touch: bool = False, extra
     res = ss.result
     profile = None
     if res is not None:
-        folium.PolyLine(list(zip(res.lat, res.lon)), color="#d62728", weight=4).add_to(fg)
+        loop, sel = shown_loop(res), selected(res)
+        many = len(res.candidates) > 1
+        for i, other in enumerate(res.candidates):      # les autres boucles, cliquables
+            if i != sel:
+                folium.PolyLine(list(zip(other.lat, other.lon)), color=loop_color(res, i),
+                                weight=3.5, opacity=0.5, class_name="trail-cand",
+                                bubbling_mouse_events=False).add_to(fg)
+        folium.PolyLine(list(zip(loop.lat, loop.lon)), color=loop_color(res, sel),
+                        weight=6 if many else 4).add_to(fg)
+        if many:    # boucle affichée : pointillés blancs qui défilent le long du tracé
+            folium.PolyLine(list(zip(loop.lat, loop.lon)), color="#fff", weight=2, dash_array="8 16",
+                            class_name="trail-active", interactive=False).add_to(fg)
         if (res.debug.get("start_snap_m") or 0) > 30:
-            folium.CircleMarker((res.lat[0], res.lon[0]), radius=7, color="#d62728", fill=True).add_to(fg)
-        keep = np.unique(np.linspace(0, len(res.dist) - 1, 800).astype(int))
-        profile = {"d": np.round(res.dist[keep] / 1000, 3).tolist(), "z": np.round(res.ele[keep], 1).tolist(),
-                   "lat": np.round(res.lat[keep], 6).tolist(), "lon": np.round(res.lon[keep], 6).tolist(),
-                   "summary": (f"{res.length / 1000:.2f} km · D+ {res.dplus:.0f} m · "
-                               f"{res.dplus / res.length * 1000:.0f} m/km")}
+            folium.CircleMarker((loop.lat[0], loop.lon[0]), radius=7,
+                                color=loop_color(res, sel), fill=True).add_to(fg)
+        keep = np.unique(np.linspace(0, len(loop.dist) - 1, 800).astype(int))
+        profile = {"d": np.round(loop.dist[keep] / 1000, 3).tolist(), "z": np.round(loop.ele[keep], 1).tolist(),
+                   "lat": np.round(loop.lat[keep], 6).tolist(), "lon": np.round(loop.lon[keep], 6).tolist(),
+                   "summary": (f"{loop.length / 1000:.2f} km · D+ {loop.dplus:.0f} m · "
+                               f"{loop.dplus / loop.length * 1000:.0f} m/km")}
     ProfileLink(profile, touch).add_to(fg)  # toujours présent : sans résultat, il retire l'ancien profil
     out = st_folium(m, height=height, use_container_width=True, key="map", feature_group_to_add=fg,
                     center=ss.view[:2] if ss.view else None, zoom=ss.view[2] if ss.view else None,
-                    returned_objects=["last_clicked"])
+                    returned_objects=["last_clicked", "last_object_clicked"])
     return out, zone_error
 
 
 def handle_click(out, click_mode: str) -> None:
     """Un clic sur la carte place le départ ou ajoute un sommet de zone."""
+    # Clic sur le tracé d'une autre boucle : elle passe au premier plan.
+    obj = (out or {}).get("last_object_clicked")
+    res = ss.result
+    if obj and obj != ss.get("last_obj") and res is not None and len(res.candidates) > 1:
+        ss.last_obj = obj
+        sel = selected(res)
+        best = (None, 3e-4)                             # ~30 m : au-delà, ce n'est pas un tracé
+        for i, c in enumerate(res.candidates):
+            if i != sel:
+                d = float(np.hypot(c.lat - obj["lat"], (c.lon - obj["lng"]) * 0.66).min())
+                if d < best[1]:
+                    best = (i, d)
+        if best[0] is not None:
+            ss.cand = best[0]
+            st.rerun()
     click = (out or {}).get("last_clicked")
     if click and click != ss.get("last_click"):
         ss.last_click = click
+        if locked():        # boucles proposées : la carte ne pose plus de point
+            return
         pt = (click["lat"], click["lng"])
         if click_mode == CLICK_MODES[0]:
             ss.start = pt

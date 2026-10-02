@@ -29,7 +29,7 @@ def render() -> None:
     # Barre d'outils de la carte : mode de clic à gauche, les trois actions d'effacement
     # regroupées à droite, alignées sur la même ligne.
     c1, c2, c3, c4 = st.columns([3.2, 1.5, 1.2, 1.2], vertical_alignment="bottom")
-    click_mode = c1.radio("Un clic sur la carte place", ui.CLICK_MODES,
+    click_mode = c1.radio("Un clic sur la carte place", ui.CLICK_MODES, disabled=ui.locked(),
                           index=0 if ss.start is None else 1, horizontal=True)
     if c2.button("Annuler le dernier point", disabled=not ss.polygon, use_container_width=True):
         ss.polygon = ss.polygon[:-1] or None
@@ -45,20 +45,25 @@ def render() -> None:
     out, zone_error = ui.render_map(v, click_mode, height=620)
     res = ss.result
     if res is not None:  # résultat juste sous la carte, GPX à droite
-        n = 5 if "err_dplus" in res.debug else 3
-        c = st.columns([1] * n + [1.3], vertical_alignment="center")
-        c[0].metric("Distance", f"{res.length / 1000:.2f} km")
-        c[1].metric("D+", f"{res.dplus:.0f} m")
-        c[2].metric("D+/km", f"{res.dplus / res.length * 1000:.0f} m")
-        if n == 5:
-            c[3].metric("Écart distance", f"{res.debug['err_distance']:+.1%}")
-            c[4].metric("Écart D+", f"{res.debug['err_dplus']:+.1%}")
-        c[-1].download_button("Télécharger le GPX", res.gpx, file_name=f"boucle_{v['distance']:g}km.gpx",
-                              mime="application/gpx+xml", type="primary", use_container_width=True)
+        if len(res.candidates) > 1:     # plusieurs boucles : une ligne chacune, la choisie en avant
+            ui.candidate_list(res, v)
+        else:
+            loop = res.candidates[0]
+            n = 5 if "err_dplus" in res.debug else 3
+            c = st.columns([1] * n + [1.3], vertical_alignment="center")
+            c[0].metric("Distance", f"{loop.length / 1000:.2f} km")
+            c[1].metric("D+", f"{loop.dplus:.0f} m")
+            c[2].metric("D+/km", f"{loop.dplus / loop.length * 1000:.0f} m")
+            if n == 5:
+                c[3].metric("Écart distance", f"{res.debug['err_distance']:+.1%}")
+                c[4].metric("Écart D+", f"{res.debug['err_dplus']:+.1%}")
+            c[-1].download_button("Télécharger le GPX", loop.gpx, file_name=f"boucle_{v['distance']:g}km.gpx",
+                                  mime="application/gpx+xml", type="primary", use_container_width=True)
         for w in res.warnings:
             st.warning(w)
     st.caption("Vert : départ. Pointillés bleus : zone utile (zone dessinée coupée au rayon atteignable). "
-               "Gris : sommets dessinés. Rouge : boucle ; rond rouge : départ effectif s'il a été déplacé. "
+               "Gris : sommets dessinés. Boucles en couleur : clique un tracé ou une ligne pour l'afficher. "
+               "Rond plein : départ effectif s'il a été déplacé. "
                "Fonds et relief : bouton de couches en haut à droite de la carte. "
                "Survole le profil ou le tracé : le point correspondant s'affiche sur l'autre.")
     st.markdown('<div id="legend-end"></div>', unsafe_allow_html=True)

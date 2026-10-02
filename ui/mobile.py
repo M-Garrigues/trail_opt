@@ -28,6 +28,12 @@ CSS = """<style>
 .st-key-calcbar .st-key-btn-cancel button { min-height: 34px; height: 34px; width: 38px; padding: 0;
   border-radius: 50%; }
 /* Rangées de boutons qui restent côte à côte (Streamlit empile les colonnes sous 640 px). */
+[class*="st-key-row-cand-"] [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; gap: .35rem; }
+[class*="st-key-row-cand-"] [data-testid="stColumn"] { min-width: 0 !important; }
+[class*="st-key-row-cand-"] [data-testid="stColumn"]:first-child { flex: 1 1 auto; }
+[class*="st-key-row-cand-"] [data-testid="stColumn"]:first-child button p { font-size: .8rem; }
+[class*="st-key-row-cand-"] [data-testid="stColumn"]:not(:first-child) { flex: 0 0 74px; }
+[class*="st-key-row-cand-"] button { min-height: 40px; padding: 0 .3rem; }
 .st-key-row-zone [data-testid="stHorizontalBlock"], .st-key-row-params [data-testid="stHorizontalBlock"],
 .st-key-row-search [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; gap: .4rem; }
 .st-key-row-zone [data-testid="stColumn"], .st-key-row-params [data-testid="stColumn"],
@@ -66,7 +72,7 @@ def render() -> None:
                 unsafe_allow_html=True)
     ui.search_box(compact=True)
     v = ui.params_form(compact=True)     # distance et réglages visibles d'entrée, au-dessus de la carte
-    click_mode = st.radio("Toucher la carte place", ui.CLICK_MODES, label_visibility="collapsed",
+    click_mode = st.radio("Toucher la carte place", ui.CLICK_MODES, label_visibility="collapsed", disabled=ui.locked(),
                           index=0 if ss.start is None else 1, horizontal=True,
                           format_func=lambda m: "Je place " + m)
     map_box, result_box = st.container(), st.container()
@@ -78,13 +84,17 @@ def render() -> None:
     res = ss.result
     with result_box:
         if res is not None:
-            line = (f"{res.length / 1000:.2f} km · D+ {res.dplus:.0f} m · "
-                    f"{res.dplus / res.length * 1000:.0f} m/km")
-            if "err_dplus" in res.debug:
-                line += f" · écart D+ {res.debug['err_dplus']:+.0%}"
-            st.markdown(f'<div class="m-result">{line}</div>', unsafe_allow_html=True)
-            st.download_button("Télécharger le GPX", res.gpx, file_name=f"boucle_{v['distance']:g}km.gpx",
-                               mime="application/gpx+xml", use_container_width=True)
+            if len(res.candidates) > 1:
+                ui.candidate_list(res, v, compact=True)
+            else:
+                loop = res.candidates[0]
+                line = (f"{loop.length / 1000:.2f} km · D+ {loop.dplus:.0f} m · "
+                        f"{loop.dplus / loop.length * 1000:.0f} m/km")
+                if "err_dplus" in res.debug:
+                    line += f" · écart D+ {res.debug['err_dplus']:+.0%}"
+                st.markdown(f'<div class="m-result">{line}</div>', unsafe_allow_html=True)
+                st.download_button("Télécharger le GPX", loop.gpx, file_name=f"boucle_{v['distance']:g}km.gpx",
+                                   mime="application/gpx+xml", use_container_width=True)
             for w in res.warnings:
                 st.warning(w)
         if ss.start or ss.polygon:

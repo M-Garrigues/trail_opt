@@ -27,6 +27,8 @@ def main(argv=None):
     ap.add_argument("--solver", choices=["auto", "exact", "anneal", "faces"], default="auto")
     ap.add_argument("--exact-max-edges", type=int)
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--candidates", type=int, default=1,
+                    help="nombre de boucles réellement différentes (moitié de temps en plus par boucle)")
     ap.add_argument("--no-revisit", action="store_true",
                     help="ne jamais repasser par un carrefour (hors 200 m du départ)")
     ap.add_argument("--no-limits", action="store_true", help="ignore les plafonds de l'app")
@@ -42,7 +44,7 @@ def main(argv=None):
         poly = [tuple(c) for c in gj["coordinates"][0]]
     p = Params(lat, lon, a.distance, poly, a.mode, a.dplus,
                a.max_grade / 100 if a.max_grade else None, a.time, a.tol, a.roads, a.seed,
-               a.solver, node_simple=a.no_revisit, source=a.source, enforce_limits=not a.no_limits)
+               a.solver, node_simple=a.no_revisit, source=a.source, n_candidates=a.candidates, enforce_limits=not a.no_limits)
     if a.exact_max_edges is not None:
         p.exact_max_edges = a.exact_max_edges
     try:
@@ -59,6 +61,11 @@ def main(argv=None):
     for w in r.warnings:
         print(f"Attention : {w}")
     print(f"GPX       : {a.out}")
+    for i, c in enumerate(r.candidates[1:], 2):
+        path = a.out.replace(".gpx", f"_{i}.gpx")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(c.gpx)
+        print(f"Variante {i} : {c.length / 1000:.2f} km, D+ {c.dplus:.0f} m -> {path}")
     if a.debug:
         print(json.dumps(r.debug, indent=1, default=str))
 

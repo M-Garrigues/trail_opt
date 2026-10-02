@@ -6,6 +6,7 @@ import resource
 import sys
 import time
 from dataclasses import dataclass, field
+from types import SimpleNamespace
 
 import numpy as np
 import shapely
@@ -31,13 +32,15 @@ FALLBACK_AREA_KM2 = 150.0  # plafond d'aire si le comptage des voies est indispo
 LONG_KM = 25.0            # au-delà : avertissement (chargement et calcul plus longs)
 
 
-def suggested_time(distance_km: float) -> float:
+def suggested_time(distance_km: float, n_candidates: int = 1) -> float:
     """Budget solveur conseillé selon la distance : 20 s jusqu'à 10 km, puis une montée
     régulière jusqu'à 60 s pour 100 km, arrondie à 5 s. Les mesures ne justifient pas plus :
     sur 100 km à Massy, 60 s de recuit par faces ne donnent qu'environ 1 % de D+ de plus que
-    20 s, et 5 s en donnent déjà 96 %. Le budget reste réglable jusqu'à TIME_S[1]."""
+    20 s, et 5 s en donnent déjà 96 %. Chaque boucle proposée en plus ajoute la moitié de ce
+    temps. Le budget reste réglable jusqu'à TIME_S[1]."""
     t = 20.0 + max(0.0, distance_km - 10.0) * 40.0 / 90.0
-    return float(min(TIME_S[1], max(20.0, 5.0 * round(t / 5.0))))
+    t = max(20.0, 5.0 * round(t / 5.0)) * (1 + 0.5 * (max(1, n_candidates) - 1))
+    return float(min(TIME_S[1], t))
 TIME_S = (5.0, 180.0)
 START_BUFFER_M = 50.0
 OSM_MARGIN_M = 200.0
@@ -68,6 +71,7 @@ class Params:
     exact_max_edges: int = EXACT_MAX_EDGES
     workers: int = 2
     node_simple: bool = False         # ne jamais repasser par un carrefour (hors 200 m du départ)
+    n_candidates: int = 1             # boucles réellement différentes proposées
     enforce_limits: bool = True
     source: str = "ign"               # "ign" (BD TOPO) | "osm" ; "pedestrian" force "osm"
 
@@ -86,6 +90,7 @@ class LoopResult:
     region_lonlat: list               # anneaux [(lon, lat), ...] de la zone effective
     warnings: list = field(default_factory=list)
     debug: dict = field(default_factory=dict)
+    candidates: list = field(default_factory=list)   # toutes les boucles, la principale d'abord
 
 
 def peak_rss_mb() -> float:
@@ -387,7 +392,8 @@ def search_loop(raw, region, p: Params, L, Lmax, sampler, dbg, timings, step=lam
         step("solveur")
         t = time.time()
         try:
-            res = optimize(P, remaining, p.exact_max_edges, p.seed, p.workers, p.solver, cancel)
+            res = optimize(P, remaining, p.exact_max_edges, p.seed, p.workers, p.solver, cancel,
+                           p.n_candidates)
         except RuntimeError:
             if cancel is not None and cancel.is_set():
                 raise Cancelled("Calcul annulé.") from None
@@ -420,7 +426,7 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
         if progress:
             progress(name)
     if p.time_s is None:
-        p.time_s = suggested_time(p.distance_km)
+        p.time_s = suggested_time(p.distance_km, p.n_candidates)
     validate(p)
     dbg, warns, timings = {}, [], {}
     if p.distance_km > LONG_KM:
@@ -554,5 +560,16 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
     dbg["network"] = net
     dbg["peak_rss_mb"] = round(peak_rss_mb(), 1)
     gpx = to_gpx(lon, lat, z, f"Boucle {p.distance_km:g} km", f"{desc}, {res.method}")
+    cands = [SimpleNamespace(lon=np.asarray(lon), lat=np.asarray(lat), ele=z, dist=s, length=length,
+                             dplus=dplus, gpx=gpx)]
+    for i, (c, cl, cd) in enumerate(res.alternatives, 2):
+        axy, az, as_, al, ad = assemble(g, SimpleNamespace(circuit=c, length=cl, dplus=cd), acc)
+        alon, alat = frame.to_wgs(axy)
+        cands.append(SimpleNamespace(
+            lon=np.asarray(alon), lat=np.asarray(alat), ele=az, dist=as_, length=al, dplus=ad,
+            gpx=to_gpx(alon, alat, az, f"Boucle {p.distance_km:g} km, variante {i}",
+                       f"{al / 1000:.2f} km, D+ {ad:.0f} m")))
+    if p.mode == "max":             # la boucle au plus grand D+ d'abord (affichée par défaut)
+        cands.sort(key=lambda c: -c.dplus)
     return LoopResult(np.asarray(lon), np.asarray(lat), z, s, length, dplus,
-                      res.method, res.feasible, gpx, _rings(region, frame), warns, dbg)
+                      res.method, res.feasible, gpx, _rings(region, frame), warns, dbg, cands)

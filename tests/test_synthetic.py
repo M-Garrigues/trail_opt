@@ -98,3 +98,24 @@ def test_faces_enumeration_on_grid():
     for f in fs.F[:10]:                         # chaque face est un cycle fermé simple
         assert f[0][1] == f[-1][2]
         assert all(a[2] == b[1] for a, b in zip(f, f[1:]))
+
+
+def test_candidates_are_valid_and_different():
+    """Plusieurs candidats : boucles valides, dans les bornes, partageant au plus la moitié
+    de leur longueur ; le budget total n'augmente pas."""
+    import time
+    from trailopt.solvers.faces import FaceSearch
+    P, _ = build(2400.0, n=11)
+    t = time.time()
+    res = optimize(P, budget=6.0, n_candidates=3, seed=1)
+    assert time.time() - t < 9.0
+    loops = [[e for e, _, _ in res.circuit]] + [[e for e, _, _ in c] for c, _, _ in res.alternatives]
+    assert 1 <= len(loops) <= 3
+    fs = FaceSearch(P)
+    for c, length, dplus in res.alternatives:
+        assert check_loop(P, c) == pytest.approx((length, dplus))
+        assert P.Lmin <= length <= P.Lmax
+    for i in range(len(loops)):
+        for j in range(i):
+            assert fs.overlap(loops[i], loops[j]) <= 0.5
+    assert optimize(P, budget=2.0, seed=1).alternatives == []      # 1 par défaut : aucun surcoût

@@ -26,13 +26,19 @@ class SolveResult:
     feasible: bool           # distance dans les bornes
     method: str
     debug: dict = field(default_factory=dict)
+    alternatives: list = field(default_factory=list)   # autres boucles : (circuit, longueur, D+)
 
 
 def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_EDGES,
-             seed: int = 0, workers: int = 2, solver: str = "auto", cancel=None) -> SolveResult:
+             seed: int = 0, workers: int = 2, solver: str = "auto", cancel=None,
+             n_candidates: int = 1) -> SolveResult:
     """solver : "auto", "exact" (warm-start + CP-SAT), "anneal" (recuit classique seul)
     ou "faces" (recuit par faces seul)."""
     m = len(P.len)
+    # Plusieurs candidats : chaque boucle en plus reçoit une demi-part du temps de la principale
+    # (le budget conseillé grandit d'autant, voir pipeline.suggested_time).
+    total_budget, budget = budget, budget / (1 + 0.5 * (max(1, n_candidates) - 1))
+    fs = None
     ann = Annealer(P, seed=seed)
     use_exact = solver == "exact" or (solver == "auto" and m <= exact_max_edges)
     dbg = {"edges": m, "nodes": len(P.nodes), "exact_max_edges": exact_max_edges,
@@ -111,4 +117,18 @@ def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_
         b = dbg["cpsat_bound"]
         dbg["cpsat_gap"] = ((b - dplus) / max(b, 1e-9) if P.mode == "max"
                             else P.err(length, dplus) - b)
-    return SolveResult(circuit, length, dplus, feas, method, dbg)
+    alts = []
+    if n_candidates > 1:
+        fs = fs or FaceSearch(P, seed)
+        for c in fs.alternates([ids], n_candidates - 1, max(1.0, total_budget - (time.time() - t0)), cancel):
+            cids = [e for e, _, _ in c]
+            assert len(cids) == len(set(cids)) and c[0][1] == P.s and c[-1][2] == P.s
+            assert P.parallel_ok(cids) and (not P.node_simple or P.node_simple_ok(c))
+            _, cl, cd, _ = P.score(cids)
+            alts.append((c, cl, cd))
+        dbg["candidates"] = [{"km": round(length / 1000, 2), "dplus": round(dplus)}] + [
+            {"km": round(cl / 1000, 2), "dplus": round(cd), "commun_avec_1": round(fs.overlap(cids_, ids), 2)}
+            for (c_, cl, cd) in alts for cids_ in [[e for e, _, _ in c_]]]
+        dbg["candidates_essais"] = fs.alt_log
+        dbg["solve_time_s"] = round(time.time() - t0, 2)
+    return SolveResult(circuit, length, dplus, feas, method, dbg, alts)

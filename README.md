@@ -197,6 +197,14 @@ Vue bureau :
   calcul. Échap annule un calcul en cours et arrête réellement le solveur.
 - Le tracé affiché reste en place quand on modifie le départ ou la zone, jusqu'au prochain
   calcul. Cliquer sur le profil centre la carte sur le point.
+- Option « Nombre de boucles proposées » (1 à 4, 1 par défaut ; `--candidates N`). Chaque boucle en plus
+  ajoute la moitié du temps de calcul conseillé. Chaque boucle suivante est cherchée depuis deux
+  départs peu recouvrants (la meilleure est gardée), et n'est gardée que si elle partage moins de la moitié de sa longueur avec chacune des autres.
+  Toutes sont tracées en couleurs différentes et listées sous la carte avec leurs chiffres et
+  leur GPX. Un clic sur une ligne ou sur un tracé met la boucle en avant et affiche son profil.
+  La boucle au plus grand D+ est affichée par défaut. Mesuré : la boucle principale perd 0 à
+  4 % de D+ ; les autres sont 10 à 25 % en dessous en montagne, jusqu'à 40 % là où le relief
+  tient en un seul secteur.
 - Le profil est coloré selon la pente, mesurée sur environ 50 m : dégradé continu du vert (plat) au
   jaune, à l'orange, au rouge, jusqu'au rouge sombre à 40 % et plus. Le survol affiche distance, altitude et pente.
 - Le profil altimétrique est dessiné dans la carte et lié au tracé : survoler le profil montre

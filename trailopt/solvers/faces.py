@@ -172,13 +172,16 @@ class FaceSearch:
         return ids if self.P.parallel_ok(ids) else None
 
     # ---------------------------------------------------------------- recherche locale
-    def run(self, init, budget, T0=20.0, T1=0.3, lam=0.02, pen=0.5, cancel=None):
+    def run(self, init, budget, T0=20.0, T1=0.3, lam=0.02, pen=0.5, cancel=None, w=None):
         """Recuit depuis la boucle `init` (ids d'arêtes). Renvoie (ids de la meilleure boucle
         dans les bornes, ou de la dernière ; λ final).
         Mode max : score lagrangien D+ - λ·L, λ asservi pour que L reste dans [Lmin, Lmax] :
         la boucle ne grossit que par des faces assez denses en D+. Mode cible : -erreur."""
         P, rng, F, foe, adj = self.P, self.rng, self.F, self.foe, self.adj
-        ln, w, eu, ev, par, far = self.len, self.w, self.eu, self.ev, self.par, self.far
+        # `w` : poids de recherche (par défaut le D+ réel). Les candidats suivants reçoivent
+        # des poids réduits sur les arêtes déjà prises, pour s'en écarter.
+        w = self.w if w is None else w
+        ln, eu, ev, par, far = self.len, self.eu, self.ev, self.par, self.far
         Lmin, Lmax, s, target = P.Lmin, P.Lmax, self.s, P.mode == "target"
         Lt, Dt = P.L, P.D
         inX = bytearray(len(ln))
@@ -309,6 +312,58 @@ class FaceSearch:
         self.iterations += it
         return (bestX if best > -INF else list(X)), lam_
 
+    def overlap(self, a, b) -> float:
+        """Part de la plus courte des deux boucles qui est commune aux deux (en longueur)."""
+        sa, sb, ln = set(a), set(b), self.len
+        return sum(ln[e] for e in sa & sb) / max(1e-9, min(sum(ln[e] for e in sa), sum(ln[e] for e in sb)))
+
+    def alternates(self, existing, n, budget, cancel=None, max_overlap=0.5, discount=0.6):
+        """Jusqu'à `n` boucles réellement différentes de `existing` (listes d'ids d'arêtes) et
+        entre elles : chacune part du secteur le moins recouvrant, avec le D+ des arêtes déjà
+        prises compté à `discount`. Gardée seulement si elle est dans les bornes de distance et
+        partage au plus `max_overlap` de sa longueur avec chacune des autres. """
+        P, t = self.P, time.time()
+        inits = []
+        f0 = self.start_face()
+        if f0:
+            inits.append(f0)
+        for node in self.relief_targets(8):
+            c = self.corridor(node)
+            if c:
+                inits.append(c)
+        # Réseau clairsemé (peu de faces, couloirs introuvables) : boucles par waypoints.
+        a = Annealer(P, seed=self.rng.randrange(1 << 30))
+        while len(inits) < 2 * n and time.time() - t < 0.1 * budget:
+            r = a.construct()
+            if r:
+                inits.append([e for e, _, _ in r])
+        kept, out = [list(x) for x in existing], []
+        self.alt_log = []
+        while len(out) < n and inits and not (cancel is not None and cancel.is_set()):
+            per = (budget - (time.time() - t)) / (n - len(out))
+            if per < 0.5:
+                break
+            used = set().union(*kept)
+            w_eff = None
+            if P.mode == "max":
+                w_eff = [x * discount if e in used else x for e, x in enumerate(self.w)]
+            inits.sort(key=lambda x0: max(self.overlap(x0, kx) for kx in kept))
+            # Deux départs par boucle, on garde la meilleure : un seul donne un résultat très
+            # variable. Si aucune n'est valable, le tour suivant essaie d'autres départs.
+            tries, inits = inits[:2], inits[2:]
+            best = None
+            for x0 in tries:
+                ids, _ = self.run(x0, per / len(tries) * (0.6 if inits else 1.0), T0=10.0, T1=0.2,
+                                  cancel=cancel, w=w_eff)
+                sc, ov = P.score(ids), max(self.overlap(ids, kx) for kx in kept)
+                self.alt_log.append({"dans_bornes": bool(sc[3]), "commun": round(ov, 2), "score": round(sc[0])})
+                if sc[3] and ov <= max_overlap and (best is None or sc[0] > best[0]):
+                    best = (sc[0], ids)
+            if best:
+                kept.append(best[1])
+                out.append(best[1])
+        return [euler_circuit(P.g, ids, P.s) for ids in out]
+
     def solve(self, budget, cancel=None, k=6, probe=0.07, warm=None):
         """Sondes courtes depuis plusieurs boucles initiales, puis le reste du budget sur la
         meilleure. `warm` : boucle supplémentaire à essayer (ids d'arêtes).
@@ -339,8 +394,15 @@ class FaceSearch:
             sc = P.score(ids)
             res.append(((sc[3], sc[0]), name, ids, lam))
         res.sort(key=lambda x: x[0], reverse=True)
-        _, name, ids, lam = res[0]
-        ids, _ = self.run(ids, max(0.5, budget - (time.time() - t)), T0=3.0, T1=0.2, lam=lam, cancel=cancel)
+        # Les sondes sont courtes, donc bruitées : on affine les deux meilleures, moitié du
+        # temps chacune (une seule peut rester coincée dans un optimum local médiocre).
+        top, left = res[:2], max(0.5, budget - (time.time() - t))
+        fin = []
+        for _, nm, x0, lam in top:
+            ids, _ = self.run(x0, left / len(top), T0=3.0, T1=0.2, lam=lam, cancel=cancel)
+            sc = P.score(ids)
+            fin.append(((sc[3], sc[0]), nm, ids))
+        _, name, ids = max(fin, key=lambda x: x[0])
         return euler_circuit(P.g, ids, P.s), {
             "faces": len(self.F), "depart": name, "departs_essayes": [n for _, n, _, _ in res],
             "iterations": self.iterations}

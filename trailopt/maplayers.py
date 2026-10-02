@@ -288,6 +288,7 @@ class FullscreenToggle(MacroElement):
           // le point sur le profil. Les contrôles (zoom, couches, profil) restent actifs.
           map.getContainer().addEventListener('click', function (e) {
             if (!isOn() || e.target.closest('.leaflet-control')) return;
+            if (e.target.classList && e.target.classList.contains('trail-cand')) return;  // choix d'une boucle
             e.stopPropagation();
             var pr = window.__trailProfile;
             if (pr && e.target === pr.hit._path) pr.showAt(map.mouseEventToLatLng(e));
