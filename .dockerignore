@@ -1,0 +1,6 @@
+.venv
+tests
+scripts
+__pycache__
+*.gpx
+.git

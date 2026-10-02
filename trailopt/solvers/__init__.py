@@ -1,0 +1,85 @@
+"""optimize() : choix du solveur selon la taille du graphe, rapport de debug."""
+from __future__ import annotations
+
+import time
+from dataclasses import dataclass, field
+
+from ..graph import Problem, euler_circuit
+from . import exact
+from .anneal import Annealer
+
+# Seuil calibré par scripts/bench_exact.py (voir README).
+EXACT_MAX_EDGES = 1000
+
+
+@dataclass
+class SolveResult:
+    circuit: list            # [(eid, de, vers), ...] depuis s
+    length: float            # m
+    dplus: float             # m
+    feasible: bool           # distance dans les bornes
+    method: str
+    debug: dict = field(default_factory=dict)
+
+
+def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_EDGES,
+             seed: int = 0, workers: int = 2, solver: str = "auto", cancel=None) -> SolveResult:
+    """solver : "auto", "exact" (warm-start + CP-SAT) ou "anneal" (recuit seul)."""
+    m = len(P.len)
+    ann = Annealer(P, seed=seed)
+    use_exact = solver == "exact" or (solver == "auto" and m <= exact_max_edges)
+    dbg = {"edges": m, "nodes": len(P.nodes), "exact_max_edges": exact_max_edges,
+           "solver_reason": (f"{m} arêtes {'≤' if m <= exact_max_edges else '>'} "
+                             f"seuil {exact_max_edges}") if solver == "auto" else f"forcé : {solver}"}
+    t0 = time.time()
+    if use_exact:
+        th = max(1.0, 0.2 * budget)
+        hroute = ann.run(th, cancel)
+        dbg["anneal_iterations"] = ann.iterations
+        dbg["anneal_time_s"] = round(time.time() - t0, 2)
+        r = exact.solve(P, budget - th, hint=hroute, workers=workers, cancel=cancel)
+        dbg.update(cpsat_status=r["status"], cpsat_bound=r["bound"],
+                   cpsat_time_s=round(r["wall"], 2))
+        h_sc = ann.evaluate(hroute) if hroute else None
+        cands = []
+        if r["chosen"]:
+            cands.append((P.score(r["chosen"]), "cpsat", r["chosen"]))
+        if h_sc:
+            cands.append((h_sc, "anneal", hroute))
+        if not cands:
+            raise RuntimeError(f"aucune boucle trouvée (CP-SAT : {r['status']})")
+        # CP-SAT gagne à égalité ; on préfère le réalisable.
+        cands.sort(key=lambda c: (c[0][3], c[0][0], c[1] == "cpsat"), reverse=True)
+        sc, who, sol = cands[0]
+        if who == "cpsat":
+            circuit = euler_circuit(P.g, sol, P.s)
+            method = f"CP-SAT ({r['status']})"
+        else:
+            circuit = sol
+            method = (f"recuit simulé (warm-start meilleur que CP-SAT {r['status']})"
+                      if r["chosen"] else f"recuit simulé (CP-SAT : {r['status']})")
+        dbg["solver"] = "CP-SAT"
+    else:
+        circuit = ann.run(budget, cancel)
+        dbg["anneal_iterations"] = ann.iterations
+        dbg["solver"] = "recuit simulé"
+        if circuit is None:
+            raise RuntimeError("aucune boucle trouvée")
+        method = f"recuit simulé ({ann.iterations} itérations)"
+    dbg["solve_time_s"] = round(time.time() - t0, 2)
+
+    ids = [e for e, _, _ in circuit]
+    assert len(ids) == len(set(ids)), "arête répétée"
+    assert circuit[0][1] == P.s and circuit[-1][2] == P.s, "boucle non fermée"
+    assert all(a[2] == b[1] for a, b in zip(circuit, circuit[1:])), "boucle discontinue"
+    if P.node_simple:
+        assert P.node_simple_ok(circuit), "carrefour repassé"
+    assert P.parallel_ok(ids), "couloir parallèle emprunté deux fois"
+    dbg["parallel_pairs"] = sum(len(v) for v in P.parallel.values()) // 2
+    dbg["node_simple"] = P.node_simple
+    _, length, dplus, feas = P.score(ids)
+    if use_exact and dbg.get("cpsat_bound") is not None:
+        b = dbg["cpsat_bound"]
+        dbg["cpsat_gap"] = ((b - dplus) / max(b, 1e-9) if P.mode == "max"
+                            else P.err(length, dplus) - b)
+    return SolveResult(circuit, length, dplus, feas, method, dbg)
