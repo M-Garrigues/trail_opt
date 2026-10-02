@@ -129,6 +129,18 @@ les points densifiés) : 0,15 s pour 9 800 tronçons, 1 s pour 55 000. Seuils da
 
 ## Interface
 
+Une seule app, deux mises en page choisies selon l'appareil (`app.py` aiguille) : bureau
+(`ui_desktop.py`) et mobile (`ui_mobile.py`), sur des briques communes (`ui_common.py`).
+Même déploiement, donc même cache et même verrou de calcul. `?vue=mobile` ou `?vue=bureau`
+force une vue ; un lien dans chaque vue permet de basculer.
+
+Vue mobile : la carte remplit l'écran entre le haut de page et la barre du bas, où le bouton
+Calculer reste fixé. Recherche et bouton de géolocalisation sur une ligne. Réglages repliés
+sous la carte. Le profil se lit en glissant le doigt, et toucher le tracé situe le point.
+
+Vue bureau :
+
+
 - Un clic place le départ (épingle verte) ou un sommet de zone, selon le mode choisi au-dessus
   de la carte. Le curseur change avec le mode.
 - « Tout effacer » apparaît en haut dès qu'un départ ou un sommet est posé.

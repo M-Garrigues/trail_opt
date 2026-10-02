@@ -165,11 +165,18 @@ class ProfileLink(MacroElement):
             var div = L.DomUtil.create('div', 'trail-profile');
             canvas = L.DomUtil.create('canvas', '', div);
             L.DomEvent.disableClickPropagation(div); L.DomEvent.disableScrollPropagation(div);
-            canvas.addEventListener('mousemove', function (e) {
+            function pick(clientX) {
               var b = canvas.getBoundingClientRect(), lo = 0, hi = n - 1;
-              var d = (e.clientX - b.left - PAD.l) / (W() - PAD.l - PAD.r) * dmax;
+              var d = (clientX - b.left - PAD.l) / (W() - PAD.l - PAD.r) * dmax;
               while (hi - lo > 1) { var m = (lo + hi) >> 1; if (D.d[m] < d) lo = m; else hi = m; }
               show(Math.abs(D.d[lo] - d) < Math.abs(D.d[hi] - d) ? lo : hi);
+            }
+            canvas.addEventListener('mousemove', function (e) { pick(e.clientX); });
+            // Tactile : glisser le doigt sur le profil déplace le point (sans faire défiler).
+            ['touchstart', 'touchmove'].forEach(function (ev) {
+              canvas.addEventListener(ev, function (e) {
+                if (e.touches.length) { e.preventDefault(); pick(e.touches[0].clientX); }
+              }, {passive: false});
             });
             canvas.addEventListener('mouseleave', function () { show(-1); });
             canvas.addEventListener('click', function () {   // centre la carte sur le point
@@ -178,15 +185,21 @@ class ProfileLink(MacroElement):
             return div;
           };
           ctl.addTo(map); draw();
-          hit.on('mousemove', function (e) {
-            var best = 0, bd = Infinity, k = Math.cos(e.latlng.lat * Math.PI / 180);
+          function nearest(ll) {
+            var best = 0, bd = Infinity, k = Math.cos(ll.lat * Math.PI / 180);
             for (var i = 0; i < n; i++) {
-              var dy = D.lat[i] - e.latlng.lat, dx = (D.lon[i] - e.latlng.lng) * k, q = dx * dx + dy * dy;
+              var dy = D.lat[i] - ll.lat, dx = (D.lon[i] - ll.lng) * k, q = dx * dx + dy * dy;
               if (q < bd) { bd = q; best = i; }
             }
-            show(best);
-          });
-          hit.on('mouseout', function () { show(-1); });
+            return best;
+          }
+          hit.on('mousemove', function (e) { show(nearest(e.latlng)); });
+          if ({{ this.touch|tojson }}) {
+            // Tactile : toucher le tracé montre le point sur le profil, sans poser de point.
+            hit.on('click', function (e) { L.DomEvent.stop(e); show(nearest(e.latlng)); });
+          } else {
+            hit.on('mouseout', function () { show(-1); });
+          }
           // Les calques de la boucle sont ajoutés après ce script : repasser au-dessus.
           setTimeout(function () { if (window.__trailProfile && window.__trailProfile.hit === hit) hit.bringToFront(); }, 50);
           var onResize = function () { draw(); };
@@ -196,10 +209,10 @@ class ProfileLink(MacroElement):
         {% endmacro %}
     """)
 
-    def __init__(self, data: dict | None):
+    def __init__(self, data: dict | None, touch: bool = False):
         super().__init__()
         self._name = "ProfileLink"
-        self.data = data
+        self.data, self.touch = data, touch
 
 
 class ScaleControl(MacroElement):

@@ -8,7 +8,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libexpat1 \
 COPY requirements.txt .
 RUN pip install -r requirements.txt
 COPY trailopt ./trailopt
-COPY app.py .
+COPY app.py ui_common.py ui_desktop.py ui_mobile.py ./
 RUN useradd -m app && chown -R app /app
 USER app
 EXPOSE 8501
