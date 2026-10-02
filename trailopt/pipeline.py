@@ -28,7 +28,16 @@ MAX_WAYS = {"ign": 110_000, "osm": 130_000}
 # avant l'altitude fine ; un rayon de 25 km en zone dense reste traitable.
 MAX_WAYS_IGN_MAX = 650_000
 FALLBACK_AREA_KM2 = 150.0  # plafond d'aire si le comptage des voies est indisponible
-LONG_KM = 25.0            # au-delà : temps de calcul maximal imposé, avec avertissement
+LONG_KM = 25.0            # au-delà : avertissement (chargement et calcul plus longs)
+
+
+def suggested_time(distance_km: float) -> float:
+    """Budget solveur conseillé selon la distance : 20 s jusqu'à 10 km, puis une montée
+    régulière jusqu'à 60 s pour 100 km, arrondie à 5 s. Les mesures ne justifient pas plus :
+    sur 100 km à Massy, 60 s de recuit par faces ne donnent qu'environ 1 % de D+ de plus que
+    20 s, et 5 s en donnent déjà 96 %. Le budget reste réglable jusqu'à TIME_S[1]."""
+    t = 20.0 + max(0.0, distance_km - 10.0) * 40.0 / 90.0
+    return float(min(TIME_S[1], max(20.0, 5.0 * round(t / 5.0))))
 TIME_S = (5.0, 180.0)
 START_BUFFER_M = 50.0
 OSM_MARGIN_M = 200.0
@@ -51,7 +60,7 @@ class Params:
     mode: str = "max"                 # "max" | "target"
     target_dplus: float | None = None
     max_grade: float | None = None    # fraction (0.35 = 35 %)
-    time_s: float = 20.0
+    time_s: float | None = None       # None : budget conseillé selon la distance
     tol: float = 0.05
     roads: str = "minor"              # "unpaved" | "pedestrian" | "minor" | "all"
     seed: int = 0
@@ -410,12 +419,13 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
             raise Cancelled("Calcul annulé.")
         if progress:
             progress(name)
+    if p.time_s is None:
+        p.time_s = suggested_time(p.distance_km)
     validate(p)
     dbg, warns, timings = {}, [], {}
-    if p.enforce_limits and p.distance_km > LONG_KM and p.time_s < TIME_S[1]:
-        p.time_s = TIME_S[1]
-        warns.append(f"Distance de plus de {LONG_KM:g} km : temps de calcul porté au maximum "
-                     f"({TIME_S[1]:g} s). Le chargement des données est aussi plus long.")
+    if p.distance_km > LONG_KM:
+        warns.append(f"Distance de plus de {LONG_KM:g} km : le chargement des données et le calcul "
+                     f"sont plus longs.")
     net = {"overpass": cache.new_stats(), "wfs_ign": cache.new_stats(), "wms_r": cache.new_stats()}
     L = p.distance_km * 1000.0
     frame = LocalFrame(p.lat, p.lon)

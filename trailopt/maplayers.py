@@ -243,15 +243,21 @@ class FullscreenToggle(MacroElement):
           function isOn() { return window.parent.document.body.hasAttribute('data-trail-full'); }
           function toggle(on) {
             var pd = window.parent.document;
-            if (!pd.getElementById('trail-fs-style')) {
-              var st = pd.createElement('style');
+            var st = pd.getElementById('trail-fs-style');
+            if (!st) {
+              st = pd.createElement('style');
               st.id = 'trail-fs-style';
+              pd.head.appendChild(st);
+            }
+            {   // règle réécrite à chaque fois : une page ouverte avant une mise à jour se corrige
               st.textContent =
                 'body[data-trail-full] iframe[title="streamlit_folium.st_folium"] {' +
                 ' position: fixed !important; top: 0 !important; left: 0 !important;' +
                 ' width: 100vw !important; height: 100dvh !important;' +
-                ' z-index: 1000000 !important; }';
-              pd.head.appendChild(st);
+                ' z-index: 1000000 !important; }' +
+                // Mode consultation : la barre d'action du bas (mobile) est masquée, pas
+                // seulement recouverte (l'ordre d'empilement varie selon les navigateurs).
+                'body[data-trail-full] .st-key-calcbar { display: none !important; }';
             }
             if (on) pd.body.setAttribute('data-trail-full', '1');
             else pd.body.removeAttribute('data-trail-full');

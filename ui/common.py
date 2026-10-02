@@ -20,7 +20,7 @@ from trailopt import geocode
 from trailopt.geo import LocalFrame
 from trailopt.maplayers import ProfileLink, ScaleControl, add_ign_layers
 from trailopt.pipeline import (DIST_KM, LONG_KM, TIME_S, Cancelled, Params, UserError, _rings,
-                               build_region, plan_loop)
+                               build_region, plan_loop, suggested_time)
 
 DEFAULT_CENTER = (48.7303, 2.2725)  # Massy (91), centre-ville
 START_COLOR, ZONE_COLOR = "#1a9e3f", "#1f6feb"
@@ -112,7 +112,11 @@ def params_form(compact: bool = False) -> dict:
                  "reprendre la même route (accès en impasse).")
         with (st.container() if compact else st.expander("Options avancées")):
             v["grade"] = st.number_input("Pente max (%) — 0 = aucune", 0.0, 100.0, 0.0, 1.0)
-            v["time_s"] = st.slider("Temps de calcul max (s)", int(TIME_S[0]), int(TIME_S[1]), 20)
+            # Valeur conseillée selon la distance ; le curseur y revient quand la distance change.
+            v["time_s"] = st.slider("Temps de calcul (s)", int(TIME_S[0]), int(TIME_S[1]),
+                                    int(suggested_time(v["distance"])), step=5,
+                                    help="Ajusté à la distance : 20 s jusqu'à 10 km, 60 s à 100 km. "
+                                         "Au-delà de 60 s, le gain de D+ mesuré est d'environ 1 %.")
             v["tol"] = st.slider("Tolérance distance, mode max (± %)", 1, 20, 5)
             source = st.radio("Source des chemins", ["IGN (BD TOPO)", "OpenStreetMap"],
                               help="IGN : géométrie précise, ponts et tunnels fiables, mais pas de "
@@ -129,8 +133,8 @@ def params_form(compact: bool = False) -> dict:
         st.caption("Zone : rayon de 25 km au plus, réduite automatiquement si elle contient trop "
                    "de voies. Données © IGN, © contributeurs OpenStreetMap.")
     if v["distance"] > LONG_KM:
-        st.warning(f"Plus de {LONG_KM:g} km : temps de calcul porté au maximum ({TIME_S[1]:g} s), "
-                   "et chargement des données plus long.")
+        st.caption(f"Plus de {LONG_KM:g} km : chargement des données et calcul plus longs "
+                   f"(environ {suggested_time(v['distance']):.0f} s de calcul).")
     return v
 
 
@@ -141,7 +145,7 @@ def make_params(v: dict) -> Params:
         distance_km=v["distance"], polygon=ss.polygon if len(ss.polygon or []) >= 3 else None,
         mode=v["mode"], target_dplus=v["target"],
         max_grade=v["grade"] / 100 if v["grade"] > 0 else None,
-        time_s=float(TIME_S[1] if v["distance"] > LONG_KM else v["time_s"]),
+        time_s=float(v["time_s"]),
         tol=v["tol"] / 100, roads=v["roads"], node_simple=v["node_simple"], source=v["source"])
 
 
@@ -247,7 +251,7 @@ def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
         st.button(cancel_label, help="Annuler (ou touche Échap)", key="btn-cancel",
                   on_click=lambda: ss.update(cancelled=True))
         # budget solveur + chargement des données (bien plus long sur les grandes zones)
-        expected = params.time_s + (30.0 if params.distance_km > LONG_KM else 6.0)
+        expected = params.time_s + 6.0 + 0.4 * max(0.0, params.distance_km - 10.0)
         t0 = time.time()
         cancel = threading.Event()
         with ThreadPoolExecutor(1) as ex:

@@ -16,7 +16,8 @@ def main(argv=None):
     ap.add_argument("--mode", choices=["max", "target"], default="max")
     ap.add_argument("--dplus", type=float, help="D+ cible (m), mode target")
     ap.add_argument("--max-grade", type=float, help="pente max en %% (ex. 35)")
-    ap.add_argument("--time", type=float, default=20.0, help="budget solveur (s)")
+    ap.add_argument("--time", type=float, default=None,
+                    help="budget solveur (s) ; défaut : selon la distance (20 s à 10 km, 60 s à 100 km)")
     ap.add_argument("--tol", type=float, default=0.05)
     ap.add_argument("--roads", choices=["unpaved", "pedestrian", "minor", "all"], default="minor",
                     help="unpaved = sentiers non revêtus ; pedestrian = voies piétonnes "

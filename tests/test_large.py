@@ -71,3 +71,12 @@ def test_elevation_tiles_follow_a_fixed_grid():
     a = set(elevation._tiles(np.array([100.0, 2600.0]), np.array([50.0, 60.0])))
     b = set(elevation._tiles(np.array([1200.0, 2700.0]), np.array([900.0, 10.0])))
     assert a == b == {(0.0, 0.0, span, span), (span, 0.0, 2 * span, span)}
+
+
+def test_suggested_time_grows_with_distance():
+    from trailopt.pipeline import TIME_S, Params, suggested_time
+    assert suggested_time(2) == suggested_time(10) == 20.0
+    assert suggested_time(100) == 60.0
+    ts = [suggested_time(d) for d in range(2, 101)]
+    assert all(b >= a for a, b in zip(ts, ts[1:])) and max(ts) <= TIME_S[1]
+    assert Params(48.7, 2.27, 40).time_s is None          # défaut : budget selon la distance

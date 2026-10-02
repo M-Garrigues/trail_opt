@@ -242,8 +242,7 @@ avec petites routes, presque tout passe par le recuit. CP-SAT sert surtout en mo
 |---|---|---|
 | distance | 2 à 100 km | anti-abus |
 | zone utile | rayon de 25 km au plus (1 965 km²). Réduite automatiquement au-delà de 650 000 tronçons IGN en mode max, de 110 000 en mode cible, ou de 130 000 voies OSM | mémoire et temps |
-| budget solveur | 5 à 180 s, défaut 20 s | 2 cœurs partagés |
-| distance de plus de 25 km | budget solveur forcé à 180 s, avec avertissement | grands graphes |
+| budget solveur | 5 à 180 s. Défaut selon la distance : 20 s jusqu'à 10 km, puis montée régulière jusqu'à 60 s pour 100 km | 2 cœurs partagés ; au-delà de 60 s, le gain de D+ mesuré est d'environ 1 % |
 | calculs simultanés | 1 | verrou global, le second utilisateur est prié de réessayer |
 
 Mémoire mesurée sur le pire cas autorisé : 25 km, zone par défaut de 148 km² à Massy avec
