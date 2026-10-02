@@ -83,10 +83,17 @@ def geocode_cached(q: str) -> list:
 
 # ---------------------------------------------------------------- réglages
 def params_form(compact: bool = False) -> dict:
-    """Widgets de réglage. Bureau : dans la barre latérale. Mobile (compact) : la distance
-    en tête, le reste replié dans « Plus de réglages »."""
-    v = {"distance": st.number_input("Distance (km)", DIST_KM[0], DIST_KM[1], 10.0, 0.5)}
-    with (st.expander("Plus de réglages") if compact else st.container()):
+    """Widgets de réglage. Bureau : dans la barre latérale. Mobile (compact) : une ligne,
+    la distance à gauche et le reste dans un panneau flottant « Réglages »."""
+    if compact:
+        with st.container(key="row-params"):
+            a, b = st.columns(2, vertical_alignment="bottom")
+        v = {"distance": a.number_input("Distance (km)", DIST_KM[0], DIST_KM[1], 10.0, 0.5)}
+        rest = b.popover("⚙️ Réglages", use_container_width=True)
+    else:
+        v = {"distance": st.number_input("Distance (km)", DIST_KM[0], DIST_KM[1], 10.0, 0.5)}
+        rest = st.container()
+    with rest:
         mode_label = st.radio("Objectif", ["Maximiser le D+", "Cible distance × D+"])
         v["mode"] = "max" if mode_label.startswith("Max") else "target"
         v["target"] = (st.number_input("D+ cible (m)", 10.0, 5000.0, 300.0, 10.0)

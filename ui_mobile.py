@@ -1,5 +1,5 @@
-"""Vue mobile : la carte d'abord, à la taille de l'écran ; bouton Calculer fixé en bas ;
-réglages repliés sous la carte ; profil et tracé utilisables au doigt."""
+"""Vue mobile : recherche, distance et réglages en tête ; carte à la taille de l'écran ;
+bouton Calculer fixé en bas ; profil et tracé utilisables au doigt."""
 from __future__ import annotations
 
 import streamlit as st
@@ -19,10 +19,11 @@ CSS = """<style>
   padding: .55rem .8rem calc(.55rem + env(safe-area-inset-bottom)) .8rem;
   box-shadow: 0 -2px 10px rgba(0,0,0,.18); }
 /* Rangées de boutons qui restent côte à côte (Streamlit empile les colonnes sous 640 px). */
-.st-key-row-zone [data-testid="stHorizontalBlock"],
+.st-key-row-zone [data-testid="stHorizontalBlock"], .st-key-row-params [data-testid="stHorizontalBlock"],
 .st-key-row-search [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; gap: .4rem; }
-.st-key-row-zone [data-testid="stColumn"],
+.st-key-row-zone [data-testid="stColumn"], .st-key-row-params [data-testid="stColumn"],
 .st-key-row-search [data-testid="stColumn"] { min-width: 0 !important; }
+.st-key-row-params button { min-height: 40px; }
 .st-key-row-search [data-testid="stColumn"]:last-child { flex: 0 0 54px; }
 .stRadio { margin: -.35rem 0 -.5rem 0; }
 [data-testid="stVerticalBlock"] { gap: .55rem; }
@@ -30,7 +31,7 @@ CSS = """<style>
 
 # La carte remplit l'écran entre le haut de page et la barre du bas : hauteur en CSS
 # (le serveur ne connaît pas la taille de l'écran). TOP = ce qui précède la carte.
-TOP_PX, BAR_PX = 190, 84
+TOP_PX, BAR_PX = 262, 84
 MAP_FRAME_CSS = f"""<style>
 iframe[title="streamlit_folium.st_folium"] {{
   height: max(300px, calc(100dvh - {TOP_PX + BAR_PX}px)) !important; }}
@@ -47,13 +48,11 @@ def render() -> None:
                 '<a href="?vue=bureau" target="_self">version bureau</a></div>',
                 unsafe_allow_html=True)
     ui.search_box(compact=True)
+    v = ui.params_form(compact=True)     # distance et réglages visibles d'entrée, au-dessus de la carte
     click_mode = st.radio("Toucher la carte place", ui.CLICK_MODES, label_visibility="collapsed",
                           index=0 if ss.start is None else 1, horizontal=True,
                           format_func=lambda m: "Je place " + m)
     map_box, result_box = st.container(), st.container()
-
-    # Réglages sous la carte (mais lus avant de la dessiner : la zone dépend de la distance).
-    v = ui.params_form(compact=True)
     with map_box:
         out, zone_error = ui.render_map(v, click_mode, height=420, touch=True, extra_css=MAP_INNER_CSS)
         if zone_error:

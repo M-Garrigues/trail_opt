@@ -16,11 +16,7 @@ def render() -> None:
         v = ui.params_form()
         st.markdown('<a href="?vue=mobile" target="_self">Version mobile</a>', unsafe_allow_html=True)
 
-    t1, t2 = st.columns([5, 1], vertical_alignment="center")
-    t1.title("Boucle de trail à D+ optimal")
-    if (ss.start or ss.polygon) and t2.button("Tout effacer", type="secondary", use_container_width=True):
-        ss.start = ss.polygon = ss.result = None
-        st.rerun()
+    st.title("Boucle de trail à D+ optimal")
     st.write("Clique sur la carte pour placer le **départ**, puis, si tu veux, les sommets de la "
              "**zone** : elle se ferme toute seule dès 3 points. Sans zone : disque centré sur le départ.")
 
@@ -30,14 +26,20 @@ def render() -> None:
     with st.container():
         ui.calc_block(v)
 
-    c1, c2, c3 = st.columns([3, 1.3, 1])
+    # Barre d'outils de la carte : mode de clic à gauche, les trois actions d'effacement
+    # regroupées à droite, alignées sur la même ligne.
+    c1, c2, c3, c4 = st.columns([3.2, 1.5, 1.2, 1.2], vertical_alignment="bottom")
     click_mode = c1.radio("Un clic sur la carte place", ui.CLICK_MODES,
                           index=0 if ss.start is None else 1, horizontal=True)
-    if c2.button("Annuler le dernier point", disabled=not ss.polygon):
+    if c2.button("Annuler le dernier point", disabled=not ss.polygon, use_container_width=True):
         ss.polygon = ss.polygon[:-1] or None
         st.rerun()
-    if c3.button("Effacer la zone", disabled=not ss.polygon):
+    if c3.button("Effacer la zone", disabled=not ss.polygon, use_container_width=True):
         ss.polygon = None
+        st.rerun()
+    if c4.button("Tout effacer", disabled=not (ss.start or ss.polygon or ss.result),
+                 use_container_width=True):
+        ss.start = ss.polygon = ss.result = None
         st.rerun()
 
     out, zone_error = ui.render_map(v, click_mode, height=620)
