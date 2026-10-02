@@ -51,6 +51,7 @@ def add_ign_layers(m: folium.Map) -> None:
         WMTS.format(layer="IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW", fmt="image/png"),
         attr="© IGN", name="Relief (ombrage LiDAR HD)", overlay=True, max_zoom=19,
         max_native_zoom=18, class_name="hillshade").add_to(m)
+    FullscreenToggle().add_to(m)          # avant le sélecteur de couches : placé au-dessus
     folium.LayerControl(position="topright", collapsed=True).add_to(m)
 
 
@@ -69,9 +70,8 @@ class ProfileLink(MacroElement):
             document.addEventListener('keydown', function (e) {
               if (e.key !== 'Escape') return;
               try {
-                var bs = window.parent.document.querySelectorAll('button');
-                for (var i = 0; i < bs.length; i++)
-                  if (bs[i].innerText.trim() === 'Annuler') { bs[i].click(); break; }
+                var b = window.parent.document.querySelector('.st-key-btn-cancel button');
+                if (b) b.click();
               } catch (err) {}
             }, true);
           }
@@ -220,5 +220,57 @@ class ScaleControl(MacroElement):
     _template = Template("""
         {% macro script(this, kwargs) %}
             L.control.scale({position: 'bottomright', imperial: false}).addTo({{ this._parent.get_name() }});
+        {% endmacro %}
+    """)
+
+
+class FullscreenToggle(MacroElement):
+    """Bouton « plein écran » : la carte occupe toute la fenêtre, un second appui (ou Échap)
+    la remet en place. Pas le plein écran natif du navigateur (refusé par iOS hors vidéo) :
+    le cadre de la carte est étendu en position fixe par une règle CSS posée dans la page.
+    `--trail-bar` (défini par la vue mobile) réserve la barre d'action du bas."""
+    _template = Template("""
+        {% macro script(this, kwargs) %}
+        (function () {
+          var map = {{ this._parent.get_name() }}, link;
+          function isOn() { return window.parent.document.body.hasAttribute('data-trail-full'); }
+          function toggle(on) {
+            var pd = window.parent.document;
+            if (!pd.getElementById('trail-fs-style')) {
+              var st = pd.createElement('style');
+              st.id = 'trail-fs-style';
+              st.textContent =
+                'body[data-trail-full] iframe[title="streamlit_folium.st_folium"] {' +
+                ' position: fixed !important; top: 0 !important; left: 0 !important;' +
+                ' width: 100vw !important; height: calc(100dvh - var(--trail-bar, 0px)) !important;' +
+                ' z-index: 1000000 !important; }' +
+                'body[data-trail-full] .st-key-calcbar { z-index: 1000001 !important; }';
+              pd.head.appendChild(st);
+            }
+            if (on) pd.body.setAttribute('data-trail-full', '1');
+            else pd.body.removeAttribute('data-trail-full');
+            document.documentElement.classList.toggle('trail-full', on);
+            link.innerHTML = on ? '&#x2715;' : '&#x26F6;';
+            link.title = on ? 'Quitter le plein écran' : 'Plein écran';
+            [60, 300, 700].forEach(function (t) { setTimeout(function () { map.invalidateSize(); }, t); });
+          }
+          var Ctl = L.Control.extend({
+            options: {position: 'topright'},
+            onAdd: function () {
+              var box = L.DomUtil.create('div', 'leaflet-bar');
+              link = L.DomUtil.create('a', 'trail-fs', box);
+              link.href = '#'; link.title = 'Plein écran'; link.innerHTML = '&#x26F6;';
+              link.setAttribute('role', 'button');
+              L.DomEvent.disableClickPropagation(box);
+              L.DomEvent.on(link, 'click', function (e) { L.DomEvent.stop(e); toggle(!isOn()); });
+              return box;
+            }
+          });
+          map.addControl(new Ctl());
+          if (isOn()) toggle(true);    // carte rechargée alors que le plein écran était actif
+          document.addEventListener('keydown', function (e) {
+            if (e.key === 'Escape' && isOn()) toggle(false);
+          });
+        })();
         {% endmacro %}
     """)

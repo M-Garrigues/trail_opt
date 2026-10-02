@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-import ui_common as ui
-from ui_common import ss
+from . import common as ui
+from .common import ss
 
 CSS = """<style>
+:root { --trail-bar: 60px; }   /* en plein écran, la carte s'arrête au-dessus de la barre du bas */
 [data-testid="stSidebar"], [data-testid="stSidebarCollapsedControl"] { display: none; }
 .block-container { padding: 3.1rem .7rem 7rem .7rem !important; }
 .m-title { font-size: 1.15rem; font-weight: 700; margin: 0 0 .2rem 0; }
@@ -15,9 +16,18 @@ CSS = """<style>
 .m-result { font-size: 1.15rem; font-weight: 700; margin: .1rem 0 .3rem 0; }
 .stButton button, .stDownloadButton button { min-height: 46px; }
 /* Barre d'action toujours visible en bas de l'écran. */
-.st-key-calcbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000; background: #fff;
-  padding: .55rem .8rem calc(.55rem + env(safe-area-inset-bottom)) .8rem;
-  box-shadow: 0 -2px 10px rgba(0,0,0,.18); }
+.st-key-calcbar { position: fixed; left: 0; right: 0; bottom: 0; z-index: 1000;
+  background: var(--trail-bg, var(--st-background-color, #fff));   /* suit le thème clair/sombre */
+  padding: .4rem .7rem calc(.4rem + env(safe-area-inset-bottom)) .7rem; gap: .3rem;
+  box-shadow: 0 -1px 5px rgba(0,0,0,.12); }
+.st-key-calcbar [data-testid="stCaptionContainer"] { text-align: center; margin: .35rem 0; }
+/* Pendant le calcul : plus de bouton Calculer, juste la barre de progression et une croix. */
+.st-key-calcbar:has([data-testid="stProgress"]) { flex-direction: row; align-items: center; gap: .5rem; }
+.st-key-calcbar:has([data-testid="stProgress"]) .st-key-btn-calc { display: none; }
+.st-key-calcbar [data-testid="stElementContainer"]:has([data-testid="stProgress"]) { flex: 1 1 auto; width: auto; }
+.st-key-calcbar .st-key-btn-cancel { flex: 0 0 38px; width: 38px !important; }
+.st-key-calcbar .st-key-btn-cancel button { min-height: 34px; height: 34px; width: 38px; padding: 0;
+  border-radius: 50%; }
 /* Rangées de boutons qui restent côte à côte (Streamlit empile les colonnes sous 640 px). */
 .st-key-row-zone [data-testid="stHorizontalBlock"], .st-key-row-params [data-testid="stHorizontalBlock"],
 .st-key-row-search [data-testid="stHorizontalBlock"] { flex-wrap: nowrap; gap: .4rem; }
@@ -31,7 +41,7 @@ CSS = """<style>
 
 # La carte remplit l'écran entre le haut de page et la barre du bas : hauteur en CSS
 # (le serveur ne connaît pas la taille de l'écran). TOP = ce qui précède la carte.
-TOP_PX, BAR_PX = 262, 84
+TOP_PX, BAR_PX = 262, 62
 MAP_FRAME_CSS = f"""<style>
 iframe[title="streamlit_folium.st_folium"] {{
   height: max(300px, calc(100dvh - {TOP_PX + BAR_PX}px)) !important; }}
@@ -40,6 +50,14 @@ iframe[title="streamlit_folium.st_folium"] {{
 MAP_INNER_CSS = """<style>
 html, body, #parent, #map_div, #map_div2, .folium-map { height: 100vh !important; }
 </style>"""
+
+
+# Couleur de fond réelle de l'app (thème clair ou sombre) pour la barre fixée en bas.
+THEME_JS = """
+(function () {
+  const app = d.querySelector('.stApp');
+  if (app) d.documentElement.style.setProperty('--trail-bg', window.parent.getComputedStyle(app).backgroundColor);
+})();"""
 
 
 def render() -> None:
@@ -89,7 +107,7 @@ def render() -> None:
                "à droite de la carte.")
 
     with st.container(key="calcbar"):   # fixé en bas d'écran : ne décale rien dans la page
-        ui.calc_block(v, fit={"width_px": 330, "height_px": 220}, full_width=True)
+        ui.calc_block(v, fit={"width_px": 330, "height_px": 220}, full_width=True, cancel_label="✕")
 
     ui.handle_click(out, click_mode)
-    ui.inject_js()
+    ui.inject_js([THEME_JS])

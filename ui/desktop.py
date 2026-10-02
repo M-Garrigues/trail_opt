@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import streamlit as st
 
-import ui_common as ui
-from ui_common import ss
+from . import common as ui
+from .common import ss
 
 
 def render() -> None:

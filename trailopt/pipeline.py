@@ -17,7 +17,7 @@ from .gpx import to_gpx
 from .solvers import EXACT_MAX_EDGES, optimize
 
 # Plafonds anti-abus (app publique, Streamlit Community Cloud : 2 cœurs, 2,7 Go).
-DIST_KM = (2.0, 25.0)
+DIST_KM = (2.0, 100.0)
 MAX_AREA_KM2 = 150.0
 TIME_S = (5.0, 60.0)
 START_BUFFER_M = 50.0

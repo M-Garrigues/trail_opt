@@ -130,7 +130,7 @@ les points densifiés) : 0,15 s pour 9 800 tronçons, 1 s pour 55 000. Seuils da
 ## Interface
 
 Une seule app, deux mises en page choisies selon l'appareil (`app.py` aiguille) : bureau
-(`ui_desktop.py`) et mobile (`ui_mobile.py`), sur des briques communes (`ui_common.py`).
+(`ui/desktop.py`) et mobile (`ui/mobile.py`), sur des briques communes (`ui/common.py`).
 Même déploiement, donc même cache et même verrou de calcul. `?vue=mobile` ou `?vue=bureau`
 force une vue ; un lien dans chaque vue permet de basculer.
 
@@ -196,7 +196,7 @@ avec petites routes, presque tout passe par le recuit. CP-SAT sert surtout en mo
 
 | Plafond | Valeur | Raison |
 |---|---|---|
-| distance | 2 à 25 km | anti-abus |
+| distance | 2 à 100 km | anti-abus |
 | aire de la zone utile | 150 km² | anti-abus ; le disque par défaut est plafonné à ~148 km² (rayon 6,9 km) |
 | budget solveur | 5 à 60 s, défaut 20 s | 2 cœurs partagés |
 | calculs simultanés | 1 | verrou global, le second utilisateur est prié de réessayer |
@@ -208,6 +208,7 @@ petites routes, soit environ 39 000 arêtes après élagage.
 |---|---|
 | pic RSS du calcul (process neuf, recuit, disque par défaut) | 445 Mo |
 | pic RSS avec l'ancien demi-disque (55 500 arêtes) | 463 Mo |
+| pic RSS pour 100 km, source IGN, disque par défaut (19 400 arêtes) | 461 Mo |
 | pic RSS observé avec CP-SAT forcé sur 44 600 arêtes | 1,1 Go |
 
 C'est loin des 2,7 Go de Streamlit Cloud, donc les plafonds ne sont pas abaissés. CP-SAT

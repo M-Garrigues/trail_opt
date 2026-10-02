@@ -1,4 +1,4 @@
-"""Briques d'interface Streamlit partagées par les vues bureau (ui_desktop) et mobile (ui_mobile).
+"""Briques d'interface Streamlit partagées par les vues bureau (desktop) et mobile (mobile).
 
 Aucune logique de calcul ici : tout passe par trailopt.pipeline.
 """
@@ -51,6 +51,10 @@ MAP_CSS = f"""<style>
 .leaflet-bottom .trail-profile {{ margin-bottom: 3px; }}
 .leaflet-container:has(.trail-profile) .leaflet-bottom.leaflet-right {{ margin-bottom: 126px; }}
 .trail-profile canvas {{ cursor: crosshair !important; touch-action: none; }}
+.leaflet-bar a.trail-fs {{ width: 44px; height: 44px; line-height: 44px; font-size: 22px;
+  text-align: center; color: #333; }}
+.trail-full, .trail-full body, .trail-full #parent, .trail-full #map_div, .trail-full #map_div2,
+.trail-full .folium-map {{ height: 100vh !important; }}
 .hillshade {{ mix-blend-mode: multiply; filter: brightness(1.45) contrast(1.25); opacity: 0.75; }}
 .leaflet-container:has(.mode-start), .leaflet-container:has(.mode-start) .leaflet-interactive
   {{ cursor: {CURSOR_START}, crosshair !important; }}
@@ -207,17 +211,20 @@ def fit_view(lat, lon, width_px=900, height_px=410, profile_px=125):
     return (mid - (profile_px / 2) * res_z / 111_320, (lo0 + lo1) / 2, zoom)
 
 
-def calc_block(v: dict, fit: dict | None = None, full_width: bool = False) -> None:
+def calc_block(v: dict, fit: dict | None = None, full_width: bool = False,
+               cancel_label: str = "Annuler") -> None:
     """Bouton Calculer (dès qu'un départ est posé), barre de progression, Annuler, messages.
     À appeler dans un conteneur fixe : rien ne doit décaler la suite de la page, sinon le
     navigateur recharge le cadre de la carte."""
     if ss.pop("cancelled", False):
         st.info("Calcul annulé.")
     if ss.start is None:
-        st.info("Touche la carte pour placer le départ." if full_width else
-                "Clique sur la carte pour placer le départ : le bouton Calculer apparaîtra ici.")
+        if full_width:
+            st.caption("Touche la carte pour placer le départ.")
+        else:
+            st.info("Clique sur la carte pour placer le départ : le bouton Calculer apparaîtra ici.")
         return
-    if not st.button("Calculer", type="primary", use_container_width=full_width):
+    if not st.button("Calculer", type="primary", use_container_width=full_width, key="btn-calc"):
         return
     params = make_params(v)
     lock = compute_lock()
@@ -229,7 +236,7 @@ def calc_block(v: dict, fit: dict | None = None, full_width: bool = False) -> No
         bar = st.progress(0.0, text=STEPS["chemins"])
         # Annuler (ou Échap) relance le script : l'exception d'interruption de Streamlit
         # passe par le `except BaseException` ci-dessous, qui arrête vraiment le solveur.
-        st.button("Annuler", help="ou touche Échap", use_container_width=full_width,
+        st.button(cancel_label, help="Annuler (ou touche Échap)", key="btn-cancel",
                   on_click=lambda: ss.update(cancelled=True))
         expected = params.time_s + 6.0          # budget solveur + chargement des données
         t0 = time.time()
@@ -360,13 +367,13 @@ def inject_js(extra: list[str] | None = None) -> None:
         pending.append(GEO_JS)
     page_js = """<script>
 const d = window.parent.document;
-if (!window.parent.__trailEscPage) {
+if (!window.parent.__trailEscPage2) {
   // Installé dans la page elle-même (pas dans ce cadre, recréé à chaque rafraîchissement).
-  window.parent.__trailEscPage = true;
+  window.parent.__trailEscPage2 = true;
   const sc = d.createElement('script');
   sc.textContent = `document.addEventListener('keydown', function (e) {
     if (e.key !== 'Escape') return;
-    const b = Array.from(document.querySelectorAll('button')).find(x => x.innerText.trim() === 'Annuler');
+    const b = document.querySelector('.st-key-btn-cancel button');
     if (b) b.click();
   }, true);`;
   d.head.appendChild(sc);

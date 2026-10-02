@@ -46,7 +46,7 @@ def test_start_outside_polygon_rejected():
 
 def test_limits_rejected():
     with pytest.raises(UserError):
-        plan_loop(Params(*START, distance_km=40))
+        plan_loop(Params(*START, distance_km=150))
     with pytest.raises(UserError):
         plan_loop(Params(*START, distance_km=10, time_s=120))
     big = [(2.0, 48.6), (2.5, 48.6), (2.5, 48.9), (2.0, 48.9)]
