@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import math
+import os
 import resource
 import sys
 import time
@@ -457,13 +458,18 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
         return (min(lat), min(lon), max(lat), max(lon))
 
     bbox = bbox_of(region)
+    # TRAILOPT_TILES_DIR : tronçons et altitudes lus dans les dalles tiles/1, sans WFS ni WMS-R.
+    tiles = None
+    if source == "ign" and os.environ.get("TRAILOPT_TILES_DIR"):
+        from pipeline.load import TileStore
+        tiles = TileStore(os.environ["TRAILOPT_TILES_DIR"])
     if p.enforce_limits and area_km2 > FALLBACK_AREA_KM2:
         # Grande zone : on compte les voies avant de télécharger, et on réduit si c'est trop dense.
         radius0 = radius = float(np.hypot(*np.asarray(region.exterior.coords).T).max()) \
             if hasattr(region, "exterior") else math.sqrt(region.area / math.pi)
         cap = MAX_WAYS_IGN_MAX if (source == "ign" and p.mode == "max") else MAX_WAYS[source]
         for _ in range(4):
-            n = (ign.count(bbox, net["wfs_ign"]) if source == "ign"
+            n = (tiles.count(bbox) if tiles else ign.count(bbox, net["wfs_ign"]) if source == "ign"
                  else osm.count(bbox, p.roads, net["overpass"]))
             if n is None:       # comptage indisponible : on retombe sur un plafond d'aire prudent
                 radius = min(radius, math.sqrt(FALLBACK_AREA_KM2 * 1e6 / math.pi))
@@ -480,7 +486,7 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
             warns.append(f"Zone trop dense en voies : réduite à un rayon de {radius / 1000:.1f} km "
                          f"autour du départ ({region.area / 1e6:.0f} km²) pour garder un calcul rapide.")
     if source == "ign":
-        data = ign.fetch(bbox, net["wfs_ign"])
+        data = tiles.fetch(bbox) if tiles else ign.fetch(bbox, net["wfs_ign"])
         raw, nways = ign.to_edges(data, frame, p.roads)
 
         def raw_access():
@@ -494,12 +500,12 @@ def plan_loop(p: Params, progress=None, cancel=None) -> LoopResult:
                   if p.roads == "pedestrian" else data)
             return osm.ways_to_edges(d2, frame, "all" if p.roads == "all" else "minor")[0]
     timings["network_fetch_s"] = time.time() - t
-    sampler = elevation.sampler_for(frame, net["wms_r"])
+    sampler = tiles.sampler_for(frame) if tiles else elevation.sampler_for(frame, net["wms_r"])
 
-    dbg["source"] = "IGN BD TOPO" if source == "ign" else "OpenStreetMap"
+    dbg["source"] = ("IGN BD TOPO (dalles)" if tiles else "IGN BD TOPO") if source == "ign" else "OpenStreetMap"
     dbg["source_ways"] = nways
     # Criblage par relief : en mode max seulement (en mode cible, le plat peut être utile).
-    coarse = elevation.coarse_sampler_for(frame, net["wms_r"]) if p.mode == "max" else None
+    coarse = None if p.mode != "max" else sampler if tiles else elevation.coarse_sampler_for(frame, net["wms_r"])
     P, g, res, info, acc = search_loop(raw, region, p, L, Lmax, sampler, dbg, timings, step,
                                        cancel, make_access(raw_access, region, sampler), coarse)
     del raw, data

@@ -5,3 +5,4 @@ __pycache__/
 *.gpx
 .claude/
 scripts/experiments/
+.team/

@@ -6,7 +6,6 @@ Noms vérifiés par GetCapabilities (https://data.geopf.fr/wms-r, octobre 2026).
 from __future__ import annotations
 
 import gzip
-import math
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -24,14 +23,13 @@ RES = 5.0          # m / pixel
 TILE_PX = 500      # dalles de 2,5 km, <= MaxWidth/MaxHeight annoncés (5010)
 MARGIN_PX = 2      # recouvrement pour le bilinéaire en bord de dalle
 RES_COARSE = 50.0  # modèle de terrain grossier, pour le criblage des grands graphes
-COARSE_SNAP = 5000.0
+COARSE_TILE = 50000.0  # grille FIXE de 50 km (1000 px) : clé de cache indépendante de la zone
 USER_AGENT = "trailopt/1.0"
 
 
-def _tiles(X, Y):
-    """Dalles d'une grille FIXE (Lambert-93, pas de TILE_PX × RES) qui contiennent des points.
+def _tiles(X, Y, span=TILE_PX * RES):
+    """Dalles d'une grille FIXE (Lambert-93, pas `span`) qui contiennent des points.
     Fixe, donc réutilisable en cache d'un calcul à l'autre, quelle que soit la zone."""
-    span = TILE_PX * RES
     cells = np.unique(np.column_stack([np.floor(X / span), np.floor(Y / span)]).astype(np.int64), axis=0)
     for ix, iy in cells.tolist():
         yield (ix * span, iy * span, (ix + 1) * span, (iy + 1) * span)
@@ -152,15 +150,17 @@ def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
 
 
 def sample_coarse_l93(X, Y, stats: dict | None = None) -> np.ndarray:
-    """Altitudes approchées (RGE ALTI rééchantillonné à 50 m) : UNE requête pour toute la zone.
-    Sert au criblage des grands graphes, jamais au D+ final."""
+    """Altitudes approchées (RGE ALTI rééchantillonné à 50 m), dalles fixes de 50 km : une à
+    quatre requêtes par zone. Sert au criblage des grands graphes, jamais au D+ final.
+    (Une emprise calée sur les points changeait la clé de cache d'un calcul à l'autre.)"""
     stats = stats if stats is not None else cache.new_stats()
     X, Y = np.asarray(X, float), np.asarray(Y, float)
-    g = COARSE_SNAP
-    core = (math.floor(X.min() / g) * g, math.floor(Y.min() / g) * g,
-            math.ceil(X.max() / g) * g + g, math.ceil(Y.max() / g) * g + g)
-    bb, p = _fetch_tile(LAYERS[1], core, stats, res=RES_COARSE, margin_px=1)
-    return bilinear(_read(p, mask=False), bb, X, Y, res=RES_COARSE)
+    z = np.full(len(X), np.nan)
+    for core in _tiles(X, Y, COARSE_TILE):
+        sel = (X >= core[0]) & (X < core[2]) & (Y >= core[1]) & (Y < core[3])
+        bb, p = _fetch_tile(LAYERS[1], core, stats, res=RES_COARSE, margin_px=1)
+        z[sel] = bilinear(_read(p, mask=False), bb, X[sel], Y[sel], res=RES_COARSE)
+    return z
 
 
 def coarse_sampler_for(frame, stats: dict | None = None):

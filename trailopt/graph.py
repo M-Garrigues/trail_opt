@@ -616,7 +616,9 @@ def compute_profile(e: Edge, z: np.ndarray, smooth: int = 3, grade_win: float = 
 def assign_elevation(g: Graph, sampler, smooth=3, grade_win=25.0, node_z=None) -> int:
     """Échantillonne en un appel les arêtes sans profil, calcule leurs profils.
     `node_z` (partagé entre appels) garantit une altitude unique par nœud.
-    Renvoie le nombre de points échantillonnés."""
+    Renvoie le nombre de points échantillonnés. `sampler.smooth` (s'il existe) remplace
+    `smooth` : les dalles fournissent un profil déjà lissé."""
+    smooth = getattr(sampler, "smooth", smooth)
     ids = [k for k, e in g.edges.items() if e.z is None]
     if not ids:
         return 0

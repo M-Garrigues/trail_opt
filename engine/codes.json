@@ -1,0 +1,178 @@
+[
+  {
+    "code": "zone_invalid",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "start_outside_zone",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "mode_unknown",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "roads_unknown",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "source_unknown",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "target_dplus_required",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "tolerance_out_of_range",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "max_grade_invalid",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "distance_out_of_range",
+    "kind": "error",
+    "params": [
+      "min_km",
+      "max_km"
+    ]
+  },
+  {
+    "code": "time_out_of_range",
+    "kind": "error",
+    "params": [
+      "min_s",
+      "max_s"
+    ]
+  },
+  {
+    "code": "zone_too_large",
+    "kind": "error",
+    "params": [
+      "area_km2",
+      "max_km2"
+    ]
+  },
+  {
+    "code": "no_way_in_zone",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "no_loop_from_start",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "no_loop_of_distance",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "cancelled",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "invalid_problem",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "no_loop_found",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "invariant_violated",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "long_distance",
+    "kind": "warning",
+    "params": [
+      "km"
+    ]
+  },
+  {
+    "code": "zone_reduced",
+    "kind": "warning",
+    "params": [
+      "radius_km",
+      "area_km2"
+    ]
+  },
+  {
+    "code": "access_round_trip",
+    "kind": "warning",
+    "params": [
+      "access_m"
+    ]
+  },
+  {
+    "code": "start_moved",
+    "kind": "warning",
+    "params": [
+      "distance_m"
+    ]
+  },
+  {
+    "code": "start_far_from_network",
+    "kind": "warning",
+    "params": [
+      "distance_m"
+    ]
+  },
+  {
+    "code": "profile_mismatch",
+    "kind": "warning",
+    "params": [
+      "profile_m",
+      "sum_w_m"
+    ]
+  },
+  {
+    "code": "proven_infeasible",
+    "kind": "warning",
+    "params": [
+      "min_km",
+      "max_km"
+    ]
+  },
+  {
+    "code": "distance_out_of_tolerance",
+    "kind": "warning",
+    "params": []
+  },
+  {
+    "code": "target_dplus_above_bound",
+    "kind": "warning",
+    "params": [
+      "max_dplus_m",
+      "max_km"
+    ]
+  },
+  {
+    "code": "target_proven_unreachable",
+    "kind": "warning",
+    "params": [
+      "min_error"
+    ]
+  },
+  {
+    "code": "target_dplus_probably_unreachable",
+    "kind": "warning",
+    "params": []
+  }
+]

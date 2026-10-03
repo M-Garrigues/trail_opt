@@ -288,3 +288,13 @@ n'est jamais lancé au-delà du seuil en mode automatique.
 
 Envoi vers Garmin ou Komoot, comptes
 utilisateurs, multi-départs, préférence de surface, choix du sens de parcours.
+
+## Licence
+
+Code sous [PolyForm Noncommercial 1.0.0](LICENSE) : utilisation, modification et partage libres pour tout usage
+non commercial (personnel, associatif, recherche, enseignement). Toute utilisation commerciale demande une
+licence séparée : me contacter via [GitHub](https://github.com/M-Garrigues).
+
+Données : BD TOPO®, RGE ALTI® et MNT LiDAR HD © IGN (Licence Ouverte Etalab 2.0) ; OpenStreetMap
+© contributeurs OpenStreetMap (ODbL). Ces licences s'appliquent aux données et à leurs dérivés,
+indépendamment de la licence du code.

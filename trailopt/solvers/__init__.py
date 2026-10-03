@@ -1,6 +1,7 @@
 """optimize() : choix du solveur selon la taille du graphe, rapport de debug."""
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 
@@ -32,8 +33,18 @@ class SolveResult:
 def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_EDGES,
              seed: int = 0, workers: int = 2, solver: str = "auto", cancel=None,
              n_candidates: int = 1) -> SolveResult:
-    """solver : "auto", "exact" (warm-start + CP-SAT), "anneal" (recuit classique seul)
-    ou "faces" (recuit par faces seul)."""
+    """solver : "auto", "exact" (warm-start + CP-SAT), "anneal" (recuit classique seul),
+    "faces" (recuit par faces seul) ou "rust" (moteur Rust, repli sur "auto" s'il échoue ;
+    aussi activé en mode "auto" par TRAILOPT_SOLVER=rust)."""
+    rust_err = None
+    if solver == "rust" or (solver == "auto" and os.environ.get("TRAILOPT_SOLVER") == "rust"):
+        from . import rust
+        try:
+            return rust.optimize(P, budget, seed, n_candidates, cancel)
+        except Exception as ex:     # binaire absent, échec, sortie invalide : repli Python
+            if cancel is not None and cancel.is_set():
+                raise RuntimeError("calcul annulé") from None
+            rust_err, solver = f"{type(ex).__name__}: {ex}"[:300], "auto"
     m = len(P.len)
     # Plusieurs candidats : chaque boucle en plus reçoit une demi-part du temps de la principale
     # (le budget conseillé grandit d'autant, voir pipeline.suggested_time).
@@ -44,6 +55,8 @@ def optimize(P: Problem, budget: float = 20.0, exact_max_edges: int = EXACT_MAX_
     dbg = {"edges": m, "nodes": len(P.nodes), "exact_max_edges": exact_max_edges,
            "solver_reason": (f"{m} arêtes {'≤' if m <= exact_max_edges else '>'} "
                              f"seuil {exact_max_edges}") if solver == "auto" else f"forcé : {solver}"}
+    if rust_err:
+        dbg["rust_repli"] = rust_err
     t0 = time.time()
     if use_exact:
         th = max(1.0, 0.2 * budget)

@@ -19,7 +19,7 @@ def path(*parts: str) -> Path:
 
 
 def write_atomic(p: Path, data: bytes) -> None:
-    tmp = p.with_suffix(p.suffix + ".tmp")
+    tmp = p.with_suffix(f"{p.suffix}.{os.getpid()}.tmp")   # unique : plusieurs processus
     tmp.write_bytes(data)
     os.replace(tmp, p)
 
