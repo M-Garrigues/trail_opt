@@ -1,0 +1,8 @@
+# Outils de compilation de la Lambda (CI et deploy) : pip install --require-hashes -r ce fichier.
+# Mise à jour : hashes des roues linux x86_64 / macOS arm64 sur https://pypi.org/pypi/<paquet>/<version>/json
+cargo-lambda==1.9.2 \
+    --hash=sha256:db2c0b1d53d7ed0055198fd045f641addc91b180b20d794fcf78cc9a9efacb38 \
+    --hash=sha256:28e2f698b4e0e367097cd30a8ded8ddc6851dba6f4d53b907b4659a635ae3665
+ziglang==0.15.2 \
+    --hash=sha256:806316453d1ede7174ed3fefb8e5348154629089c3bb5fe812dfd0e172fac130 \
+    --hash=sha256:acae2a9ce67ed249ad68d42c21bc73b5f9d51a33ba5ea42f609f78683e8d9bb7

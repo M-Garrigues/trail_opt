@@ -36,7 +36,8 @@ pub fn inverse(x: f64, y: f64) -> (f64, f64) {
     let mut phi = 2.0 * l.exp().atan() - 2.0 * FRAC_PI_4;
     for _ in 0..12 {
         let es = E * phi.sin();
-        let nxt = 2.0 * (((1.0 + es) / (1.0 - es)).powf(E / 2.0) * l.exp()).atan() - 2.0 * FRAC_PI_4;
+        let nxt =
+            2.0 * (((1.0 + es) / (1.0 - es)).powf(E / 2.0) * l.exp()).atan() - 2.0 * FRAC_PI_4;
         let done = (nxt - phi).abs() < 1e-12;
         phi = nxt;
         if done {
@@ -65,7 +66,11 @@ pub struct Frame {
 impl Frame {
     pub fn new(lat: f64, lon: f64) -> Frame {
         let (x0, y0) = forward(lon, lat);
-        Frame { x0, y0, k: scale(lat) }
+        Frame {
+            x0,
+            y0,
+            k: scale(lat),
+        }
     }
 
     /// Repère d'essai : Lambert-93 translaté, sans facteur d'échelle.

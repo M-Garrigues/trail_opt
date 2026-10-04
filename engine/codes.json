@@ -20,11 +20,6 @@
     "params": []
   },
   {
-    "code": "source_unknown",
-    "kind": "error",
-    "params": []
-  },
-  {
     "code": "target_dplus_required",
     "kind": "error",
     "params": []
@@ -69,17 +64,7 @@
     "params": []
   },
   {
-    "code": "no_loop_from_start",
-    "kind": "error",
-    "params": []
-  },
-  {
     "code": "no_loop_of_distance",
-    "kind": "error",
-    "params": []
-  },
-  {
-    "code": "cancelled",
     "kind": "error",
     "params": []
   },
@@ -143,14 +128,6 @@
     ]
   },
   {
-    "code": "proven_infeasible",
-    "kind": "warning",
-    "params": [
-      "min_km",
-      "max_km"
-    ]
-  },
-  {
     "code": "distance_out_of_tolerance",
     "kind": "warning",
     "params": []
@@ -164,14 +141,85 @@
     ]
   },
   {
-    "code": "target_proven_unreachable",
+    "code": "target_dplus_probably_unreachable",
     "kind": "warning",
+    "params": []
+  },
+  {
+    "code": "invalid_request",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "outside_coverage",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "busy",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "timeout",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "bot_check_failed",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "service_paused",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "dplus_out_of_range",
+    "kind": "error",
     "params": [
-      "min_error"
+      "min_m",
+      "max_m"
     ]
   },
   {
-    "code": "target_dplus_probably_unreachable",
+    "code": "dplus_unreachable_proven",
+    "kind": "error",
+    "params": [
+      "dplus_m",
+      "min_km"
+    ]
+  },
+  {
+    "code": "dplus_not_reached",
+    "kind": "warning",
+    "params": [
+      "dplus_m",
+      "best_dplus_m",
+      "max_km"
+    ]
+  },
+  {
+    "code": "climbs_unknown",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "loop_not_found",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "candidates_reduced",
+    "kind": "warning",
+    "params": [
+      "max_n",
+      "km"
+    ]
+  },
+  {
+    "code": "coverage_edge",
     "kind": "warning",
     "params": []
   }

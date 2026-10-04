@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::codes::{Code, Msg};
 use crate::faces::key_cmp;
+use crate::problem::length_lower_bound;
 use crate::{Annealer, FaceSearch, Problem};
 
 /// Jusqu'ici (ou en mode cible), recuit classique d'abord, puis faces depuis son résultat ;
@@ -26,6 +27,31 @@ pub struct Budget {
     pub candidates: usize,
     /// Plafond de temps, sécurité seulement (le calcul n'est plus déterministe s'il est atteint).
     pub deadline: Option<Instant>,
+}
+
+/// Itérations par seconde de budget Python (faces, recuit classique), calibrées sur Massy.
+const FACES_PER_S: f64 = 3e5;
+/// Recuit classique : une mutation coûte ~ un Dijkstra, donc ∝ arêtes. Travail fixe
+/// (mutations × arêtes), borné : ~30 000 mutations sous 1 000 arêtes, ~9 000 à Massy 10 km.
+/// Moins de mutations laisse des graines médiocres sur les petits graphes (corpus de parité).
+const ANNEAL_WORK: f64 = 3.5e7;
+const ANNEAL_MIN_MAX: (f64, f64) = (5e3, 3e4);
+
+impl Budget {
+    /// Budget pour `time_s` secondes de budget Python (contrat problem.md, CLI) ; la boucle
+    /// principale reçoit time_s / (1 + 0,5 (K - 1)). `deadline` reste à fixer par l'appelant.
+    pub fn from_time(time_s: f64, candidates: usize, n_edges: usize, seed: u64) -> Budget {
+        let main_s = time_s / (1.0 + 0.5 * (candidates.max(1) - 1) as f64);
+        let (lo, hi) = ANNEAL_MIN_MAX;
+        let anneal = (ANNEAL_WORK / n_edges.max(1) as f64).clamp(lo, hi) * (main_s / 5.0).min(1.0);
+        Budget {
+            iters: (FACES_PER_S * main_s) as u64,
+            anneal_iters: anneal as u64,
+            seed,
+            candidates: candidates.max(1),
+            deadline: None,
+        }
+    }
 }
 
 pub struct Output {
@@ -58,11 +84,14 @@ fn search(p: &Problem, b: &Budget, seed: u64, use_anneal: bool) -> Found {
         None
     };
     let (mut method, mut depart, mut face_iterations) = ("recuit", None, 0);
+    // min_distance avec préférence de montées : la clé (−L) ignore le bonus B, on garde les
+    // faces (prototype `solve_minlen`).
+    let prefer_faces = p.min_distance() && p.climbs < 0;
     if let Some(sol) = fs.solve(b.iters, seed, route.as_deref()) {
         face_iterations = sol.iterations;
         if route
             .as_ref()
-            .is_none_or(|r| key_cmp(key(p, &sol.ids), key(p, r)).is_ge())
+            .is_none_or(|r| prefer_faces || key_cmp(key(p, &sol.ids), key(p, r)).is_ge())
         {
             (route, method, depart) = (Some(sol.ids), "faces", Some(sol.depart));
         }
@@ -80,7 +109,39 @@ fn key(p: &Problem, x: &[usize]) -> (bool, f64) {
     (sc.3, sc.0)
 }
 
+/// Mode min_distance : refus immédiat si la borne inférieure de distance dépasse Lmax
+/// (ou si Σw < X), aucun calcul lancé. Renvoie la borne (m).
+pub fn md_lower_bound(p: &Problem) -> Result<f64, Msg> {
+    let x = p.d.unwrap_or(0.0);
+    let lb = length_lower_bound(&p.len, &p.w, &p.reach(), x);
+    match lb {
+        Some(lb) if lb <= p.lmax => Ok(lb),
+        _ => Err(Msg::with_detail(
+            Code::DplusUnreachableProven,
+            json!({"dplus_m": x.round(), "min_km": lb.map(|l| (l / 100.0).round() / 10.0)}),
+            format!("length lower bound {lb:?} > {:.0}", p.lmax),
+        )),
+    }
+}
+
+/// Résout `p`. Préférence de montées en modes max et cible : la recherche se fait sur le
+/// poids w + γβq/H, le D+ rapporté sur le vrai w (modes.md B). En mode min_distance, le bonus
+/// passe dans B (`FaceSearch`), la contrainte reste sur w.
 pub fn optimize(p: &Problem, b: &Budget) -> Result<Output, Msg> {
+    if p.min_distance() {
+        md_lower_bound(p)?;
+    }
+    let Some(ps) = p.search_problem() else {
+        return optimize_on(p, b);
+    };
+    let mut out = optimize_on(&ps, b)?;
+    (_, out.length, out.dplus, out.feasible) = p.score(&out.ids);
+    out.alternatives
+        .sort_by(|x, y| p.stats(y).1.total_cmp(&p.stats(x).1));
+    Ok(out)
+}
+
+fn optimize_on(p: &Problem, b: &Budget) -> Result<Output, Msg> {
     // Mode cible : les faces seules visent mal un couple (distance, D+) ; elles affinent.
     let use_anneal = p.n_edges() <= FACES_ONLY_EDGES || p.target();
     // Petits graphes : RESTARTS recherches indépendantes en parallèle, on garde la meilleure
@@ -129,12 +190,22 @@ pub fn optimize(p: &Problem, b: &Budget) -> Result<Output, Msg> {
                 .map_err(|e| Msg::error(Code::InvariantViolated, e))?;
             alternatives.push(a);
         }
-        // Les boucles sont triées par D+ (la principale reste en tête).
-        alternatives.sort_by(|x, y| p.stats(y).1.total_cmp(&p.stats(x).1));
+        // Triées par D+ (min_distance : par longueur) ; la principale reste en tête.
+        if p.min_distance() {
+            alternatives.sort_by(|x, y| p.stats(x).0.total_cmp(&p.stats(y).0));
+        } else {
+            alternatives.sort_by(|x, y| p.stats(y).1.total_cmp(&p.stats(x).1));
+        }
     }
     let (_, length, dplus, feasible) = p.score(&main);
     let mut warnings = Vec::new();
-    if !p.target() && !feasible {
+    if p.min_distance() && !feasible {
+        warnings.push(Msg::new(
+            Code::DplusNotReached,
+            json!({"dplus_m": p.d.unwrap_or(0.0).round(), "best_dplus_m": dplus.round(),
+                   "max_km": (p.lmax / 100.0).round() / 10.0}),
+        ));
+    } else if !p.target() && !feasible {
         warnings.push(Msg::new(Code::DistanceOutOfTolerance, json!({})));
     }
     Ok(Output {

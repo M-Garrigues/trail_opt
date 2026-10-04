@@ -2,10 +2,11 @@
 //! `m.err[code](params)` ; jamais de phrase affichable ici, `detail` anglais pour les logs.
 //! Un code n'est jamais renommé ni réutilisé : la fixture `engine/codes.json` (test
 //! `codes_stables`) le vérifie. Pour en ajouter un : variante + ligne de `info()` + `ALL`.
-use serde::Serialize;
+//! Un code jamais émis est retiré (variante supprimée) et son nom va dans `RETIRED`.
+use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value};
 
-#[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Serialize, Deserialize, Clone, Copy, PartialEq, Eq, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum Code {
     // Erreurs de saisie (pipeline.validate et plan_loop)
@@ -13,7 +14,6 @@ pub enum Code {
     StartOutsideZone,
     ModeUnknown,
     RoadsUnknown,
-    SourceUnknown,
     TargetDplusRequired,
     ToleranceOutOfRange,
     MaxGradeInvalid,
@@ -22,9 +22,7 @@ pub enum Code {
     ZoneTooLarge,
     // Erreurs de calcul
     NoWayInZone,
-    NoLoopFromStart,
     NoLoopOfDistance,
-    Cancelled,
     // Erreurs du moteur
     InvalidProblem,
     NoLoopFound,
@@ -36,11 +34,26 @@ pub enum Code {
     StartMoved,
     StartFarFromNetwork,
     ProfileMismatch,
-    ProvenInfeasible,
     DistanceOutOfTolerance,
     TargetDplusAboveBound,
-    TargetProvenUnreachable,
     TargetDplusProbablyUnreachable,
+    // Ajouts étape 3 (moteur depuis les dalles, contrat api.md v0)
+    InvalidRequest,
+    OutsideCoverage,
+    Busy,
+    Timeout,
+    BotCheckFailed,
+    ServicePaused,
+    // Modes D19 (contracts/modes.md)
+    DplusOutOfRange,
+    DplusUnreachableProven,
+    DplusNotReached,
+    ClimbsUnknown,
+    // Partage (api.md v1.1)
+    LoopNotFound,
+    // Revues T25/T26 (api.md v1.3)
+    CandidatesReduced,
+    CoverageEdge,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -51,14 +64,13 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 29] = {
+    pub const ALL: [Code; 37] = {
         use Code::*;
         [
             ZoneInvalid,
             StartOutsideZone,
             ModeUnknown,
             RoadsUnknown,
-            SourceUnknown,
             TargetDplusRequired,
             ToleranceOutOfRange,
             MaxGradeInvalid,
@@ -66,9 +78,7 @@ impl Code {
             TimeOutOfRange,
             ZoneTooLarge,
             NoWayInZone,
-            NoLoopFromStart,
             NoLoopOfDistance,
-            Cancelled,
             InvalidProblem,
             NoLoopFound,
             InvariantViolated,
@@ -78,11 +88,22 @@ impl Code {
             StartMoved,
             StartFarFromNetwork,
             ProfileMismatch,
-            ProvenInfeasible,
             DistanceOutOfTolerance,
             TargetDplusAboveBound,
-            TargetProvenUnreachable,
             TargetDplusProbablyUnreachable,
+            InvalidRequest,
+            OutsideCoverage,
+            Busy,
+            Timeout,
+            BotCheckFailed,
+            ServicePaused,
+            DplusOutOfRange,
+            DplusUnreachableProven,
+            DplusNotReached,
+            ClimbsUnknown,
+            LoopNotFound,
+            CandidatesReduced,
+            CoverageEdge,
         ]
     };
 
@@ -94,22 +115,36 @@ impl Code {
             DistanceOutOfRange => (Error, &["min_km", "max_km"]),
             TimeOutOfRange => (Error, &["min_s", "max_s"]),
             ZoneTooLarge => (Error, &["area_km2", "max_km2"]),
-            ZoneInvalid | StartOutsideZone | ModeUnknown | RoadsUnknown | SourceUnknown
-            | TargetDplusRequired | ToleranceOutOfRange | MaxGradeInvalid | NoWayInZone
-            | NoLoopFromStart | NoLoopOfDistance | Cancelled | InvalidProblem | NoLoopFound
-            | InvariantViolated => (Error, &[]),
+            ZoneInvalid | StartOutsideZone | ModeUnknown | RoadsUnknown | TargetDplusRequired
+            | ToleranceOutOfRange | MaxGradeInvalid | NoWayInZone | NoLoopOfDistance
+            | InvalidProblem | NoLoopFound | InvariantViolated | InvalidRequest
+            | OutsideCoverage | Busy | Timeout | BotCheckFailed | ServicePaused | ClimbsUnknown
+            | LoopNotFound => (Error, &[]),
+            DplusOutOfRange => (Error, &["min_m", "max_m"]),
+            // min_km : null quand Σw du graphe < D+ (aucune distance ne suffit)
+            DplusUnreachableProven => (Error, &["dplus_m", "min_km"]),
+            DplusNotReached => (Warning, &["dplus_m", "best_dplus_m", "max_km"]),
             LongDistance => (Warning, &["km"]),
             ZoneReduced => (Warning, &["radius_km", "area_km2"]),
             AccessRoundTrip => (Warning, &["access_m"]),
             StartMoved | StartFarFromNetwork => (Warning, &["distance_m"]),
             ProfileMismatch => (Warning, &["profile_m", "sum_w_m"]),
-            ProvenInfeasible => (Warning, &["min_km", "max_km"]),
             DistanceOutOfTolerance | TargetDplusProbablyUnreachable => (Warning, &[]),
             TargetDplusAboveBound => (Warning, &["max_dplus_m", "max_km"]),
-            TargetProvenUnreachable => (Warning, &["min_error"]),
+            CandidatesReduced => (Warning, &["max_n", "km"]),
+            CoverageEdge => (Warning, &[]),
         }
     }
 }
+
+/// Codes retirés (jamais émis par le moteur Rust, T28) : noms à ne jamais réutiliser.
+pub const RETIRED: [&str; 5] = [
+    "source_unknown",
+    "no_loop_from_start",
+    "cancelled",
+    "proven_infeasible",
+    "target_proven_unreachable",
+];
 
 /// Message transmis au client : {"code", "params", "detail"?}.
 #[derive(Serialize, Debug)]
@@ -140,6 +175,14 @@ impl Msg {
             code,
             params,
             detail: None,
+        }
+    }
+
+    /// Erreur avec paramètres et détail (anglais, logs).
+    pub fn with_detail(code: Code, params: Value, detail: impl Into<String>) -> Msg {
+        Msg {
+            detail: Some(detail.into()),
+            ..Msg::new(code, params)
         }
     }
 

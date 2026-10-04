@@ -1,9 +1,13 @@
 //! Moteur de calcul de boucles de trail (port Rust de `trailopt`).
 pub mod anneal;
+pub mod api;
 pub mod codes;
 pub mod faces;
 pub mod l93;
+pub mod plan;
+pub mod prep;
 pub mod problem;
+pub mod share;
 pub mod solve;
 pub mod tiles;
 
@@ -12,6 +16,14 @@ pub use codes::{Code, Msg};
 pub use faces::{FaceSearch, Solution, build_faces};
 pub use problem::Problem;
 pub use solve::{Budget, Output, optimize};
+
+/// Version du solveur : version du paquet, plus le commit si GITHUB_SHA est défini au build (CI).
+pub fn solver_version() -> String {
+    match option_env!("GITHUB_SHA") {
+        Some(sha) if sha.len() >= 7 => format!("{}+{}", env!("CARGO_PKG_VERSION"), &sha[..7]),
+        _ => env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
 
 /// Générateur pseudo-aléatoire SplitMix64 : déterministe, sans dépendance.
 pub struct Rng(u64);

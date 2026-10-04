@@ -1,0 +1,154 @@
+{
+ "format": "tiles/1",
+ "data_version": "bdtopo-wfs-2026-10b",
+ "source": "BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0",
+ "natures": [
+  "Bac ou liaison maritime",
+  "Bretelle",
+  "Chemin",
+  "Escalier",
+  "Piste cyclable",
+  "Rond-point",
+  "Route empierrée",
+  "Route à 1 chaussée",
+  "Route à 2 chaussées",
+  "Sentier",
+  "Type autoroutier"
+ ],
+ "clip": {
+  "disks": [
+   [
+    48.7309,
+    2.2713,
+    6000.0
+   ],
+   [
+    45.0555,
+    6.031,
+    7500.0
+   ],
+   [
+    45.092,
+    6.07,
+    6000.0
+   ]
+  ],
+  "note": "extrait de dalles complètes ; nodata_frac et node_fallback = dalle entière"
+ },
+ "tiles": {
+  "32_342": {
+   "n": 27522,
+   "km": 2141.5,
+   "nodata_frac": 0.0,
+   "steep_gt60": 2,
+   "steep_frac": 7e-05,
+   "jump_gt10": 0,
+   "node_fallback": 0,
+   "par_links": 4528,
+   "z_min_m": 21.7,
+   "z_max_m": 191.2,
+   "sha256": "559e2af06ea4499865834a4d3cc6b805b451d6eb427f794b2c71ad53846a5fbf",
+   "bytes": 970270,
+   "o_par_troncon": 35.3,
+   "t_sources_s": 0.3,
+   "t_total_s": 22.4,
+   "requetes": {
+    "ign": 0,
+    "dem": 0
+   }
+  },
+  "46_321": {
+   "n": 152,
+   "km": 38.2,
+   "nodata_frac": 0.0,
+   "steep_gt60": 8,
+   "steep_frac": 0.05263,
+   "jump_gt10": 0,
+   "node_fallback": 0,
+   "par_links": 5,
+   "z_min_m": 500.7,
+   "z_max_m": 2602.4,
+   "sha256": "10c1596208f2060cbc083c70eaa5b9937f75d462c9d5e388dd5e5e50321dd0d1",
+   "bytes": 20528,
+   "o_par_troncon": 135.1,
+   "t_sources_s": 0.1,
+   "t_total_s": 9.7,
+   "requetes": {
+    "ign": 0,
+    "dem": 0
+   }
+  },
+  "46_322": {
+   "n": 2977,
+   "km": 540.9,
+   "nodata_frac": 0.0,
+   "steep_gt60": 72,
+   "steep_frac": 0.02419,
+   "jump_gt10": 0,
+   "node_fallback": 0,
+   "par_links": 228,
+   "z_min_m": 214.7,
+   "z_max_m": 2857.2,
+   "sha256": "9ebb7d481e2b045248fd74d7303f4110aa6b2ad95fd639220f5c52982f9f9c2d",
+   "bytes": 235082,
+   "o_par_troncon": 79.0,
+   "t_sources_s": 0.2,
+   "t_total_s": 7.8,
+   "requetes": {
+    "ign": 0,
+    "dem": 0
+   }
+  },
+  "47_321": {
+   "n": 91,
+   "km": 25.3,
+   "nodata_frac": 0.0,
+   "steep_gt60": 2,
+   "steep_frac": 0.02198,
+   "jump_gt10": 0,
+   "node_fallback": 0,
+   "par_links": 6,
+   "z_min_m": 743.2,
+   "z_max_m": 3400.5,
+   "sha256": "f34637c954302ddfec0e2e714684a3dcfa863b2086dcf4cd2c07846e09a868c9",
+   "bytes": 14172,
+   "o_par_troncon": 155.7,
+   "t_sources_s": 0.1,
+   "t_total_s": 7.1,
+   "requetes": {
+    "ign": 0,
+    "dem": 0
+   }
+  },
+  "47_322": {
+   "n": 3383,
+   "km": 578.4,
+   "nodata_frac": 0.0,
+   "steep_gt60": 22,
+   "steep_frac": 0.0065,
+   "jump_gt10": 1,
+   "node_fallback": 0,
+   "par_links": 333,
+   "z_min_m": 718.8,
+   "z_max_m": 3316.0,
+   "sha256": "8b2fdca050da0032cd82c8772a938dca0f52590f7a29423a7e8512f5377369f9",
+   "bytes": 289080,
+   "o_par_troncon": 85.5,
+   "t_sources_s": 0.2,
+   "t_total_s": 9.1,
+   "requetes": {
+    "ign": 0,
+    "dem": 0
+   }
+  }
+ },
+ "totals": {
+  "tiles": 5,
+  "n": 34125,
+  "bytes": 1529132,
+  "steep_gt60": 106,
+  "jump_gt10": 1,
+  "node_fallback": 0,
+  "nodata_frac": 0.0
+ }
+}

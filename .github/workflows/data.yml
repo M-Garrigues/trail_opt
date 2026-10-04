@@ -1,0 +1,121 @@
+# Dalles tiles/1 (pipeline/, contrat .team/contracts/tiles.md) : construction, validation,
+# publication en release GitHub `tiles-<data_version>` (zip + manifest.json). Procédure : pipeline/README.md.
+#
+# Aucun accès AWS ici (pas d'id-token) : la copie vers s3://$ARTIFACTS_BUCKET/tiles/<data_version>/
+# et la variable DATA_VERSION de prod restent côté infra (deploy.yml / infra/README.md).
+# data_version = constante DATA_VERSION de pipeline/build.py (à changer avant chaque campagne) ;
+# une release existante n'est jamais réécrite.
+# Durée : ~25 min à 3 processus en local (IdF + Isère, 82 dalles) ; débit mesuré ~4 req/s WMS-R
+# (limite IGN 40), < 1 req/s WFS (limite 30). Un seul job, 3 processus : pas de matrice.
+name: data
+
+on:
+  workflow_dispatch:
+    inputs:
+      tiles_list:
+        description: "Liste des dalles (une ix_iy par ligne)"
+        default: pipeline/tiles_idf_isere.txt
+      previous:
+        description: "Release de comparaison (vide = dernière release tiles-*)"
+        default: ""
+      publish:
+        description: "Publier la release (sinon artefact seul)"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: data
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    permissions:
+      contents: read
+    outputs:
+      data_version: ${{ steps.version.outputs.data_version }}
+    env:
+      LIST: ${{ inputs.tiles_list }}
+      PREVIOUS: ${{ inputs.previous }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+
+      - name: Version (refus si la release existe déjà)
+        id: version
+        run: |
+          v=$(python -c 'from pipeline.build import DATA_VERSION; print(DATA_VERSION)')
+          if gh release view "tiles-$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::tiles-$v existe déjà : changer DATA_VERSION dans pipeline/build.py"; exit 1
+          fi
+          echo "data_version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Construction (3 processus)
+        run: xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < "$LIST"
+
+      - name: Manifeste de la version précédente
+        run: |
+          prev=${PREVIOUS:-$(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName \
+            -q '[.[] | select(.tagName | startswith("tiles-"))][0].tagName // ""')}
+          if [ -n "$prev" ]; then
+            gh release download "$prev" -R "$GITHUB_REPOSITORY" -p manifest.json -D prev
+            echo "comparaison avec $prev"
+          else
+            echo "::notice::aucune release tiles-* : pas de comparaison du nombre de tronçons"
+          fi
+
+      - name: Validation (nodata, sauts, replis de nœud, sha256, écart de tronçons < 5 %)
+        run: |
+          args=(--tiles tiles --list "$LIST")
+          [ -f prev/manifest.json ] && args+=(--previous prev/manifest.json)
+          python -m pipeline check "${args[@]}"
+          python -c 'import json; print(json.load(open("tiles/manifest.json"))["totals"])'
+
+      - name: Zip
+        env:
+          V: ${{ steps.version.outputs.data_version }}
+        run: |
+          rm -f tiles/manifest.lock
+          cd tiles && zip -q -9 -X "../tiles-$V.zip" manifest.json ./*.npz
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tiles
+          path: |
+            tiles-${{ steps.version.outputs.data_version }}.zip
+            tiles/manifest.json
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      V: ${{ needs.build.outputs.data_version }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: tiles
+          path: out
+      - name: Release tiles-<data_version>
+        run: |
+          gh release create "tiles-$V" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Dalles $V" \
+            --notes "Dalles tiles/1 $V (BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0). Validation : pipeline check. Copie S3 : infra/README.md." \
+            "out/tiles-$V.zip" out/tiles/manifest.json

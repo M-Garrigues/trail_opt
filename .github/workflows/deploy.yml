@@ -1,0 +1,270 @@
+# Déploiement prod (un seul environnement), seulement après une CI verte sur main (B3) :
+#   gate (commit = tête de main) → build (Rust + front, SANS accès AWS, E1) → deploy (OIDC) :
+#   zip S3 → tofu apply (nouvelle version) → smoke interne de CETTE version → release (alias live +
+#   site, infra/release.sh) → smoke PUBLIC via CloudFront → sinon rollback automatique de la release.
+# Rollback manuel : Actions → deploy → Run workflow (release précédente, front + API ensemble).
+# Redéployer un commit : « Re-run all jobs » sur son exécution de deploy.
+# Rôle AWS : OIDC, accepté seulement pour ref main + environnement prod (infra/bootstrap).
+name: deploy
+
+on:
+  workflow_run:
+    workflows: [ci]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: deploy-prod
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: eu-west-3
+  FUNCTION: optrail-api
+  LAMBDA_BIN: lambda # binaire du handler (src/bin/lambda.rs)
+  RUST_VERSION: 1.99.0
+  # Smoke interne : Massy 10 km, D+ attendu ~430 m (handoff CTO étape 3).
+  SMOKE_QUERY: lat=48.7309&lon=2.2713&distance_km=10
+  SMOKE_MIN_DPLUS: "300"
+  SMOKE_MIN_M: "9000"
+  SMOKE_MAX_M: "11000"
+
+jobs:
+  # CI verte, poussée sur main de CE dépôt, et commit toujours en tête de main (une CI plus ancienne
+  # qui finit après une plus récente ne redéploie pas un commit dépassé).
+  gate:
+    if: >-
+      github.event_name == 'workflow_run' &&
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.event == 'push' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.head_repository.full_name == github.repository
+    runs-on: ubuntu-24.04
+    outputs:
+      sha: ${{ steps.head.outputs.sha }}
+    steps:
+      - id: head
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ github.event.workflow_run.head_sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          main=$(gh api "repos/$REPO/commits/main" --jq .sha)
+          if [ "$main" = "$SHA" ]; then echo "sha=$SHA" >> "$GITHUB_OUTPUT"
+          else echo "::notice::$SHA dépassé par $main : pas de déploiement"; fi
+
+  # Aucun jeton OIDC ni secret ici : les scripts de build (build.rs, npm) ne voient pas AWS.
+  build:
+    needs: gate
+    if: needs.gate.outputs.sha != ''
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - name: Build Lambda arm64
+        working-directory: engine
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal -t aarch64-unknown-linux-gnu
+          rustup default "$RUST_VERSION"
+          pip install --require-hashes -r ../.github/requirements-lambda.txt
+          cargo lambda build --release --arm64 --locked --bin "$LAMBDA_BIN"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: lambda
+          path: engine/target/lambda/${{ env.LAMBDA_BIN }}/bootstrap
+          if-no-files-found: error
+
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+
+      - name: Build front
+        working-directory: web
+        env:
+          # Variable du DÉPÔT (publique) : sans elle le front prendrait la clé de test, refusée en prod.
+          VITE_TURNSTILE_SITEKEY: ${{ vars.TURNSTILE_SITEKEY }}
+        run: |
+          case "$VITE_TURNSTILE_SITEKEY" in
+            "" | [123]x0000*) echo "::error::variable TURNSTILE_SITEKEY absente ou clé de test"; exit 1 ;;
+          esac
+          npm ci --ignore-scripts
+          npm run build
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: site
+          path: web/dist/
+          if-no-files-found: error
+
+  deploy:
+    needs: [gate, build]
+    runs-on: ubuntu-24.04
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      SHA: ${{ needs.gate.outputs.sha }}
+      ARTIFACTS: ${{ vars.ARTIFACTS_BUCKET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.gate.outputs.sha }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: lambda
+          path: pkg
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: site
+          path: dist
+
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Zip (binaire + dalles pilotes, D10) vers S3
+        env:
+          DATA_VERSION: ${{ vars.DATA_VERSION }}
+        run: |
+          chmod 755 pkg/bootstrap # les artefacts GitHub perdent le bit exécutable
+          mkdir -p pkg/tiles
+          aws s3 sync --only-show-errors "s3://$ARTIFACTS/tiles/$DATA_VERSION/" pkg/tiles/
+          test -f pkg/tiles/manifest.json
+          (cd pkg && zip -qr9 ../lambda.zip .)
+          ls -l lambda.zip
+          aws s3 cp --only-show-errors lambda.zip "s3://$ARTIFACTS/lambda/$SHA.zip"
+
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+
+      - name: tofu apply
+        working-directory: infra
+        env:
+          TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+          DATA_VERSION: ${{ vars.DATA_VERSION }}
+          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+          TF_VAR_reserved_concurrency: ${{ vars.LAMBDA_RESERVED_CONCURRENCY || '-1' }}
+          TF_VAR_enable_custom_domain: ${{ vars.ENABLE_CUSTOM_DOMAIN || 'false' }}
+          TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
+          TF_VAR_cloudflare_api_token: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          TF_VAR_turnstile_secret: ${{ secrets.TURNSTILE_SECRET }}
+          TF_VAR_cloudfront_hostname: ${{ vars.CLOUDFRONT_HOSTNAME }}
+        run: |
+          export TF_VAR_lambda_s3_key="lambda/$SHA.zip"
+          TF_VAR_lambda_env=$(jq -nc --arg v "$DATA_VERSION" '{DATA_VERSION: $v, TILES_DIR: "/var/task/tiles"}')
+          export TF_VAR_lambda_env
+          tofu init -input=false -backend-config="bucket=$TF_STATE_BUCKET"
+          tofu apply -input=false -auto-approve
+          {
+            echo "VERSION=$(tofu output -raw lambda_version)"
+            echo "SITE_BUCKET=$(tofu output -raw site_bucket)"
+            echo "DISTRIBUTION=$(tofu output -raw distribution_id)"
+            echo "URL=$(tofu output -raw url)"
+          } >> "$GITHUB_ENV"
+
+      # Appel direct de la version (IAM), pas de l'URL publique. Événement au format Function URL
+      # sans requestContext.authorizer : le handler le traite comme appel interne (pas de Turnstile).
+      - name: Smoke test de la version publiée
+        run: |
+          jq -n --arg q "$SMOKE_QUERY" '{
+            version: "2.0", routeKey: "$default", rawPath: "/api/plan", rawQueryString: $q,
+            headers: {}, isBase64Encoded: false,
+            queryStringParameters: ($q | split("&") | map(split("=") | {(.[0]): .[1]}) | add),
+            requestContext: {routeKey: "$default", stage: "$default", requestId: "smoke",
+              http: {method: "GET", path: "/api/plan", protocol: "HTTP/1.1", sourceIp: "127.0.0.1", userAgent: "smoke"}}
+          }' > event.json
+          aws lambda invoke --function-name "$FUNCTION:$VERSION" --cli-binary-format raw-in-base64-out \
+            --cli-read-timeout 60 --payload file://event.json out.json > meta.json
+          cat meta.json
+          if jq -e '.FunctionError' meta.json > /dev/null; then cat out.json; exit 1; fi
+          jq -e '.statusCode == 200' out.json > /dev/null || { cat out.json; exit 1; }
+          jq '.body | fromjson | .candidates[0] | {length_m, dplus_m}' out.json
+          jq -e --argjson d "$SMOKE_MIN_DPLUS" --argjson lo "$SMOKE_MIN_M" --argjson hi "$SMOKE_MAX_M" \
+            '.body | fromjson | .candidates[0] | .dplus_m >= $d and .length_m >= $lo and .length_m <= $hi' \
+            out.json > /dev/null
+
+      # Archive du front de ce commit (source des releases et des rollbacks), avec ses en-têtes :
+      # assets à empreinte immuables, index.html et le reste revalidés à chaque visite.
+      - name: Archive du site
+        run: |
+          aws s3 cp --recursive --only-show-errors dist/assets/ "s3://$ARTIFACTS/site/$SHA/assets/" \
+            --cache-control "public, max-age=31536000, immutable"
+          aws s3 cp --recursive --only-show-errors --exclude 'assets/*' dist/ "s3://$ARTIFACTS/site/$SHA/" \
+            --cache-control "no-cache"
+          aws s3 cp --only-show-errors "s3://$ARTIFACTS/releases/current.json" prev.json \
+            || echo "::notice::première release : pas de rollback possible"
+
+      - name: Release (alias live + site)
+        id: release
+        run: infra/release.sh "$SHA" "$VERSION"
+
+      # Prouve CloudFront → S3 (OAC) et CloudFront → Function URL (OAC) → Lambda live : sans jeton
+      # Turnstile, l'API doit répondre 403 bot_check_failed (JSON du handler, pas une erreur CloudFront).
+      - name: Smoke public
+        run: |
+          for _ in $(seq 10); do
+            code=$(curl -s -o index.html -w '%{http_code}' "$URL/") && [ "$code" = 200 ] && break
+            echo "GET / → $code, nouvel essai"; sleep 15
+          done
+          [ "$code" = 200 ] || exit 1
+          grep -qi '<!doctype html' index.html || { echo "::error::GET / n'est pas index.html"; exit 1; }
+          code=$(curl -s -o api.json -w '%{http_code}' "$URL/api/plan?$SMOKE_QUERY")
+          echo "GET /api/plan sans jeton → $code $(head -c 300 api.json)"
+          [ "$code" = 403 ] || exit 1
+          jq -e '.error.code == "bot_check_failed"' api.json > /dev/null
+
+      - name: Pointeurs de release
+        run: |
+          if [ -f prev.json ]; then aws s3 cp --only-show-errors prev.json "s3://$ARTIFACTS/releases/previous.json"; fi
+          jq -n --arg sha "$SHA" --arg v "$VERSION" '{sha: $sha, version: $v}' > current.json
+          aws s3 cp --only-show-errors current.json "s3://$ARTIFACTS/releases/current.json"
+
+      - name: Rollback automatique
+        if: failure() && (steps.release.outcome == 'success' || steps.release.outcome == 'failure')
+        run: |
+          [ -f prev.json ] || { echo "::error::pas de release précédente : site à réparer à la main"; exit 1; }
+          infra/release.sh "$(jq -r .sha prev.json)" "$(jq -r .version prev.json)"
+          echo "::error::smoke public raté : release précédente remise en service"
+
+  # Release précédente (front + alias) ; elle devient la courante, plus de précédente ensuite.
+  rollback:
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    environment: prod
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      ARTIFACTS: ${{ vars.ARTIFACTS_BUCKET }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - name: Release précédente
+        run: |
+          aws s3 cp --only-show-errors "s3://$ARTIFACTS/releases/previous.json" prev.json
+          account=$(aws sts get-caller-identity --query Account --output text)
+          export SITE_BUCKET="optrail-site-$account"
+          DISTRIBUTION=$(aws cloudfront list-distributions --output text \
+            --query "DistributionList.Items[?Comment=='optrail'].Id | [0]")
+          export DISTRIBUTION
+          infra/release.sh "$(jq -r .sha prev.json)" "$(jq -r .version prev.json)"
+          aws s3 cp --only-show-errors prev.json "s3://$ARTIFACTS/releases/current.json"
+          aws s3 rm --only-show-errors "s3://$ARTIFACTS/releases/previous.json"

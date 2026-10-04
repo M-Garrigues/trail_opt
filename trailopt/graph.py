@@ -5,6 +5,7 @@ Toutes les coordonnées sont en mètres dans le repère local centré sur le dé
 from __future__ import annotations
 
 import heapq
+import warnings
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -582,6 +583,60 @@ def duplicate_near_start(edges: dict[int, Edge], next_id: int, center=(0.0, 0.0)
     return len(near)
 
 
+SPIKE_HALF = 4      # demi-fenêtre de la médiane glissante (points de 5 m : ±20 m)
+SPIKE_TOL_M = 20.0  # écart à la médiane au-delà duquel un point est un artefact
+
+
+def despike(e: Edge, z: np.ndarray) -> np.ndarray:
+    """Profil brut -> NaN aux pics isolés (écart > SPIKE_TOL_M à la médiane glissante sur ±20 m,
+    fenêtre tronquée aux extrémités). La médiane d'une rampe est sa valeur centrale : une pente
+    réelle, même raide, n'est pas touchée ; un portail de tunnel ou un pixel de falaise l'est.
+    Ponts et tunnels inchangés (profil linéaire entre nœuds)."""
+    z = np.asarray(z, float)
+    if e.flat or len(z) < 3 or not np.nanmax(z, initial=-np.inf) - np.nanmin(z, initial=np.inf) > SPIKE_TOL_M:
+        return z
+    for _ in range(3):    # un pic large (rampe de falaise en bout de tronçon) se retire par couches
+        w = np.lib.stride_tricks.sliding_window_view(np.pad(z, SPIKE_HALF, constant_values=np.nan),
+                                                     2 * SPIKE_HALF + 1)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", RuntimeWarning)   # fenêtre toute NaN
+            bad = np.abs(z - np.nanmedian(w, axis=1)) > SPIKE_TOL_M
+        if not bad.any():
+            break
+        z = np.where(bad, np.nan, z)
+    return z
+
+
+def cap_grade(s: np.ndarray, z: np.ndarray, cap: float) -> np.ndarray:
+    """Profil d'une route (extrémités = altitudes de nœud) -> plus aucun pas de 5 m au-dessus de
+    `cap` : chaque marche (route en corniche, le MNT passe du pied au haut de la falaise) est
+    remplacée par une droite, élargie des deux côtés jusqu'à respecter la pente (ou tout le tronçon)."""
+    z = np.asarray(z, float).copy()
+    lim = cap * np.maximum(np.diff(s), 5.0)
+    while True:
+        k = np.flatnonzero(np.abs(np.diff(z)) > lim + 1e-9)
+        if not len(k):
+            return z
+        a, b, last = k[0], k[0] + 1, len(z) - 1
+        while abs(z[b] - z[a]) > cap * max(s[b] - s[a], 5.0) and (a > 0 or b < last):
+            a, b = max(a - 1, 0), min(b + 1, last)
+        z[a:b + 1] = np.interp(s[a:b + 1], [s[a], s[b]], [z[a], z[b]])
+        if a == 0 and b == last:
+            return z
+
+
+def node_elevations(edges, zs, node_z: dict) -> dict:
+    """Altitude unique par nœud : 1re valeur finie, prise d'abord sur les tronçons au sol. Un
+    portail de tunnel est dans la falaise, et l'intérieur du tunnel donne le terrain au-dessus."""
+    for flat in (False, True):
+        for e, zk in zip(edges, zs):
+            if e.flat == flat:
+                for n, val in ((e.u, zk[0]), (e.v, zk[-1])):
+                    if n not in node_z and np.isfinite(val):
+                        node_z[n] = float(val)
+    return node_z
+
+
 def fill_nan(e: Edge, z: np.ndarray) -> np.ndarray:
     z = np.asarray(z, float).copy()
     bad = ~np.isfinite(z)
@@ -630,15 +685,10 @@ def assign_elevation(g: Graph, sampler, smooth=3, grade_win=25.0, node_z=None) -
     zs, off = {}, 0
     for k in ids:
         n = len(g.edges[k].xy)
-        zs[k] = fill_nan(g.edges[k], z[off: off + n])
+        zs[k] = fill_nan(g.edges[k], despike(g.edges[k], z[off: off + n]))
         off += n
-    # Altitude unique par nœud : première valeur finie rencontrée.
-    node_z = {} if node_z is None else node_z
-    for k in ids:
-        e, zk = g.edges[k], zs[k]
-        for n, val in ((e.u, zk[0]), (e.v, zk[-1])):
-            if n not in node_z and np.isfinite(val):
-                node_z[n] = float(val)
+    node_z = node_elevations([g.edges[k] for k in ids], [zs[k] for k in ids],
+                             {} if node_z is None else node_z)
     fallback = float(np.nanmean(z))
     for k in ids:
         e, zk = g.edges[k], zs[k]

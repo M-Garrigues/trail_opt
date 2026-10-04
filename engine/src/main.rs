@@ -1,5 +1,6 @@
 //! CLI du moteur.
 //!   engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K]
+//!   engine plan --tiles DIR --request req.json [--prep-only]   boucles depuis les dalles tiles/1
 //!   engine codes          liste des codes d'erreur et d'avertissement (JSON)
 //! `solve` écrit le résultat en JSON sur la sortie standard ; en cas d'échec
 //! {"error": {"code", "params", "detail"}} et code de sortie 1.
@@ -10,14 +11,7 @@ use std::time::{Duration, Instant};
 
 use engine::{Budget, Code, Msg, Problem, codes, optimize};
 
-const USAGE: &str = "usage : engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K] | engine codes";
-/// Itérations par seconde de budget Python (faces, recuit classique), calibrées sur Massy.
-const FACES_PER_S: f64 = 3e5;
-/// Recuit classique : une mutation coûte ~ un Dijkstra, donc ∝ arêtes. Travail fixe
-/// (mutations × arêtes), borné : ~30 000 mutations sous 1 000 arêtes, ~9 000 à Massy 10 km.
-/// Moins de mutations laisse des graines médiocres sur les petits graphes (corpus de parité).
-const ANNEAL_WORK: f64 = 3.5e7;
-const ANNEAL_MIN_MAX: (f64, f64) = (5e3, 3e4);
+const USAGE: &str = "usage : engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K] | engine plan --tiles DIR --request req.json [--prep-only] | engine codes";
 
 fn fail(msg: Msg) -> ! {
     println!("{}", serde_json::json!({ "error": msg }));
@@ -40,7 +34,8 @@ fn main() {
             return;
         }
         Some("solve") => {}
-        _ => usage("commande attendue : solve ou codes".into()),
+        Some("plan") => plan(&args[1..]),
+        _ => usage("commande attendue : solve, plan ou codes".into()),
     }
     let (mut path, mut time, mut iters, mut anneal_iters, mut seed, mut candidates) =
         (None, None, None, None, 0u64, 1usize);
@@ -66,8 +61,6 @@ fn main() {
         }
     }
     let path = path.unwrap_or_else(|| usage("--problem requis".into()));
-    // Budget de la boucle principale : chaque boucle en plus coûte une demi-part.
-    let main_s = time.unwrap_or(20.0) / (1.0 + 0.5 * (candidates - 1) as f64);
     let deadline = time.map(|s| Instant::now() + Duration::from_secs_f64(s));
 
     let t = Instant::now();
@@ -75,16 +68,10 @@ fn main() {
         .unwrap_or_else(|e| fail(Msg::error(Code::InvalidProblem, format!("{path}: {e}"))));
     let p = Problem::from_json(&text).unwrap_or_else(|e| fail(Msg::error(Code::InvalidProblem, e)));
     let load_s = t.elapsed().as_secs_f64();
-    let (lo, hi) = ANNEAL_MIN_MAX;
-    let anneal_default =
-        (ANNEAL_WORK / p.n_edges().max(1) as f64).clamp(lo, hi) * (main_s / 5.0).min(1.0);
-    let budget = Budget {
-        iters: iters.unwrap_or((FACES_PER_S * main_s) as u64),
-        anneal_iters: anneal_iters.unwrap_or(anneal_default as u64),
-        seed,
-        candidates,
-        deadline,
-    };
+    let mut budget = Budget::from_time(time.unwrap_or(20.0), candidates, p.n_edges(), seed);
+    budget.iters = iters.unwrap_or(budget.iters);
+    budget.anneal_iters = anneal_iters.unwrap_or(budget.anneal_iters);
+    budget.deadline = deadline;
     let t = Instant::now();
     let out = optimize(&p, &budget).unwrap_or_else(|m| fail(m));
     let solve_s = t.elapsed().as_secs_f64();
@@ -112,4 +99,38 @@ fn main() {
         "warnings": out.warnings,
     });
     println!("{res}");
+}
+
+/// `engine plan` : JSON de sortie sur stdout ; erreur {"error": …} et code 1.
+fn plan(args: &[String]) -> ! {
+    let (mut tiles, mut request, mut prep_only) = (None, None, false);
+    let mut it = args.iter();
+    while let Some(k) = it.next() {
+        match k.as_str() {
+            "--prep-only" => prep_only = true,
+            "--tiles" | "--request" => {
+                let v = it
+                    .next()
+                    .cloned()
+                    .unwrap_or_else(|| usage(format!("valeur manquante pour {k}")));
+                if k == "--tiles" {
+                    tiles = Some(v)
+                } else {
+                    request = Some(v)
+                }
+            }
+            _ => usage(format!("option inconnue : {k}")),
+        }
+    }
+    let tiles = tiles.unwrap_or_else(|| usage("--tiles requis".into()));
+    let request = request.unwrap_or_else(|| usage("--request requis".into()));
+    let text = std::fs::read_to_string(&request)
+        .unwrap_or_else(|e| fail(Msg::error(Code::InvalidRequest, format!("{request}: {e}"))));
+    let req: engine::plan::Request = serde_json::from_str(&text)
+        .unwrap_or_else(|e| fail(Msg::error(Code::InvalidRequest, e.to_string())));
+    let store = engine::tiles::TileStore::open(std::path::Path::new(&tiles))
+        .unwrap_or_else(|e| fail(Msg::error(Code::InvalidProblem, e)));
+    let out = engine::plan::plan(&store, &req, prep_only).unwrap_or_else(|m| fail(m));
+    println!("{out}");
+    exit(0)
 }

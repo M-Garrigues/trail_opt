@@ -1,0 +1,120 @@
+# Intégration continue : aucun accès AWS (pas d'id-token), sûr pour les PR de forks.
+name: ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  RUST_VERSION: 1.99.0 # même toolchain que deploy.yml
+  # TODO T29 : retirer dès que la dalle de test versionnée (engine/tests/data/tiles/, lead data)
+  # est livrée. En attendant, les tests bout en bout sans dalle sautent au lieu d'échouer.
+  ENGINE_TILES_OPTIONAL: "1"
+
+jobs:
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Rust
+        run: rustup toolchain install "$RUST_VERSION" --profile minimal -c rustfmt,clippy && rustup default "$RUST_VERSION"
+      - name: cargo fmt / clippy / test
+        working-directory: engine
+        run: |
+          cargo fmt --check
+          cargo clippy --release --all-targets --locked -- -D warnings
+          cargo test --release --locked
+      - name: cargo deny advisories 0.20.2 (archive vérifiée par SHA-256)
+        run: |
+          v=0.20.2; a="cargo-deny-$v-x86_64-unknown-linux-musl"
+          curl -fsSLo cargo-deny.tgz "https://github.com/EmbarkStudios/cargo-deny/releases/download/$v/$a.tar.gz"
+          echo "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f  cargo-deny.tgz" | sha256sum -c -
+          tar xzf cargo-deny.tgz --strip-components=1 "$a/cargo-deny"
+          ./cargo-deny --manifest-path engine/Cargo.toml check advisories
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - name: pytest, parité Rust incluse (binaire release compilé ci-dessus)
+        run: |
+          pip install -r requirements-dev.txt
+          python -m pytest -q
+
+  lambda-build:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Outils
+        run: |
+          rustup toolchain install "$RUST_VERSION" --profile minimal -t aarch64-unknown-linux-gnu && rustup default "$RUST_VERSION"
+          pip install --require-hashes -r .github/requirements-lambda.txt
+      - name: cargo lambda build arm64 (zig)
+        working-directory: engine
+        run: cargo lambda build --release --arm64 --locked
+
+  tofu:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: opentofu/setup-opentofu@a1320f892987e89d278cc92dc5adc984fb93aca4 # v2.0.2
+        with:
+          tofu_version: 1.13.1
+          tofu_wrapper: false
+      - run: tofu fmt -check -recursive infra
+      - name: validate
+        run: |
+          for d in infra infra/bootstrap; do
+            tofu -chdir="$d" init -backend=false -input=false
+            tofu -chdir="$d" validate
+          done
+
+  # Front : tests unitaires, build (svelte-check compris), e2e Playwright sur Chromium (Pixel 7, bureau) et WebKit (iPhone 14).
+  # L'API est mockée par les tests (page.route) : pas de pile Rust ; seul le fond de carte IGN vient du réseau.
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: lts/*
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: npm ci
+      - run: npm test
+      - run: npm run build
+      - name: Navigateurs Playwright
+        run: npx playwright install --with-deps chromium webkit
+      - name: Playwright (Vite lancé par playwright.config.ts)
+        run: npx playwright test
+
+  actionlint:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: actionlint 1.7.12 (archive vérifiée par SHA-256)
+        run: |
+          curl -fsSLo actionlint.tgz https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  actionlint.tgz" | sha256sum -c -
+          tar xzf actionlint.tgz actionlint
+          ./actionlint -color

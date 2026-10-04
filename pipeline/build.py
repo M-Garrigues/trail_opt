@@ -20,9 +20,12 @@ from trailopt import cache, elevation, graph, ign
 from .load import FORMAT, TILE_M, lengths, profile_counts, profile_points
 
 MARGIN_M = 2000.0          # voisins chargés pour les parallèles en bord de dalle
-DATA_VERSION = "bdtopo-wfs-2026-10"
+DATA_VERSION = "bdtopo-wfs-2026-10b"  # b : altitudes corrigées (falaises, portails de tunnel, D27)
 SOURCE = "BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0"
 STEEP = 0.60               # validation : pente max > 60 % (artefact probable)
+ROAD_MAX_GRADE = 0.30     # pente physique max d'une voie carrossable, par pas de 5 m (D27)
+ROAD_NATURES = [ign.NATURES.index(k) for k in sorted(ign.ROADS | {"Route empierrée", "Type autoroutier"})]
+JUMP_DM = 100              # validation : saut > 10 m entre deux points de 5 m (200 %, pic probable)
 _TO_WGS = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
 _TO_L93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
 
@@ -63,8 +66,8 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
         edges[i] = graph.Edge(0, 0, xy, s, bool(A["flat"][i]))
     par = graph.parallel_pairs(graph.Graph(edges), center=(-1e9, -1e9))
 
-    # Tronçons de la dalle, rangés par id ; trous comblés le long du tronçon, puis altitude
-    # unique par nœud (1re valeur finie), comme graph.assign_elevation.
+    # Tronçons de la dalle, rangés par id ; pics retirés et trous comblés le long du tronçon, puis
+    # altitude unique par nœud (tronçons au sol d'abord), comme graph.assign_elevation.
     mem = np.flatnonzero(inside)
     mem = mem[np.argsort(ident[mem], kind="stable")]
     P = np.vstack([edges[i].xy for i in mem]) if len(mem) else np.zeros((0, 2))
@@ -72,26 +75,35 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     nodata = float(np.isnan(z).mean()) if len(z) else 0.0
     key_u = (Xd[first] << 32) | Yd[first]
     key_v = (Xd[off[1:] - 1] << 32) | Yd[off[1:] - 1]
-    node_z, k, zs = {}, 0, []
+    k, zs = 0, []
     for i in mem.tolist():
         m = len(edges[i].xy)
-        zi = graph.fill_nan(edges[i], z[k:k + m])
+        zs.append(graph.fill_nan(edges[i], graph.despike(edges[i], z[k:k + m])))
         k += m
-        zs.append(zi)
-        for key, val in ((int(key_u[i]), zi[0]), (int(key_v[i]), zi[-1])):
-            if key not in node_z and np.isfinite(val):
-                node_z[key] = float(val)
+    keyed = [graph.Edge(int(key_u[i]), int(key_v[i]), None, None, edges[i].flat) for i in mem.tolist()]
+    node_z = graph.node_elevations(keyed, zs, {})
     fb = float(np.nanmean(z)) if np.isfinite(z).any() else 0.0
-    cols = {c: [] for c in ("dplus_dm", "dminus_dm", "max_grade_pm", "z0", "prof_d", "par_n", "par_id")}
+    no_z = sorted({n for e in keyed for n in (e.u, e.v)} - node_z.keys())   # aucun MNT sur le tronçon
+    if no_z and node_z:   # altitude du nœud connu le plus proche (pas la moyenne de dalle : pics)
+        from scipy.spatial import cKDTree
+        known = np.array(list(node_z), np.int64)
+        _, j = cKDTree(np.column_stack([known >> 32, known & 0xFFFFFFFF])).query(
+            np.column_stack([np.array(no_z, np.int64) >> 32, np.array(no_z, np.int64) & 0xFFFFFFFF]))
+        node_z.update({n: node_z[int(known[k])] for n, k in zip(no_z, j)})
+    cols = {c: [] for c in ("jump", "dplus_dm", "dminus_dm", "max_grade_pm", "z0", "prof_d", "par_n", "par_id")}
     for i, zi in zip(mem.tolist(), zs):
         e = edges[i]
         zi = zi.copy()
         zi[0], zi[-1] = node_z.get(int(key_u[i]), fb), node_z.get(int(key_v[i]), fb)
-        graph.compute_profile(e, graph.fill_nan(e, zi))
+        zi = graph.fill_nan(e, zi)
+        if not e.flat and A["nature"][i] in ROAD_NATURES:
+            zi = graph.cap_grade(e.s, zi, ROAD_MAX_GRADE)
+        graph.compute_profile(e, zi)
         q = np.round(e.z * 10).astype(np.int64)
         dz = np.diff(q)
         if np.abs(dz).max(initial=0) > 32767:
             raise ValueError(f"saut de profil > 3 276 m sur 5 m (tronçon {ident[i]})")
+        cols["jump"].append(np.abs(dz).max(initial=0) > JUMP_DM)
         cols["dplus_dm"].append(int(dz[dz > 0].sum()))
         cols["dminus_dm"].append(int(-dz[dz < 0].sum()))
         cols["max_grade_pm"].append(min(65535, round(e.max_grade * 1000)))
@@ -121,6 +133,7 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     steep = int((T["max_grade_pm"] > STEEP * 1000).sum())
     info = dict(n=len(mem), km=round(int(T["len_dm"].sum()) / 1e4, 1), nodata_frac=round(nodata, 5),
                 steep_gt60=steep, steep_frac=round(steep / max(1, len(mem)), 5),
+                jump_gt10=int(sum(cols["jump"])), node_fallback=len(no_z),
                 par_links=len(cols["par_id"]), z_min_m=round(float(np.nanmin(z)), 1) if len(z) else None,
                 z_max_m=round(float(np.nanmax(z)), 1) if len(z) else None)
     return T, info
@@ -197,6 +210,8 @@ def build(spec: str, out, log=print, force: bool = False) -> dict:
             n = sum(t["n"] for t in tiles)
             m["totals"] = dict(tiles=len(m["tiles"]), n=n, bytes=sum(t["bytes"] for t in tiles),
                                steep_gt60=sum(t["steep_gt60"] for t in tiles),
+                               jump_gt10=sum(t.get("jump_gt10", 0) for t in tiles),
+                               node_fallback=sum(t.get("node_fallback", 0) for t in tiles),
                                nodata_frac=round(sum(t["nodata_frac"] * t["n"] for t in tiles) / max(1, n), 5))
             cache.write_atomic(mpath, json.dumps(m, ensure_ascii=False, indent=1).encode())
     return m

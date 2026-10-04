@@ -1,0 +1,155 @@
+// Parcours 1 : première visite → départ → réglages → calcul → résultat, profil, détail, GPX.
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+import { setup, mockPlan, placeStart, zoneClick, T, isFr } from './helpers';
+
+async function axe(page: import('@playwright/test').Page) {
+  const r = await new AxeBuilder({ page }).exclude('.map').analyze();
+  return r.violations.filter((v) => v.impact === 'serious' || v.impact === 'critical').map((v) => `${v.id}: ${v.nodes.map((n) => n.target).join(' | ')}`);
+}
+
+test('parcours principal', async ({ page }) => {
+  const t = T();
+  await setup(page, { intro: true });
+  const calls = await mockPlan(page);
+  await page.goto('/');
+
+  // AC1 intro + sécurité, puis absentes au rechargement
+  await expect(page.getByTestId('safety')).toBeVisible();
+  expect(await axe(page), 'axe E1').toEqual([]);
+  await page.getByRole('button', { name: t.go }).click();
+  await page.reload();
+  await expect(page.getByTestId('safety')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: t.find })).toBeDisabled();
+
+  // AC2 aucune géolocalisation à froid ; AC3 toucher la carte active Calculer
+  expect(await page.evaluate(() => (window as unknown as { geoCalls: number }).geoCalls)).toBe(0);
+  await placeStart(page);
+  await expect(page.getByRole('button', { name: t.find })).toBeEnabled();
+
+  // AC4 radiogroup, flèches
+  const radios = page.getByRole('radiogroup', { name: isFr() ? 'Type d’entraînement' : 'Training type' }).getByRole('radio');
+  await expect(radios).toHaveCount(3);
+  await radios.first().focus();
+  await page.keyboard.press('ArrowRight');
+  await expect(radios.nth(1)).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#f-dplus_m')).toBeVisible();
+  await page.keyboard.press('ArrowLeft');
+  await expect(page.locator('#f-dplus_m')).toHaveCount(0);
+
+  // AC5 1 km → 2 + message
+  await page.locator('#f-distance_km').fill('1');
+  await page.locator('#f-distance_km').blur();
+  await expect(page.locator('#f-distance_km')).toHaveValue('2');
+  await expect(page.locator('#m-distance_km')).not.toBeEmpty();
+  await page.locator('#f-distance_km').fill('10');
+  await page.locator('#f-distance_km').blur();
+
+  // AC6 note « courtes » et durée ~1 h 00
+  await page.locator('label', { hasText: isFr() ? 'Courtes et raides' : 'Short & steep' }).click();
+  await expect(page.getByText(isFr() ? /montées courtes réduisent/ : /short climbs reduce/)).toBeVisible();
+  await expect(page.locator('.estimate strong')).toHaveText('~1 h 00');
+  expect(await axe(page), 'axe E3').toEqual([]);
+
+  await page.getByRole('button', { name: t.find }).click();
+  await expect(page.getByTestId('headline')).toHaveText('+424 m');
+  const q = calls[0].searchParams;
+  expect([...q.keys()].every((k) => ['lat', 'lon', 'goal', 'distance_km', 'dplus_m', 'max_distance_km', 'climbs', 'max_grade_pct', 'roads', 'no_repeat_junction', 'n_candidates', 'polygon', 'seed'].includes(k))).toBe(true);
+  expect(q.get('n_candidates')).toBe('1');
+  expect(q.get('climbs')).toBe('short');
+  expect(await axe(page), 'axe E6').toEqual([]);
+
+  // AC11 survol du profil à 50 % → curseur ≈ length/2
+  const prof = page.getByRole('slider').first();
+  const b = (await prof.boundingBox())!;
+  await page.mouse.move(b.x + 46 + (b.width - 58) / 2, b.y + b.height / 2);
+  await expect(prof).toHaveAttribute('aria-valuetext', /km 5[,.][12]/);
+  const now = Number(await prof.getAttribute('aria-valuenow'));
+  expect(Math.abs(now - 10495 / 2)).toBeLessThan(300);
+
+  // E8 détail, AC18 Retour ferme E8 puis E6
+  await page.getByRole('button', { name: t.details }).click();
+  await expect(page.getByRole('heading', { level: 2 })).toBeVisible();
+  expect(await axe(page), 'axe E8').toEqual([]);
+  await page.goBack();
+  await expect(page.getByTestId('headline')).toBeVisible();
+  await page.keyboard.press('Escape');
+  await expect(page.getByRole('button', { name: t.find })).toBeVisible();
+});
+
+test('GPX téléchargé depuis le résultat (AC14, D27 : plus d’envoi montre)', async ({ page }) => {
+  const t = T();
+  await setup(page);
+  await page.addInitScript(() => { Object.defineProperty(navigator, 'canShare', { value: undefined }); }); // branche téléchargement
+  await mockPlan(page);
+  await page.goto('/');
+  await placeStart(page);
+  await page.getByRole('button', { name: t.find }).click();
+  const dl = page.waitForEvent('download');
+  await page.getByRole('button', { name: t.download }).click();
+  const d = await dl;
+  expect(d.suggestedFilename()).toBe('optrail-10.5km-424m.gpx');
+  const body = await (await d.createReadStream()).toArray();
+  const gpx = Buffer.concat(body).toString();
+  expect(gpx).toContain('<trk>');
+  expect(gpx).toContain('<ele>');
+  expect(gpx).toContain('© IGN');
+});
+
+test('GPX partagé quand le système sait partager un fichier (canShare)', async ({ page }) => {
+  const t = T();
+  await setup(page);
+  await page.addInitScript(() => {
+    const w = window as unknown as { shared: { name: string; text: string } | null };
+    w.shared = null;
+    Object.defineProperty(navigator, 'canShare', { value: (d: { files?: File[] }) => !!d.files?.length });
+    Object.defineProperty(navigator, 'share', { value: async (d: { files: File[] }) => { w.shared = { name: d.files[0].name, text: await d.files[0].text() }; } });
+  });
+  await mockPlan(page);
+  await page.goto('/');
+  await placeStart(page);
+  await page.getByRole('button', { name: t.find }).click();
+  await page.getByRole('button', { name: isFr() ? 'Partager le GPX' : 'Share GPX' }).click();
+  await expect.poll(() => page.evaluate(() => (window as unknown as { shared: { name: string } | null }).shared?.name)).toBe('optrail-10.5km-424m.gpx');
+  expect(await page.evaluate(() => (window as unknown as { shared: { text: string } }).shared.text)).toContain('<trk>');
+});
+
+test.describe('sombre', () => {
+  test.use({ colorScheme: 'dark' });
+  test('axe E3/E6/E12 en sombre, carte claire (AC19)', async ({ page }) => {
+    const t = T();
+    await setup(page);
+    await mockPlan(page);
+    await page.goto('/');
+    await placeStart(page);
+    expect(await axe(page), 'axe E3 sombre').toEqual([]);
+    await page.getByRole('button', { name: t.find }).click();
+    await expect(page.getByTestId('headline')).toBeVisible();
+    expect(await axe(page), 'axe E6 sombre').toEqual([]);
+    await page.getByRole('button', { name: t.history }).first().click();
+    expect(await axe(page), 'axe E12 sombre').toEqual([]);
+    expect(await page.evaluate(() => getComputedStyle(document.body).backgroundColor)).not.toBe('rgb(255, 255, 255)');
+  });
+});
+
+test('zone : 2 points → Valider désactivé ; départ hors zone refusé (AC7)', async ({ page }) => {
+  const t = T();
+  await setup(page);
+  await page.goto('/');
+  await placeStart(page);
+  await page.getByRole('button', { name: isFr() ? 'Zone' : 'Area', exact: true }).click();
+  const validate = page.getByTestId('zone-validate');
+  await expect(page.locator('.count')).toHaveText('0/50'); // terra-draw monté (composant chargé à la demande)
+  await expect(validate).toBeDisabled();
+  const box = (await page.locator('.map').boundingBox())!;
+  const P = (fx: number, fy: number) => [box.x + box.width * fx, box.y + box.height * fy] as const;
+  // triangle dans le coin gauche, loin du départ (centre, 30 % de hauteur)
+  const pts = [P(0.1, 0.08), P(0.3, 0.08), P(0.2, 0.2)];
+  for (const [i, [x, y]] of pts.entries()) await zoneClick(page, x, y, i + 1);
+  await expect(validate).toBeDisabled(); // pas encore fermée
+  await zoneClick(page, ...pts[0], 3); // fermeture
+  await expect(validate).toBeEnabled();
+  await validate.click();
+  await expect(page.getByRole('alert')).toContainText(isFr() ? 'Le départ doit être dans la zone.' : 'The start must be inside the area.');
+  await expect(page.getByRole('button', { name: t.find })).toHaveCount(0); // toujours en E4
+});

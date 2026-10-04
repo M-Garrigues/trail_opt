@@ -68,7 +68,7 @@ def _fetch_tile(layer, core, stats, res=RES, margin_px=MARGIN_PX):
     raise RuntimeError(f"WMS-R altitude indisponible : {last}")
 
 
-def _read(p, mask=True):
+def _read(p, mask=True, jumps=True):
     from rasterio.io import MemoryFile
     with MemoryFile(gzip.decompress(p.read_bytes())) as mf, mf.open() as ds:
         a = ds.read(1).astype(np.float64)
@@ -76,7 +76,7 @@ def _read(p, mask=True):
     if nd is not None:
         a[a == nd] = np.nan
     a[a < -1000] = np.nan
-    return mask_unreliable(a) if mask else a
+    return mask_unreliable(a, jumps) if mask else a
 
 
 # En bordure d'une zone sans données (base militaire, plan d'eau, limite de couverture), le
@@ -87,8 +87,8 @@ HOLE_MARGIN_PX = 30      # 150 m autour d'un trou : valeurs non fiables
 MAX_STEP_M = 15.0        # saut d'altitude impossible entre deux pixels voisins (pente 300 %)
 
 
-def mask_unreliable(a: np.ndarray) -> np.ndarray:
-    """Met à NaN les pixels proches d'un trou et ceux pris dans une pente impossible.
+def mask_unreliable(a: np.ndarray, jumps: bool = True) -> np.ndarray:
+    """Met à NaN les pixels proches d'un trou et (si `jumps`) ceux pris dans une pente impossible.
     Ils seront comblés par la couche de repli (RGE ALTI), puis par interpolation."""
     from scipy import ndimage
     hole = ~np.isfinite(a)
@@ -104,7 +104,7 @@ def mask_unreliable(a: np.ndarray) -> np.ndarray:
     jump[:-1] |= dy
     jump[:, 1:] |= dx
     jump[:, :-1] |= dx
-    if jump.any():
+    if jumps and jump.any():
         bad |= ndimage.binary_dilation(jump, iterations=2)
     if bad.any():
         a = a.copy()
@@ -127,12 +127,20 @@ def bilinear(grid, bb, X, Y, res=RES):
             + z10 * (1 - fc) * fr + z11 * fc * fr)
 
 
+# Le test de saut (> 15 m entre pixels) prend aussi les falaises : dans l'Oisans, toute une route
+# taillée dans la falaise (Villard-Notre-Dame) tombait à NaN dans les deux couches, et ses nœuds
+# prenaient une altitude lointaine (moyenne de dalle, terrain au-dessus d'un tunnel) : pics de
+# ±150 m. Le brut y est juste (838 → 825 m) : en dernier recours on le prend, trous toujours exclus.
+PASSES = [(LAYERS[0], True), (LAYERS[1], True), (LAYERS[0], False), (LAYERS[1], False)]
+
+
 def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
-    """Altitudes (m) aux points Lambert-93 ; NaN là où aucune couche ne couvre."""
+    """Altitudes (m) aux points Lambert-93 ; NaN là où aucune couche ne couvre.
+    Passes : LiDAR HD, RGE ALTI (masque complet), puis les mêmes sans le test de saut (falaises)."""
     stats = stats if stats is not None else cache.new_stats()
     X, Y = np.asarray(X, float), np.asarray(Y, float)
     z = np.full(len(X), np.nan)
-    for layer in LAYERS:
+    for layer, jumps in PASSES:
         todo = np.nonzero(np.isnan(z))[0]
         if len(todo) == 0:
             break
@@ -145,7 +153,7 @@ def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
         with ThreadPoolExecutor(6) as ex:  # téléchargements en parallèle, lecture séquentielle (RAM)
             files = list(ex.map(lambda t: _fetch_tile(layer, t[0], stats), tiles))
         for (core, sel), (bb, p) in zip(tiles, files):
-            z[sel] = bilinear(_read(p), bb, X[sel], Y[sel])
+            z[sel] = bilinear(_read(p, jumps=jumps), bb, X[sel], Y[sel])
     return z
 
 

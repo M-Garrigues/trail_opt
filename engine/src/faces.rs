@@ -22,6 +22,13 @@ const INF: f64 = f64::INFINITY;
 const TARGET_SCALE: f64 = 1000.0;
 /// Pénalité par mètre au-delà de Lmax (mode max).
 const PEN: f64 = 0.5;
+/// Mode min_distance (modes.md A) : pénalité du D+ manquant et du dépassement de Lcap, et
+/// consigne de l'asservissement de λ (un peu au-dessus de X).
+const MD_PEN: f64 = 3.0;
+const MD_MARGIN: f64 = 0.03;
+/// λ initial : mode min_distance, autres modes.
+const LAM0_MD: f64 = 0.05;
+const LAM0: f64 = 0.02;
 
 /// Pas d'une face : (arête, de, vers).
 pub type Step = (usize, usize, usize);
@@ -301,6 +308,9 @@ pub struct FaceSearch<'a> {
     foe: Vec<Vec<usize>>,
     par: Vec<Vec<usize>>,
     far: Option<Vec<bool>>,
+    /// Mode min_distance avec préférence de montées : bonus B par arête (γβq/H).
+    wb: Option<Vec<f64>>,
+    lam0: f64,
     /// Plafond de temps (sécurité) : le recuit s'arrête et rend sa meilleure boucle.
     pub deadline: Option<Instant>,
 }
@@ -327,6 +337,8 @@ impl<'a> FaceSearch<'a> {
             foe,
             par: p.par_lists(),
             far,
+            wb: p.climb_bonus().filter(|_| p.min_distance()),
+            lam0: if p.min_distance() { LAM0_MD } else { LAM0 },
             deadline: None,
         }
     }
@@ -467,6 +479,9 @@ impl<'a> FaceSearch<'a> {
     /// meilleure boucle dans les bornes, ou de la dernière ; λ final ; itérations faites).
     /// Mode max : score lagrangien D+ - λ·L, λ asservi pour que L reste dans [Lmin, Lmax] :
     /// la boucle ne grossit que par des faces assez denses en D+. Mode cible : -erreur.
+    /// Mode min_distance (modes.md A) : score W + B - λL - pénalités, λ asservi pour garder W
+    /// juste au-dessus de X ; on garde la plus courte boucle de W >= X et L <= Lmax (avec
+    /// bonus `wb` : la meilleure B - λL), sinon celle de plus fort W sous Lmax.
     #[allow(clippy::too_many_arguments)] // mêmes paramètres que `FaceSearch.run` en Python
     pub fn run(
         &self,
@@ -476,13 +491,16 @@ impl<'a> FaceSearch<'a> {
         t1: f64,
         lam0: f64,
         w: &[f64],
+        wb: Option<&[f64]>,
         rng: &mut Rng,
     ) -> (Vec<usize>, f64, u64) {
         // `w` : poids de recherche (le D+ réel, ou réduit sur les arêtes déjà prises par les
         // boucles précédentes pour s'en écarter, voir `alternates`).
         let p = self.p;
-        let (ln, s, target) = (&p.len, p.s, p.target());
+        let (ln, s, target, md) = (&p.len, p.s, p.target(), p.min_distance());
+        let bonus = |e: usize| wb.map_or(0.0, |b| b[e]);
         let (lmin, lmax, lt, dt) = (p.lmin, p.lmax, p.l, p.d.unwrap_or(1.0));
+        let (x_md, wt) = (dt, dt * (1.0 + MD_MARGIN));
         let (m, n) = (p.n_edges(), p.n_nodes());
         let mut st = Loop {
             inx: vec![false; m],
@@ -490,8 +508,9 @@ impl<'a> FaceSearch<'a> {
             x: Vec::new(),
             deg: vec![0; n],
         };
-        let (mut cur_l, mut cur_w) = (0.0, 0.0);
+        let (mut cur_l, mut cur_w, mut cur_b) = (0.0, 0.0, 0.0);
         for &e in init {
+            cur_b += bonus(e);
             st.inx[e] = true;
             st.pos[e] = st.x.len();
             st.x.push(e);
@@ -500,8 +519,17 @@ impl<'a> FaceSearch<'a> {
             cur_l += ln[e];
             cur_w += w[e];
         }
-        let score = |l: f64, wv: f64, lam: f64| {
-            if target {
+        let score = |l: f64, wv: f64, b: f64, lam: f64| {
+            if md {
+                wv + b
+                    - lam * l
+                    - if wv < x_md { MD_PEN * (x_md - wv) } else { 0.0 }
+                    - if l > lmax {
+                        MD_PEN * lam * (l - lmax)
+                    } else {
+                        0.0
+                    }
+            } else if target {
                 // erreur, plus une forte pénalité hors des bornes de distance
                 let out = if l < lmin {
                     lmin - l
@@ -516,18 +544,25 @@ impl<'a> FaceSearch<'a> {
             }
         };
         // ce qu'on cherche à maximiser parmi les boucles dans les bornes
-        let value = |l: f64, wv: f64| if target { score(l, wv, 0.0) } else { wv };
+        let value = |l: f64, wv: f64| if target { score(l, wv, 0.0, 0.0) } else { wv };
         let in_bounds = |l: f64| lmin <= l && l <= lmax;
 
         let mut lam = lam0;
         let lmid = 0.5 * (lmin + lmax);
-        let mut cur = score(cur_l, cur_w, lam);
-        let mut best = if in_bounds(cur_l) {
+        let mut cur = score(cur_l, cur_w, cur_b, lam);
+        let mut best = if in_bounds(cur_l) && !md {
             value(cur_l, cur_w)
         } else {
             -INF
         };
         let mut best_x = st.x.clone();
+        // min_distance : meilleure boucle réalisable (L, B), et repli (plus fort W sous Lmax)
+        let md_ok = |l: f64, wv: f64| wv >= x_md && l <= lmax;
+        let (mut best_l, mut best_b) = (INF, 0.0);
+        let (mut fb_w, mut fb_x) = (-INF, Vec::new());
+        if md && md_ok(cur_l, cur_w) {
+            (best_l, best_b) = (cur_l, cur_b);
+        }
         // Marques datées (évitent de remettre des tableaux à zéro) : couloirs et connexité.
         let (mut mark_f, mut mark_a, mut stamp) = (vec![0u64; m], vec![0u64; m], 0u64);
         let mut conn = Connectivity::new(n);
@@ -539,9 +574,13 @@ impl<'a> FaceSearch<'a> {
                     break;
                 }
                 temp = t0 * (t1 / t0).powf(it as f64 / iters as f64);
-                if !target {
+                if md {
+                    // trop de D+ : la distance coûte plus cher, et inversement
+                    lam *= if cur_w > wt { 1.01 } else { 0.99 };
+                    cur = score(cur_l, cur_w, cur_b, lam);
+                } else if !target {
                     lam *= if cur_l > lmid { 1.01 } else { 0.99 };
-                    cur = score(cur_l, cur_w, lam);
+                    cur = score(cur_l, cur_w, cur_b, lam);
                 }
             }
             it += 1;
@@ -552,18 +591,20 @@ impl<'a> FaceSearch<'a> {
                 continue;
             }
             let f = &self.faces[fl[rng.below(fl.len())]];
-            let (mut dl, mut dw, mut k) = (0.0, 0.0, 0);
+            let (mut dl, mut dw, mut db, mut k) = (0.0, 0.0, 0.0, 0);
             for &(x, _, _) in f {
                 if st.inx[x] {
                     k += 1;
                     dl -= ln[x];
                     dw -= w[x];
+                    db -= bonus(x);
                 } else {
                     dl += ln[x];
                     dw += w[x];
+                    db += bonus(x);
                 }
             }
-            let new = score(cur_l + dl, cur_w + dw, lam);
+            let new = score(cur_l + dl, cur_w + dw, cur_b + db, lam);
             if new < cur && rng.random() >= ((new - cur) / temp).exp() {
                 continue;
             }
@@ -611,8 +652,25 @@ impl<'a> FaceSearch<'a> {
             }
             cur_l += dl;
             cur_w += dw;
+            cur_b += db;
             cur = new;
-            if in_bounds(cur_l) {
+            if md {
+                if md_ok(cur_l, cur_w) {
+                    let better = best_l == INF
+                        || if wb.is_some() {
+                            cur_b - lam * cur_l > best_b - lam * best_l
+                        } else {
+                            cur_l < best_l
+                        };
+                    if better {
+                        (best_l, best_b) = (cur_l, cur_b);
+                        best_x.clone_from(&st.x);
+                    }
+                } else if best_l == INF && cur_l <= lmax && cur_w > fb_w {
+                    fb_w = cur_w;
+                    fb_x.clone_from(&st.x);
+                }
+            } else if in_bounds(cur_l) {
                 let val = value(cur_l, cur_w);
                 if val > best {
                     best = val;
@@ -620,7 +678,20 @@ impl<'a> FaceSearch<'a> {
                 }
             }
         }
-        (if best > -INF { best_x } else { st.x }, lam, it)
+        let out = if md {
+            if best_l < INF {
+                best_x
+            } else if fb_w > -INF {
+                fb_x
+            } else {
+                st.x
+            }
+        } else if best > -INF {
+            best_x
+        } else {
+            st.x
+        };
+        (out, lam, it)
     }
 
     /// Sondes courtes depuis plusieurs boucles initiales (en parallèle), puis le reste du
@@ -661,7 +732,16 @@ impl<'a> FaceSearch<'a> {
             .par_iter()
             .enumerate()
             .map(|(i, (name, x0))| {
-                let (ids, lam, it) = self.run(x0, probe, 10.0, 1.0, 0.02, &p.w, &mut rng(i));
+                let (ids, lam, it) = self.run(
+                    x0,
+                    probe,
+                    10.0,
+                    1.0,
+                    self.lam0,
+                    &p.w,
+                    self.wb.as_deref(),
+                    &mut rng(i),
+                );
                 let sc = p.score(&ids);
                 ((sc.3, sc.0), name.clone(), ids, lam, it)
             })
@@ -679,7 +759,16 @@ impl<'a> FaceSearch<'a> {
             .par_iter()
             .enumerate()
             .map(|(i, (_, name, x0, lam, _))| {
-                let (ids, _, it) = self.run(x0, left, 3.0, 0.2, *lam, &p.w, &mut rng(100 + i));
+                let (ids, _, it) = self.run(
+                    x0,
+                    left,
+                    3.0,
+                    0.2,
+                    *lam,
+                    &p.w,
+                    self.wb.as_deref(),
+                    &mut rng(100 + i),
+                );
                 let sc = p.score(&ids);
                 ((sc.3, sc.0), name.clone(), ids, it)
             })
@@ -717,7 +806,8 @@ impl<'a> FaceSearch<'a> {
     }
 
     /// Jusqu'à `n` boucles réellement différentes de `existing` et entre elles : chacune part
-    /// du secteur le moins recouvrant, avec le D+ des arêtes déjà prises compté à 0,6. Gardée
+    /// du secteur le moins recouvrant, avec le D+ des arêtes déjà prises compté à 0,6 (mode
+    /// min_distance : bonus −0,4·w dans B, jamais dans W, sinon la contrainte X ment). Gardée
     /// seulement si elle est dans les bornes et partage au plus 50 % de sa longueur avec
     /// chacune des autres. Budget total `iters`. Renvoie (boucles, itérations faites).
     pub fn alternates(
@@ -758,7 +848,7 @@ impl<'a> FaceSearch<'a> {
             }
             let mut used = vec![false; p.n_edges()];
             kept.iter().flatten().for_each(|&e| used[e] = true);
-            let w_eff: Vec<f64> = if p.target() {
+            let w_eff: Vec<f64> = if p.target() || p.min_distance() {
                 p.w.clone()
             } else {
                 p.w.iter()
@@ -766,6 +856,18 @@ impl<'a> FaceSearch<'a> {
                     .map(|(&x, &u)| if u { x * DISCOUNT } else { x })
                     .collect()
             };
+            let wb_eff: Option<Vec<f64>> = p.min_distance().then(|| {
+                (0..p.n_edges())
+                    .map(|e| {
+                        let d = if used[e] {
+                            (1.0 - DISCOUNT) * p.w[e]
+                        } else {
+                            0.0
+                        };
+                        self.wb.as_ref().map_or(0.0, |b| b[e]) - d
+                    })
+                    .collect()
+            });
             let ov = |x: &[usize]| kept.iter().map(|k| self.overlap(x, k)).fold(0.0, f64::max);
             inits.sort_by(|x, y| ov(x).total_cmp(&ov(y)));
             // Deux départs par boucle, on garde la meilleure : un seul donne un résultat très
@@ -781,7 +883,16 @@ impl<'a> FaceSearch<'a> {
                         seed.wrapping_mul(1000)
                             .wrapping_add(200 + 2 * round + i as u64),
                     );
-                    self.run(x0, budget, 10.0, 0.2, 0.02, &w_eff, &mut rng)
+                    self.run(
+                        x0,
+                        budget,
+                        10.0,
+                        0.2,
+                        self.lam0,
+                        &w_eff,
+                        wb_eff.as_deref(),
+                        &mut rng,
+                    )
                 })
                 .collect();
             round += 1;

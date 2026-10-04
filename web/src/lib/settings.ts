@@ -1,0 +1,102 @@
+import { byId, defaults, CATALOG, type TypeId, type Values } from './catalog';
+
+export type Climbs = 'short' | 'balanced' | 'long';
+export type Roads = 'unpaved' | 'minor' | 'all';
+export type Settings = {
+  typeId: TypeId;
+  values: Record<TypeId, Values>;
+  climbs: Climbs;
+  /** % sur 50 m glissants (api.md v1.2) ; 0 = sans limite */
+  maxGrade: number;
+  roads: Roads;
+  noRepeat: boolean;
+  paceS: number; // s par km-effort
+  nLoops: number;
+};
+
+export const MAX_GRADE_DEFAULT = 60;
+/** Choix proposés : 5–60 % par pas de 5, puis 0 = sans limite (api.md v1.2). */
+export const MAX_GRADES = [...Array.from({ length: 12 }, (_, i) => 5 + i * 5), 0];
+const okGrade = (g: unknown) => typeof g === 'number' && MAX_GRADES.includes(g);
+
+export function defaultSettings(): Settings {
+  return {
+    typeId: 'max_dplus',
+    values: Object.fromEntries(CATALOG.map((t) => [t.id, defaults(t)])) as Record<TypeId, Values>,
+    climbs: 'balanced',
+    maxGrade: MAX_GRADE_DEFAULT,
+    roads: 'minor',
+    noRepeat: true,
+    paceS: 360,
+    nLoops: 1,
+  };
+}
+
+/** Fusionne un objet mémorisé (peut-être ancien ou corrompu) avec les défauts. */
+export function mergeSettings(saved: unknown): Settings {
+  const d = defaultSettings();
+  if (!saved || typeof saved !== 'object') return d;
+  const s = { ...d, ...(saved as Partial<Settings>) };
+  s.typeId = byId(s.typeId).id;
+  s.values = { ...d.values };
+  const sv = (saved as Partial<Settings>).values ?? {};
+  for (const t of CATALOG) s.values[t.id] = { ...d.values[t.id], ...((sv as Record<string, Values>)[t.id] ?? {}) };
+  // avant v1.2 : { maxGradeOn: false } = pas de filtre → nouveau défaut 60 %
+  const old = saved as { maxGradeOn?: boolean };
+  if (old.maxGradeOn === false || !okGrade(s.maxGrade)) s.maxGrade = MAX_GRADE_DEFAULT;
+  delete (s as { maxGradeOn?: boolean }).maxGradeOn;
+  return s;
+}
+
+export type Start = { lat: number; lon: number };
+
+/** Paramètres de GET /api/plan (api.md v1), rien d'autre. */
+export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: number; polygon?: [number, number][] | null }) {
+  const t = byId(s.typeId);
+  const v = s.values[t.id];
+  const q = new URLSearchParams();
+  q.set('lat', start.lat.toFixed(6));
+  q.set('lon', start.lon.toFixed(6));
+  q.set('goal', t.goal);
+  if (t.goal !== 'min_distance') q.set('distance_km', String(v.distance_km ?? 10));
+  if (t.goal !== 'max_dplus') q.set('dplus_m', String(v.dplus_m));
+  if (t.goal === 'min_distance' && v.max_distance_km != null) q.set('max_distance_km', String(v.max_distance_km));
+  q.set('climbs', s.climbs);
+  if (s.maxGrade !== MAX_GRADE_DEFAULT) q.set('max_grade_pct', String(s.maxGrade)); // absent = 60 (api.md v1.2)
+  q.set('roads', s.roads);
+  q.set('no_repeat_junction', String(s.noRepeat));
+  q.set('n_candidates', String(opts.n));
+  if (opts.polygon?.length) q.set('polygon', opts.polygon.map(([lo, la]) => `${lo.toFixed(5)},${la.toFixed(5)}`).join(';'));
+  q.set('seed', String(opts.seed));
+  return q;
+}
+
+/** Réglages préremplis depuis la requête d'une boucle partagée (« Recalculer depuis ici »). */
+export function settingsFromRequest(req: Record<string, string>, base: Settings): Settings {
+  const s = mergeSettings(base);
+  const t = CATALOG.find((c) => c.goal === req.goal) ?? CATALOG[0];
+  s.typeId = t.id;
+  for (const f of t.fields) if (req[f.param] != null && Number.isFinite(+req[f.param])) s.values[t.id][f.param] = +req[f.param];
+  if (req.climbs === 'short' || req.climbs === 'balanced' || req.climbs === 'long') s.climbs = req.climbs;
+  if (req.roads === 'unpaved' || req.roads === 'minor' || req.roads === 'all') s.roads = req.roads;
+  s.maxGrade = req.max_grade_pct == null ? MAX_GRADE_DEFAULT : okGrade(+req.max_grade_pct) ? +req.max_grade_pct : s.maxGrade;
+  if (req.no_repeat_junction) s.noRepeat = req.no_repeat_junction === 'true' || req.no_repeat_junction === '1';
+  return s;
+}
+
+/** Distance (km) attendue avant calcul, pour la durée estimée et la barre. */
+export function expectedKm(s: Settings): number {
+  const t = byId(s.typeId);
+  const v = s.values[t.id];
+  if (t.goal === 'min_distance') return v.max_distance_km ?? t.fields[1].auto!(v);
+  return v.distance_km ?? 10;
+}
+
+/** Durée (min) = (km + D+/100) × allure. */
+export const durationMin = (km: number, dplus: number, paceS: number) => ((km + dplus / 100) * paceS) / 60;
+
+/** Estimation du temps de calcul (s), formule du CTO (api.md v1.3 § Durée estimée : n ≤ 2 au-delà de 40 km). */
+export const computeEstimateS = (D: number, goal: string, n: number) => {
+  const k = D > 40 ? Math.min(n, 2) : n;
+  return Math.min(15, (1.5 + 0.04 * D) * (1 + 0.25 * (k - 1)) * (goal === 'target' ? 1.5 : 1)) + 0.5;
+};

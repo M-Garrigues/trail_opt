@@ -79,6 +79,8 @@ fn grid(l: f64, target: Option<f64>, node_simple: bool) -> Problem {
             .map(|x| ang(x.2[x.2.len() - 1], x.2[x.2.len() - 2]))
             .collect(),
         parallel: vec![[0, polys.len() - 1]],
+        q: Vec::new(),
+        climbs: 0,
     };
     (p.len, p.w) = polys.iter().map(|x| profile(&x.2)).unzip();
     p
@@ -241,9 +243,16 @@ fn codes_stables() {
     let old: serde_json::Value =
         serde_json::from_str(&std::fs::read_to_string(path).unwrap_or("[]".into())).unwrap();
     for c in old.as_array().unwrap() {
+        let retired = codes::RETIRED.contains(&c["code"].as_str().unwrap());
         assert!(
-            now.as_array().unwrap().contains(c),
+            retired || now.as_array().unwrap().contains(c),
             "code retiré ou modifié : {c}"
+        );
+    }
+    for c in now.as_array().unwrap() {
+        assert!(
+            !codes::RETIRED.contains(&c["code"].as_str().unwrap()),
+            "code retiré réutilisé : {c}"
         );
     }
     if std::env::var_os("UPDATE_CODES").is_some() {
@@ -251,4 +260,126 @@ fn codes_stables() {
     } else {
         assert_eq!(old, now, "nouveaux codes : relancer avec UPDATE_CODES=1");
     }
+}
+
+/// Grille en mode min_distance (D19) : D+ visé `x`, distance max `cap`.
+fn md_grid(x: f64, cap: f64, node_simple: bool) -> Problem {
+    Problem {
+        mode: "min_distance".into(),
+        d: Some(x),
+        lmin: 0.0,
+        lmax: cap,
+        l: cap / 2.0,
+        ..grid(cap, None, node_simple)
+    }
+}
+
+/// Mode min_distance : boucles valides, D+ >= X, L <= Lcap, au-dessus de la borne inférieure,
+/// et plus courtes que la boucle du mode max qui a ce D+ ; candidats triés par longueur.
+#[test]
+fn min_distance_invariants() {
+    let max = optimize(&grid(2400.0, None, false), &budget(1)).unwrap();
+    for node_simple in [false, true] {
+        let x = 0.7 * max.dplus;
+        let p = md_grid(x, 6000.0, node_simple);
+        let lb = engine::solve::md_lower_bound(&p).unwrap();
+        let o = optimize(&p, &budget(3)).unwrap();
+        p.check(&o.ids).unwrap();
+        assert!(
+            o.feasible && o.dplus >= x && o.length <= p.lmax,
+            "{node_simple}"
+        );
+        assert!(lb <= o.length + 1e-6, "borne {lb} > {}", o.length);
+        assert!(o.warnings.is_empty());
+        if !node_simple {
+            assert!(
+                o.length <= max.length + 1e-6,
+                "{} > {}",
+                o.length,
+                max.length
+            );
+        }
+        let l: Vec<f64> = o.alternatives.iter().map(|a| p.stats(a).0).collect();
+        assert!(l.windows(2).all(|w| w[0] <= w[1]));
+        for a in &o.alternatives {
+            p.check(a).unwrap();
+            assert!(p.score(a).3);
+        }
+    }
+}
+
+/// Refus prouvés (aucun calcul) : Σw < X, ou borne inférieure > Lcap.
+#[test]
+fn min_distance_refus() {
+    let total: f64 = grid(2400.0, None, false).w.iter().sum();
+    let e = optimize(&md_grid(total + 1.0, 6000.0, false), &budget(1))
+        .err()
+        .unwrap();
+    assert_eq!(e.code, engine::Code::DplusUnreachableProven);
+    assert!(e.params["min_km"].is_null());
+    let p = md_grid(0.5 * total, 1000.0, false);
+    let e = optimize(&p, &budget(1)).err().unwrap();
+    assert_eq!(e.code, engine::Code::DplusUnreachableProven);
+    assert!(e.params["min_km"].as_f64().unwrap() > 1.0);
+}
+
+/// Borne inférieure : sac à dos inverse restreint aux arêtes de reach <= L.
+#[test]
+fn borne_inferieure_de_distance() {
+    use engine::problem::length_lower_bound as lb;
+    let (len, w) = ([100.0, 100.0, 1000.0], [50.0, 10.0, 10.0]);
+    // tout est atteignable : 50 m de D+ en 100 m, puis 5 m au prorata de l'arête 2 (10 %)
+    assert_eq!(lb(&len, &w, &[0.0; 3], 55.0), Some(150.0));
+    // l'arête raide n'est prise que par une boucle de 5 km : reach domine
+    assert_eq!(lb(&len, &w, &[5000.0, 0.0, 0.0], 15.0), Some(600.0));
+    assert_eq!(lb(&len, &w, &[5000.0, 0.0, 0.0], 50.0), Some(5000.0));
+    assert_eq!(lb(&len, &w, &[0.0; 3], 71.0), None);
+}
+
+/// Préférence de montées en mode max : recherche sur w + γβq/H, D+ rapporté sur le vrai w.
+#[test]
+fn climbs_poids_de_recherche() {
+    for gamma in [-1, 1] {
+        let mut p = grid(2400.0, None, false);
+        p.q = p.w.iter().map(|w| w * w).collect();
+        p.climbs = gamma;
+        let o = optimize(&p, &budget(2)).unwrap();
+        p.check(&o.ids).unwrap();
+        assert_eq!((o.length, o.dplus), p.stats(&o.ids));
+        let d: Vec<f64> = o.alternatives.iter().map(|a| p.stats(a).1).collect();
+        assert!(d.windows(2).all(|x| x[0] >= x[1]));
+    }
+    // q absent : instance refusée
+    let json = serde_json::to_string(&serde_json::json!({
+        "version": 2, "mode": "max", "L": 1.0, "Lmin": 0.0, "Lmax": 2.0, "D": null, "s": 0,
+        "node_simple": false, "xy": [[0.0, 0.0], [1.0, 0.0]], "far": [], "u": [0], "v": [1],
+        "len": [1.0], "w": [1.0], "ang_u": [0.0], "ang_v": [3.1], "parallel": [], "climbs": -1
+    }))
+    .unwrap();
+    assert!(Problem::from_json(&json).err().unwrap().contains("q"));
+}
+
+/// D30 : pente max affichée sur 50 m. Un ressaut de 20 m sur 25 m (80 %) dans une pente de 10 %
+/// donne (20 + 2,5) / 50 = 45 %, plus 80 %.
+#[test]
+fn max_grade_window_50m() {
+    let s: Vec<f64> = (0..=40).map(|i| 5.0 * i as f64).collect();
+    let z: Vec<f64> = s
+        .iter()
+        .map(|&x| {
+            0.1 * x
+                + if x >= 100.0 {
+                    17.5
+                } else if x > 75.0 {
+                    0.7 * (x - 75.0)
+                } else {
+                    0.0
+                }
+        })
+        .collect();
+    let g = engine::plan::max_grade(&z, &s);
+    assert!((g - 0.45).abs() < 1e-9, "{g}");
+    assert_eq!(engine::plan::GRADE_WINDOW_M, 50.0);
+    // plus court que la fenêtre : pente moyenne
+    assert!((engine::plan::max_grade(&[0.0, 3.0, 6.0], &[0.0, 10.0, 20.0]) - 0.3).abs() < 1e-12);
 }

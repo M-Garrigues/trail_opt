@@ -5,9 +5,14 @@ edition = "2024"
 
 [dependencies]
 geo = { version = "0.33.1", default-features = false }
+lambda_http = { version = "1.3.1", default-features = false, features = ["apigw_http"] }
 rayon = "1.12.0"
+# déjà tiré par rustls : HMAC/SHA-256 (SigV4 S3) et CSPRNG (ids de partage)
+ring = "0.17.14"
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
+tokio = { version = "1.53.2", features = ["macros"] }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls", "json"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # Crate autonome : son propre espace de travail.
@@ -16,3 +21,9 @@ zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2
 [profile.release]
 codegen-units = 1
 lto = "thin"
+
+# Serveur local (scripts/dev.sh) : optimisé comme release, mais avec debug_assertions, seul
+# build où TURNSTILE_DISABLED / FORCE_TURNSTILE et les clés de test Turnstile sont acceptés.
+[profile.local]
+inherits = "release"
+debug-assertions = true

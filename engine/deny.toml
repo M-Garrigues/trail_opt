@@ -1,0 +1,7 @@
+# cargo-deny (revue T26) : vulnérabilités et crates retirées des dépendances Rust.
+#   cargo deny --manifest-path engine/Cargo.toml check advisories
+# Base RustSec téléchargée à chaque exécution. Une exception = un identifiant RUSTSEC-… avec sa raison.
+[advisories]
+version = 2
+yanked = "deny"
+ignore = []

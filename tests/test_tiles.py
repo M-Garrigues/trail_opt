@@ -96,3 +96,50 @@ def test_unknown_format_rejected(tmp_path):
     (tmp_path / "manifest.json").write_text('{"format": "tiles/0", "tiles": {}}')
     with pytest.raises(RuntimeError, match="format"):
         TileStore(tmp_path)
+
+
+def test_clip_keeps_disk_and_symmetric_parallels(tile_dir, tmp_path):
+    from pipeline.clip import clip
+    d, _ = tile_dir
+    to_wgs = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
+    lon, lat = to_wgs.transform(X0 / 10 + 100, Y0 / 10 + 105)   # 1er sommet de 10 (et 30 à 5 m)
+    m = clip(d, tmp_path / "c", [(lat, lon, 50.0)])
+    T = read_tile(tmp_path / "c" / f"{IX}_{IY}.npz", IX, IY)
+    assert T["id"].tolist() == [10, 30] and T["par_id"].tolist() == [30, 10]
+    assert m["tiles"][f"{IX}_{IY}"]["n"] == 2 and m["format"] == "tiles/1"
+    m = clip(d, tmp_path / "c1", [(lat, lon, 1.0)])                 # 30 écarté : parallèle retiré
+    T = read_tile(tmp_path / "c1" / f"{IX}_{IY}.npz", IX, IY)
+    assert T["id"].tolist() == [10] and T["par_n"].tolist() == [0] and len(T["par_id"]) == 0
+
+
+def test_versioned_test_tiles_match_current_data_version():
+    """engine/tests/data/tiles (T29) : intacte, petite, à la version de données courante."""
+    import hashlib
+    from pathlib import Path
+
+    from pipeline.build import DATA_VERSION
+    d = Path(__file__).parent.parent / "engine" / "tests" / "data" / "tiles"
+    m = json.loads((d / "manifest.json").read_text())
+    assert m["format"] == "tiles/1" and m["data_version"] == DATA_VERSION
+    size = 0
+    for k, t in m["tiles"].items():
+        b = (d / f"{k}.npz").read_bytes()
+        assert hashlib.sha256(b).hexdigest() == t["sha256"]
+        size += len(b)
+        read_tile(d / f"{k}.npz", *map(int, k.split("_")))
+    assert size < 2_000_000
+
+
+def test_check_flags_problems(tile_dir):
+    from pipeline.check import check
+    d, info = tile_dir
+    m = json.loads((d / "manifest.json").read_text())
+    m["tiles"][f"{IX}_{IY}"].update(sha256=__import__("hashlib").sha256(
+        (d / f"{IX}_{IY}.npz").read_bytes()).hexdigest())
+    (d / "manifest.json").write_text(json.dumps(m))
+    assert check(d, [f"{IX}_{IY}"]) == []
+    prev = {"tiles": {f"{IX}_{IY}": {"n": 2000}, "1_1": {"n": 5}}}
+    bad = check(d, [f"{IX}_{IY}", "2_2"], prev)
+    assert len(bad) == 3 and "2_2" in bad[0] and "1_1" in bad[1] and "2000 -> 3" in bad[2]
+    (d / f"{IX}_{IY}.npz").write_bytes(b"x")
+    assert "sha256" in check(d)[0]

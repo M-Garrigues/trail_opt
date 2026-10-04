@@ -1,0 +1,124 @@
+/* Tokens (ui-spec §1.4) : clair par défaut, sombre selon le système. La carte reste toujours claire. */
+:root {
+  --bg: #ffffff;
+  --surface: #f2f4f5;
+  --text: #15191c;
+  --muted: #535d63;
+  --border: #c5ccd0;
+  --accent: #c2185b;
+  --accent-text: #a3134b;
+  --accent-soft: #fbe4ee;
+  --on-accent: #ffffff;
+  --danger: #b3261e;
+  --warn-text: #7a4b00;
+  --warn-bg: #fff4d6;
+  color-scheme: light dark;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #15191c;
+    --surface: #23292d;
+    --text: #eef1f2;
+    --muted: #a9b3b8;
+    --border: #46505a;
+    --accent: #f06292;
+    --accent-text: #f48fb1;
+    --accent-soft: #46202f;
+    --on-accent: #15191c;
+    --danger: #ff8a80;
+    --warn-text: #ffd180;
+    --warn-bg: #3a2f12;
+  }
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+  -webkit-text-size-adjust: 100%;
+}
+input, select, button { font: inherit; }
+input[type='number'], input[type='search'], select {
+  min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text);
+}
+input:focus-visible, select:focus-visible, button:focus-visible, summary:focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+.btn {
+  min-height: 48px; padding: 10px 16px; border-radius: 12px; border: 2px solid transparent; font-weight: 700; cursor: pointer;
+}
+.btn.small { min-height: 44px; padding: 6px 12px; font-size: 0.95rem; }
+.btn.primary { background: var(--accent); color: var(--on-accent); }
+.btn.secondary { background: var(--surface); color: var(--text); border-color: var(--border); }
+.btn.danger { background: transparent; color: var(--danger); border-color: var(--danger); }
+.btn.link { background: none; color: var(--accent-text); text-decoration: underline; min-height: 44px; padding: 0; font-weight: 600; }
+.btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.btn.wide { width: 100%; }
+.icon-btn {
+  flex: none; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 10px; border: 1px solid var(--border);
+  background: var(--surface); color: var(--text); cursor: pointer; padding: 0;
+}
+.icon-btn:disabled { opacity: 0.5; }
+.badge { display: inline-grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; font-weight: 800; flex: none; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; margin: 0; }
+.start-marker {
+  width: 26px; height: 26px; border-radius: 50%; background: #c2185b; border: 4px solid #fff; box-shadow: 0 1px 6px rgb(0 0 0 / 0.5); cursor: grab;
+}
+.maplibregl-ctrl-group button { width: 44px !important; height: 44px !important; }
+.turnstile { position: fixed; bottom: 12px; left: 50%; transform: translateX(-50%); z-index: 50; }
+
+/* ---------- T21 (D27) : directions « nature » (?design=a|b|c). Sans paramètre : v1 ci-dessus, inchangée. ----------
+   Niveaux : --elev-0..3 (ombres) ; --contour = couleur des courbes de niveau ; --topo = motif SVG généré (design.ts). */
+:root { --elev-0: none; --elev-1: 0 -1px 4px rgb(0 0 0 / 0.18); --elev-2: 0 -2px 12px rgb(0 0 0 / 0.25); --elev-3: 0 -6px 24px rgb(0 0 0 / 0.3); --font-head: inherit; --contour-a: 0.16; --ease: cubic-bezier(0.22, 1, 0.36, 1); }
+
+/* A « Carte topo » : papier, encre, courbes brunes façon IGN, accent terre de Sienne, titres serif cartographiques */
+:root[data-design='a'] {
+  --bg: #fbf8f1; --surface: #f1ebdd; --text: #22201b; --muted: #5a5448; --border: #cbbd9c;
+  --accent: #a8441c; --accent-text: #8f3814; --accent-soft: #f5e0d2; --on-accent: #ffffff;
+  --warn-bg: #fbefc9; --warn-text: #6f4600; --contour: #a07a45; --contour-a: 0.2;
+  --lvl-0: #f1ebdd; --lvl-1: #f6f1e6; --lvl-2: #fbf8f1; --lvl-3: #fffdf8;
+  --font-head: 'Iowan Old Style', 'Palatino Linotype', Palatino, Georgia, ui-serif, serif;
+}
+/* B « Strates » : teintes hypsométriques (plus haut = plus clair), vert pin, formes arrondies */
+:root[data-design='b'] {
+  --bg: #f4f7f1; --surface: #e5ede0; --text: #17241c; --muted: #4a5a4f; --border: #b3c4b1;
+  --accent: #2d6a4f; --accent-text: #23563f; --accent-soft: #d6e9dc; --on-accent: #ffffff;
+  --warn-bg: #f6efcd; --warn-text: #664400; --contour: #5f8a64; --contour-a: 0.22;
+  --lvl-0: #dfe9da; --lvl-1: #e9f0e4; --lvl-2: #f4f7f1; --lvl-3: #ffffff;
+  --font-head: ui-rounded, 'SF Pro Rounded', 'Nunito', system-ui, sans-serif;
+}
+/* C « Brume » : continuité v1 (magenta), surfaces ardoise brumeuses, courbes très discrètes */
+:root[data-design='c'] {
+  --bg: #ffffff; --surface: #eef2f5; --text: #141a1f; --muted: #4e5a63; --border: #c3cdd4;
+  --contour: #7d96a8; --contour-a: 0.14;
+  --lvl-0: #eaeff3; --lvl-1: #f3f6f8; --lvl-2: #f9fafb; --lvl-3: #ffffff;
+}
+@media (prefers-color-scheme: dark) {
+  :root[data-design='a'] {
+    --bg: #1c1a16; --surface: #28251f; --text: #f2ede1; --muted: #bcb39f; --border: #4d4638;
+    --accent: #e98a5f; --accent-text: #f0a581; --accent-soft: #4a2c1e; --on-accent: #1c1a16;
+    --warn-bg: #3b3015; --warn-text: #ffd27f; --contour: #a3875c; --contour-a: 0.22;
+    --lvl-0: #171512; --lvl-1: #1c1a16; --lvl-2: #221f1a; --lvl-3: #29261f;
+  }
+  :root[data-design='b'] {
+    --bg: #131b16; --surface: #1c2820; --text: #e7f0e9; --muted: #a5b8a9; --border: #3a4c40;
+    --accent: #79c9a0; --accent-text: #98d8b5; --accent-soft: #1f3b2c; --on-accent: #0e1a13;
+    --warn-bg: #352f14; --warn-text: #ffd27f; --contour: #6e9a78; --contour-a: 0.24;
+    --lvl-0: #0f1612; --lvl-1: #131b16; --lvl-2: #18231c; --lvl-3: #1e2b22;
+  }
+  :root[data-design='c'] {
+    --bg: #14191d; --surface: #222a30; --text: #edf1f3; --muted: #a8b4bb; --border: #46525b;
+    --contour: #7d96a8; --contour-a: 0.16;
+    --lvl-0: #0f1316; --lvl-1: #14191d; --lvl-2: #1a2026; --lvl-3: #20272e;
+  }
+  :root[data-design] { --elev-1: 0 -1px 6px rgb(0 0 0 / 0.5); --elev-2: 0 -3px 14px rgb(0 0 0 / 0.55); --elev-3: 0 -8px 28px rgb(0 0 0 / 0.6); }
+}
+:root[data-design='a'] h1, :root[data-design='a'] h2, :root[data-design='a'] h3, :root[data-design='a'] [data-testid='headline'],
+:root[data-design='b'] h1, :root[data-design='b'] h2, :root[data-design='b'] h3, :root[data-design='b'] [data-testid='headline'] {
+  font-family: var(--font-head); letter-spacing: -0.01em;
+}
+:root[data-design='b'] .btn { border-radius: 999px; }
+:root[data-design='b'] input[type='number'], :root[data-design='b'] select, :root[data-design='b'] input[type='search'] { border-radius: 14px; }
+/* Motif de courbes : calque masqué (la couleur suit le thème). Jamais derrière du texte courant : en-têtes et bords. */
+.topo { position: absolute; inset: 0; pointer-events: none; background: var(--contour); opacity: var(--contour-a);
+  -webkit-mask: var(--topo) 0 0 / 480px 480px; mask: var(--topo) 0 0 / 480px 480px; }
+@media (prefers-reduced-motion: reduce) { :root { --ease: linear; } }

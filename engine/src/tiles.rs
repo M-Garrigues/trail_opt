@@ -189,14 +189,12 @@ impl Troncons {
             .collect();
         let (mut up, mut down) = (0, 0);
         for d in zs.windows(2).map(|w| w[1] - w[0]) {
-            if d > 0 {
-                up += d
-            } else {
-                down -= d
-            }
+            if d > 0 { up += d } else { down -= d }
         }
         // pente max sur 25 m (comme graph.compute_profile)
-        let s: Vec<f64> = (0..pts.len()).map(|i| self.abscissa_from(t, i, pts.len())).collect();
+        let s: Vec<f64> = (0..pts.len())
+            .map(|i| self.abscissa_from(t, i, pts.len()))
+            .collect();
         let mut g: f64 = 0.0;
         let l = *s.last().unwrap();
         if l <= 25.0 {
@@ -260,6 +258,12 @@ impl TileStore {
             root: root.to_path_buf(),
             manifest,
         })
+    }
+
+    /// Entrée du manifeste de la dalle qui contient le point L93 (m), si elle existe.
+    pub fn tile_l93(&self, x: f64, y: f64) -> Option<&serde_json::Value> {
+        let f = |v: f64| (v / TILE_M).floor() as i64;
+        self.manifest.tiles.get(&format!("{}_{}", f(x), f(y)))
     }
 
     /// Dalles du manifeste qui touchent la boîte L93 (m) [x0, y0, x1, y1], marge comprise.
@@ -390,7 +394,11 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         return bad("géométrie ou parallèles incohérents");
     }
     if len_dm.iter().any(|&l| l < 1 || l > i32::MAX as i64)
-        || len_dm.iter().map(|&l| profile_count(l as i32)).sum::<usize>() != prof_d.len()
+        || len_dm
+            .iter()
+            .map(|&l| profile_count(l as i32))
+            .sum::<usize>()
+            != prof_d.len()
     {
         return bad("profil incohérent avec len_dm");
     }

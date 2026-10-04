@@ -1,0 +1,11 @@
+{
+  "_source": "contracts/api.md v1, tableau Requête (transcrit à la main ; à régénérer si api.md change)",
+  "params": ["lat", "lon", "goal", "distance_km", "dplus_m", "max_distance_km", "climbs", "max_grade_pct", "roads", "no_repeat_junction", "n_candidates", "polygon", "seed"],
+  "distance_km": [2, 100],
+  "dplus_m": { "target": [10, 5000], "min_distance": [50, 10000] },
+  "max_distance_km": [2, 100],
+  "max_grade_pct": [5, 60],
+  "max_grade_pct_default": 60,
+  "n_candidates": [1, 4],
+  "goals": ["max_dplus", "target", "min_distance"]
+}
