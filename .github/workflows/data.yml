@@ -75,7 +75,7 @@ jobs:
           n=$(grep -c . "$LIST")
           [ "$n" -gt 0 ] || { echo "::error::liste vide : $LIST"; exit 1; }
           s=$(( SHARDS < n ? SHARDS : n ))
-          [ "$s" -ge 1 ] && [ "$s" -le 256 ] || { echo "::error::shards hors de 1..256"; exit 1; }
+          if [ "$s" -lt 1 ] || [ "$s" -gt 256 ]; then echo "::error::shards hors de 1..256"; exit 1; fi
           echo "data_version=$v" >> "$GITHUB_OUTPUT"
           echo "shards=$(seq 0 $(( s - 1 )) | jq -sc .)" >> "$GITHUB_OUTPUT"
           echo "$n dalles, $s shards, version $v"

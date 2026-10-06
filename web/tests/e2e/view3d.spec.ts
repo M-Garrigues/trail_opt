@@ -3,6 +3,7 @@ import { test, expect } from '@playwright/test';
 import { setup, mockPlan, placeStart, T, isFr } from './helpers';
 
 test('3D : sélection de boucle, profil, couleur', async ({ page }) => {
+  test.slow(); // relief 3D sans carte graphique sur le runner de CI : rendu très lent
   test.setTimeout(120_000);
   const t = T();
   await setup(page);
@@ -42,7 +43,7 @@ test('3D : sélection de boucle, profil, couleur', async ({ page }) => {
   await expect(radios.nth(pt!.i)).toHaveAttribute('aria-checked', 'true');
   // une seule boucle active dans la source (mise en évidence 2D/3D), c'est la bonne
   // (la source GeoJSON se met à jour dans un worker : on attend)
-  await expect.poll(() => page.evaluate(() => [...new Set((window as any).tmap.map.querySourceFeatures('loops', { filter: ['get', 'sel'] }).map((f: any) => f.properties.idx))]), { timeout: 10_000 }).toEqual([pt!.i]);
+  await expect.poll(() => page.evaluate(() => [...new Set((window as any).tmap.map.querySourceFeatures('loops', { filter: ['get', 'sel'] }).map((f: any) => f.properties.idx))]), { timeout: 40_000 }).toEqual([pt!.i]);
   // couleur du ruban 3D = couleur de la boucle choisie
   const color = await page.evaluate(() => (window as any).tmap.map.style._layers['trail-3d'].implementation.color);
   expect(color).toBe(['#a8441c', '#1565C0', '#6A1B9A', '#AD1457'][pt!.i]);
