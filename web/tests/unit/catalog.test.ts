@@ -86,12 +86,12 @@ describe('requête', () => {
 
 describe('durée de calcul estimée (api.md v1.6)', () => {
   it('n ramené à 2 au-delà de 40 km', () => {
-    expect(computeEstimateS(10, 'max_dplus', 1)).toBeCloseTo(2.9);
-    expect(computeEstimateS(40, 'max_dplus', 4)).toBeCloseTo(3.6 * 1.75 + 0.5);
-    expect(computeEstimateS(50, 'max_dplus', 4)).toBeCloseTo(computeEstimateS(50, 'max_dplus', 2));
-    expect(computeEstimateS(50, 'max_dplus', 4)).toBeCloseTo(4 * 1.25 + 0.5);
-    expect(computeEstimateS(10, 'max_dplus', 1, 'long')).toBeCloseTo(2.4 * 1.3 + 0.5); // « longues » ×1,3
-    expect(computeEstimateS(10, 'target', 1, 'long')).toBeCloseTo(computeEstimateS(10, 'target', 1)); // pas en cible
-    expect(computeEstimateS(100, 'target', 4)).toBeCloseTo(6 * 1.25 * 1.5 + 0.5);
+    expect(computeEstimateS(10, 'max_dplus', 1)).toBeCloseTo(4.05 + 0.5); // Lambda réelle : 4,0 s
+    expect(computeEstimateS(50, 'max_dplus', 4)).toBeCloseTo(computeEstimateS(50, 'max_dplus', 2)); // n ≤ 2 au-delà de 40 km
+    expect(computeEstimateS(100, 'max_dplus', 2)).toBeCloseTo(11.7 * 1.12 + 0.5); // réelle : 13,7 s
+    expect(computeEstimateS(10, 'max_dplus', 3, 'long')).toBeCloseTo(4.05 * 1.24 * 1.8 + 0.5); // réelle : 8,8 s
+    expect(computeEstimateS(10, 'target', 3, 'long')).toBeCloseTo(computeEstimateS(10, 'target', 3)); // pas en cible
+    expect(computeEstimateS(10, 'min_distance', 3)).toBeCloseTo(4.05 * 1.24 * 0.6 + 0.5);
+    expect(computeEstimateS(100, 'max_dplus', 2, 'long')).toBeCloseTo(15.5); // plafond
   });
 });

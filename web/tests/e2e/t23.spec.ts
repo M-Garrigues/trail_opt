@@ -1,6 +1,6 @@
 // T23 : pente max (api.md v1.2), couverture, zone (51e sommet, édition), hors ligne, ?debug=1, « Oublier ma position ».
 import { test, expect, type Page } from '@playwright/test';
-import { setup, mockPlan, placeStart, openSheet, zoneClick, T, isFr } from './helpers';
+import { setup, mockPlan, placeStart, openOptions, closeOptions, zoneClick, T, isFr } from './helpers';
 
 const zoneBtn = (page: Page) => page.getByRole('button', { name: isFr() ? /^Zone/ : /^Area/ });
 async function frac(page: Page) {
@@ -14,21 +14,22 @@ test('pente max : défaut 60 % non envoyé, « sans limite » = 0', async ({ pag
   const calls = await mockPlan(page);
   await page.goto('/');
   await placeStart(page);
-  await openSheet(page);
-  await page.getByText(isFr() ? 'Plus d’options' : 'More options').click();
+  await openOptions(page);
   const sel = page.getByLabel(isFr() ? 'Pente max des chemins (sur 50 m)' : 'Max path grade (over 50 m)');
   await expect(sel).toHaveValue('60');
   const opts = await sel.locator('option').allTextContents();
   expect(opts[0]).toBe('5 %');
   expect(opts.at(-2)).toBe('60 %');
   expect(opts.at(-1)).toBe(isFr() ? 'sans limite' : 'no limit');
+  await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[0].searchParams.has('max_grade_pct')).toBe(false); // absent = 60 (api.md v1.2)
   await page.keyboard.press('Escape'); // la feuille se replie
-  await openSheet(page);
-  await page.getByText(isFr() ? 'Plus d’options' : 'More options').click();
+  await expect(page.getByTestId('headline')).toHaveCount(0);
+  await openOptions(page);
   await sel.selectOption({ label: isFr() ? 'sans limite' : 'no limit' });
+  await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[1].searchParams.get('max_grade_pct')).toBe('0');

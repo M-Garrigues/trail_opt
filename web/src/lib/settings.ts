@@ -96,10 +96,11 @@ export function expectedKm(s: Settings): number {
 /** Durée (min) = (km + D+/100) × allure. */
 export const durationMin = (km: number, dplus: number, paceS: number) => ((km + dplus / 100) * paceS) / 60;
 
-/** Estimation du temps de calcul (s), formule du CTO (api.md v1.6 § Durée estimée : n ≤ 2 au-delà de 40 km ;
- *  « longues » ×1,3 sauf en cible, où la préférence de montées n'agit plus sur la recherche). */
+/** Estimation du temps de calcul (s), recalée sur la Lambda réelle (scripts/lambda_bench.sh, 2026-10-06 ;
+ *  api.md § Durée estimée) : n ≤ 2 au-delà de 40 km ; « longues » ×1,8 sauf en cible, où la préférence de
+ *  montées n'agit plus sur la recherche ; « le plus court » ×0,6 ; +0,5 s de réseau. */
 export const computeEstimateS = (D: number, goal: string, n: number, climbs: string = 'balanced') => {
   const k = D > 40 ? Math.min(n, 2) : n;
-  const target = goal === 'target';
-  return Math.min(15, (2 + 0.04 * D) * (1 + 0.25 * (k - 1)) * (target ? 1.5 : 1) * (climbs === 'long' && !target ? 1.3 : 1)) + 0.5;
+  const f = (goal === 'min_distance' ? 0.6 : 1) * (climbs === 'long' && goal !== 'target' ? 1.8 : 1);
+  return Math.min(15, (3.2 + 0.085 * D) * (1 + 0.12 * (k - 1)) * f) + 0.5;
 };

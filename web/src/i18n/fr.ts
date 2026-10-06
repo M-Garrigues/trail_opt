@@ -8,12 +8,12 @@ export const fr = {
     langLabel: 'Langue',
   },
   intro: {
-    text: 'Choisis un entraînement et un départ : optrail calcule la boucle sur les chemins de la carte IGN.',
-    coverage: 'Couverture actuelle : Île-de-France et Isère.',
+    text: 'Choisis un type de sortie et un départ : optrail trace une boucle (retour au départ) sur les chemins de la carte IGN.',
+    coverage: 'Couverture : les zones non grisées de la carte.',
     go: 'C’est parti',
   },
   // D34 : public averti, pas de conseils ; seul l'avertissement minimal sur les sentiers reste.
-  safety: 'Boucles calculées automatiquement : un sentier peut être fermé, privé ou dangereux.',
+  safety: 'Sorties calculées automatiquement : un sentier peut être fermé, privé ou dangereux.',
   start: {
     tapMap: 'Touche la carte pour choisir ton départ',
     myLocation: 'Ma position',
@@ -24,7 +24,7 @@ export const fr = {
     marker: 'Départ (déplaçable)',
   },
   types: {
-    label: 'Type d’entraînement',
+    label: 'Type de sortie',
     max_dplus: { name: 'Max D+', tagline: 'Le plus de D+ pour ta distance' },
     target: { name: 'Cible', tagline: 'Ta distance et ton D+, au plus juste' },
     shortest: { name: 'Le plus court', tagline: 'Ton D+ sur le moins de km' },
@@ -35,6 +35,12 @@ export const fr = {
     max_distance_km: 'Distance max',
     auto: (p: P) => `auto (${p.km} km)`,
     autoToggle: 'Automatique',
+    less: (p: P) => `Diminuer : ${p.name}`,
+    more: (p: P) => `Augmenter : ${p.name}`,
+    edit: (p: P) => `${p.name} : ${p.v}. Modifier`,
+    range: (p: P) => `De ${p.min} à ${p.max}`,
+    presets: 'Valeurs courantes',
+    erase: 'Effacer',
     clamped: (p: P) => `Ramené à ${p.v} (entre ${p.min} et ${p.max}).`,
   },
   climbs: {
@@ -61,16 +67,14 @@ export const fr = {
     noRepeat: 'Jamais deux fois le même carrefour',
     pace: 'Allure',
     paceUnit: 'min/km-effort',
-    loops: 'Boucles par défaut',
+    loops: 'Sorties proposées',
   },
   estimate: 'Durée estimée',
-  summary: {
-    open: 'Ouvrir les réglages',
-    settings: 'Réglages',
-    climbs: { short: 'montées courtes', balanced: 'montées équilibrées', long: 'montées longues' },
-  },
+  options: { title: 'Options', done: 'Terminé' },
+  sheet: { fold: 'Replier', unfold: 'Déplier' },
   via: {
     button: 'Point de passage',
+    short: 'Passage',
     hint: (p: P) => `Touche la carte pour ajouter un point de passage (${p.max} au plus, ordre libre).`,
     list: 'Points de passage',
     point: (p: P) => `Point ${p.n}`,
@@ -78,8 +82,8 @@ export const fr = {
     marker: (p: P) => `Point de passage ${p.n} (déplaçable)`,
   },
   compute: {
-    find: 'Trouver ma boucle',
-    computing: 'Calcul de ta boucle…',
+    find: 'Trouver ma sortie',
+    computing: 'Calcul de ta sortie…',
     cancel: 'Annuler',
     needStart: 'Choisis d’abord un départ.',
   },
@@ -100,18 +104,19 @@ export const fr = {
     details: 'Détail',
     share: 'Partager',
     newSuggestions: 'Nouvelles propositions',
-    otherLoops: 'Autres boucles',
-    otherLoopsN: (p: P) => `Autres boucles (${p.n})`,
-    noOther: 'Pas d’autre boucle ici.',
-    loop: (p: P) => `Boucle ${p.n}`,
-    choose: (p: P) => `Choisir la boucle ${p.n}`,
+    again: 'Relancer',
+    otherLoops: 'Autres sorties',
+    otherLoopsN: (p: P) => `Autres sorties (${p.n})`,
+    noOther: 'Pas d’autre sortie ici.',
+    loop: (p: P) => `Sortie ${p.n}`,
+    choose: (p: P) => `Choisir la sortie ${p.n}`,
     perKm: 'm/km',
     noneUnder: (p: P) => `rien sous ${p.km} km`,
     effectiveStart: 'Départ effectif',
     back: 'Retour',
   },
   detail: {
-    title: 'Détail de la boucle',
+    title: 'Détail de la sortie',
     distance: 'Distance',
     dplus: 'D+',
     altMin: 'Alt. min',
@@ -149,16 +154,16 @@ export const fr = {
     soon: 'Partage par lien : bientôt.',
     copied: 'Lien copié',
     creating: 'Création du lien…',
-    banner: 'Boucle partagée',
-    title: 'optrail : ma boucle trail',
+    banner: 'Sortie partagée',
+    title: 'optrail : ma sortie trail',
   },
   history: {
-    title: 'Mes boucles',
+    title: 'Mes sorties',
     clear: 'Effacer l’historique',
-    confirmClear: 'Effacer toutes tes boucles gardées sur cet appareil ?',
-    empty: 'Aucune boucle pour l’instant.',
+    confirmClear: 'Effacer toutes tes sorties gardées sur cet appareil ?',
+    empty: 'Aucune sortie pour l’instant.',
     remove: 'Supprimer',
-    full: 'Mémoire du navigateur pleine : boucle non gardée.',
+    full: 'Mémoire du navigateur pleine : sortie non gardée.',
     unavailable: 'Mémoire du navigateur indisponible : historique désactivé.',
   },
   menu: {
@@ -175,16 +180,16 @@ export const fr = {
     forgotten: 'Position oubliée.',
     eraseAll: 'Effacer mes données',
     confirmErase: 'Effacer toutes les données d’optrail sur cet appareil (réglages, historique, position) ?',
-    aboutText: 'optrail génère des sorties trail spécifiques : choisis un type d’entraînement, optrail cherche la boucle qui y répond le mieux sur le réseau de chemins de la BD TOPO® de l’IGN. © Mathieu Garrigues. Licence PolyForm Noncommercial 1.0.0 (github.com/M-Garrigues/trail_opt).',
+    aboutText: 'optrail génère des sorties trail sur mesure : choisis un type de sortie, optrail cherche la boucle (retour au départ) qui y répond le mieux sur le réseau de chemins de la BD TOPO® de l’IGN. © Mathieu Garrigues. Licence PolyForm Noncommercial 1.0.0 (github.com/M-Garrigues/trail_opt).',
     // Textes légaux : impersonnels (ui-spec §5) ; paragraphes séparés par \n\n.
     legalText: 'Éditeur : Mathieu Garrigues, personne physique, projet personnel gratuit et non professionnel. Contact : contact@optrail.eu.\n\n' +
       'Hébergeur : Amazon Web Services EMEA SARL, 38 avenue John F. Kennedy, L-1855 Luxembourg, tél. +352 2789 0000. Serveurs dans l’Union européenne ; pages diffusées par le réseau mondial Amazon CloudFront.\n\n' +
       'Code sous licence PolyForm Noncommercial 1.0.0 ; données : voir Attributions.\n\n' +
-      'Les boucles sont calculées automatiquement et proposées sans garantie : chacun reste seul juge du terrain, de la météo, des accès et de sa sécurité.',
+      'Les sorties sont calculées automatiquement et proposées sans garantie : chacun reste seul juge du terrain, de la météo, des accès et de sa sécurité.',
     privacyText: 'Responsable du traitement : l’éditeur (voir Mentions légales), contact@optrail.eu. Ni compte, ni cookie, ni mesure d’audience, ni publicité.\n\n' +
-      'Calcul : le point de départ et la zone dessinée sont envoyés au serveur au moment du calcul, pour tracer la boucle (base : fourniture du service demandé). Les journaux n’en gardent qu’une position arrondie au kilomètre, avec les réglages et le résultat, pendant 14 jours (intérêt légitime : exploitation, lutte contre les abus).\n\n' +
-      'Partage : « Créer le lien » enregistre la boucle, départ exact compris, pendant 90 jours ; quiconque a le lien la voit. Pour la supprimer plus tôt, écrire à contact@optrail.eu en joignant le lien.\n\n' +
-      'Sur l’appareil : langue, réglages, historique des boucles et dernière position arrondie (~1 km) restent dans la mémoire du navigateur (localStorage) et ne sont jamais envoyés ; effaçables dans Réglages. Strictement nécessaires au service demandé, ils ne requièrent pas de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) : d’où l’absence de bandeau cookies.\n\n' +
+      'Calcul : le point de départ et la zone dessinée sont envoyés au serveur au moment du calcul, pour tracer la sortie (base : fourniture du service demandé). Les journaux n’en gardent qu’une position arrondie au kilomètre, avec les réglages et le résultat, pendant 14 jours (intérêt légitime : exploitation, lutte contre les abus).\n\n' +
+      'Partage : « Créer le lien » enregistre la sortie, départ exact compris, pendant 90 jours ; quiconque a le lien la voit. Pour la supprimer plus tôt, écrire à contact@optrail.eu en joignant le lien.\n\n' +
+      'Sur l’appareil : langue, réglages, historique des sorties et dernière position arrondie (~1 km) restent dans la mémoire du navigateur (localStorage) et ne sont jamais envoyés ; effaçables dans Réglages. Strictement nécessaires au service demandé, ils ne requièrent pas de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) : d’où l’absence de bandeau cookies.\n\n' +
       'Adresse IP : optrail ne l’enregistre pas, mais elle est vue par Amazon Web Services (hébergement), Cloudflare (Turnstile, vérification anti-robot au calcul et au partage ; intérêt légitime : sécurité), l’IGN (fond de carte ; recherche de lieux, qui reçoit aussi le texte saisi) et Mapterhorn (relief de la vue 3D). Amazon et Cloudflare sont des sociétés américaines : transferts encadrés par le cadre UE–États-Unis de protection des données et les clauses contractuelles types.\n\n' +
       'Droits : accès, rectification, effacement, opposition et limitation, par e-mail à contact@optrail.eu ; réclamation possible auprès de la CNIL (cnil.fr). Sans compte, optrail ne peut pas relier les journaux à une personne.',
     attributionsText: 'Fond de carte : Plan IGN © IGN – Géoplateforme. Chemins et altitudes : © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, sous Licence Ouverte Etalab 2.0 ; cols et sommets : BD TOPO® IGN ; les données dérivées d’optrail sont publiées sous la même licence. Recherche de lieux : géocodage de la Géoplateforme IGN.\n\n' +
@@ -212,16 +217,16 @@ export const fr = {
       roads_minor: 'Inclure les petites routes ?', roads_all: 'Inclure toutes les routes ?', max_grade_pct: 'Retirer la limite de pente ?', polygon: 'Retirer la zone ?',
       no_repeat_junction: 'Autoriser de repasser aux mêmes carrefours ?', via: 'Retirer les points de passage ?', max_distance_km: 'Doubler la distance max ?',
     },
-    keep: 'Garder cette boucle',
+    keep: 'Garder cette sortie',
     ok: 'OK',
   },
   err: {
     via_too_far: (p: P) => `Le point ${p.n} est trop loin du départ pour une sortie de cette distance (max ${p.max_km} km à vol d’oiseau).`,
     via_outside_zone: (p: P) => `Le point ${p.n} est hors de la zone dessinée.`,
     via_unreachable: (p: P) => `Le point ${p.n} n’est sur aucun chemin praticable (ou dans une impasse).`,
-    outside_coverage: () => 'Pas encore de données ici (Île-de-France et Isère seulement).',
+    outside_coverage: () => 'Pas encore de données ici.',
     no_way_in_zone: () => 'Aucun chemin de ce type ici.',
-    no_loop_of_distance: () => 'Pas de boucle de cette longueur depuis ce départ.',
+    no_loop_of_distance: () => 'Aucune sortie de cette longueur depuis ce départ.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible : il faut au moins ${p.min_km} km.` : 'Pas assez de relief ici.',
     zone_invalid: () => 'Zone invalide : 3 à 50 points.',
@@ -250,10 +255,10 @@ export const fr = {
     target_dplus_probably_unreachable: () => 'D+ cible sans doute hors d’atteinte.',
     dplus_not_reached: (p: P) => `+${p.dplus_m} m non trouvé sous ${p.max_km} km : meilleure +${p.best_dplus_m} m.`,
     profile_mismatch: () => '',
-    candidates_reduced: (p: P) => `Au-delà de ${p.km} km : ${p.max_n} boucles au plus.`,
+    candidates_reduced: (p: P) => `Au-delà de ${p.km} km : ${p.max_n} sorties au plus.`,
     target_not_reached: (p: P) => [p.dplus_m && `D+ : +${p.best_dplus_m} m obtenus pour +${p.dplus_m} m demandés.`, p.km && `Distance : ${p.best_km} km obtenus (demandé : ${p.km} km).`].filter(Boolean).join(' '),
-    fewer_loops: (p: P) => `${p.got} boucle${Number(p.got) === 1 ? '' : 's'} trouvée${Number(p.got) === 1 ? '' : 's'} sur ${p.asked} demandées.`,
-    via_missed: (p: P) => `La boucle ne passe pas par le point ${p.n}.`,
+    fewer_loops: (p: P) => `${p.got} sortie${Number(p.got) === 1 ? '' : 's'} trouvée${Number(p.got) === 1 ? '' : 's'} sur ${p.asked} demandées.`,
+    via_missed: (p: P) => `La sortie ne passe pas par le point ${p.n}.`,
     coverage_edge: () => 'Zone en bord de couverture : chemins au-delà ignorés.',
   },
   // Installation de l'app (PWA) : entrée du menu + suggestion unique après le premier GPX.

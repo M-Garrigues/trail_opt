@@ -43,7 +43,9 @@ export class TrailMap {
   private marker: maplibregl.Marker | null = null;
   private ready: Promise<void>;
   private loops: Candidate[] = [];
-  private trail3d = new Trail3D(LOOP_COLORS[0], EXAG);
+  /** ligne drapée du tracé choisi : affichée en 2D, et en 3D tant que le ruban n'est pas posé (relief en cours de chargement) */
+  private draped = (on: boolean) => { for (const l of ['loops-casing', 'loops-sel']) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none'); };
+  private trail3d = new Trail3D(LOOP_COLORS[0], EXAG, (shown) => { if (this.is3d) this.draped(!shown); });
   private viaMarkers: maplibregl.Marker[] = [];
   private marks: maplibregl.Marker[] = [];
   private coverageBounds: LngLatBoundsLike = COVERAGE_BOUNDS;
@@ -195,10 +197,10 @@ export class TrailMap {
       m.setSky({ 'sky-color': '#bcd7ec', 'horizon-color': '#eef2f0', 'fog-color': '#f2efe9', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.7 });
     }
     m.setTerrain(on ? { source: 'dem', exaggeration: EXAG } : null);
-    // tracé choisi : ruban surélevé (trail3d.ts) en 3D, ligne drapée classique en 2D
+    // tracé choisi : ligne drapée en 2D ; en 3D, ruban surélevé dès que le relief est chargé (trail3d.ts)
+    if (!on) this.draped(true);
     if (on && !m.getLayer(this.trail3d.id)) m.addLayer(this.trail3d, 'cursor');
     if (!on && m.getLayer(this.trail3d.id)) m.removeLayer(this.trail3d.id);
-    for (const l of ['loops-casing', 'loops-sel']) m.setLayoutProperty(l, 'visibility', on ? 'none' : 'visible');
     if (on) { m.dragRotate.enable(); m.touchZoomRotate.enableRotation(); m.touchPitch.enable(); }
     else { m.dragRotate.disable(); m.touchZoomRotate.disableRotation(); m.touchPitch.disable(); }
     const duration = still ? 0 : 1200;

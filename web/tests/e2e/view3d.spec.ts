@@ -19,7 +19,7 @@ test('3D : sélection de boucle, profil, couleur', async ({ page }) => {
   expect(await page.evaluate(() => (window as any).tmap.map.getLayer('trail-3d') != null)).toBe(true);
 
   // clic sur une AUTRE boucle, sur la carte, en 3D
-  const radios = page.getByRole('radio', { name: /^(Choisir la boucle|Choose loop)/ });
+  const radios = page.getByRole('radio', { name: /^(Choisir la sortie|Choose run)/ });
   await expect(radios).toHaveCount(4);
   const pt = await page.evaluate(() => {
     const T = (window as any).tmap, m = T.map;

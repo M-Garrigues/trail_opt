@@ -1,8 +1,8 @@
-// Feuille du bas (mobile) : barre de progression visible pendant le calcul (repliée ou dépliée), menu défilé en haut, repli complet.
+// Feuille du bas (mobile) : barre de progression visible pendant le calcul, menu défilé en haut, réglages à hauteur de contenu (repli : mobile.spec).
 import { test, expect } from '@playwright/test';
 import { setup, mockPlan, placeStart, T } from './helpers';
 
-test('calcul : la barre de progression est visible et avance, feuille repliée ou dépliée', async ({ page }, info) => {
+test('calcul : la barre de progression est visible et avance', async ({ page }, info) => {
   const t = T();
   await setup(page);
   let release!: () => void;
@@ -11,20 +11,18 @@ test('calcul : la barre de progression est visible et avance, feuille repliée o
   await page.goto('/');
   await placeStart(page);
   const bar = page.getByRole('progressbar');
-  await page.getByRole('button', { name: t.find }).click(); // mobile : feuille repliée au départ
+  await page.getByRole('button', { name: t.find }).click();
   await expect(bar).toBeInViewport();
   const v0 = Number(await bar.getAttribute('aria-valuenow'));
   await expect.poll(async () => Number(await bar.getAttribute('aria-valuenow'))).toBeGreaterThan(v0);
-  if (info.project.name !== 'desktop-en') { // puis dépliée
-    await page.locator('.handle').click();
-    await expect(page.locator('.sheet')).toHaveAttribute('data-snap', '2');
-    await expect(bar).toBeInViewport();
+  if (info.project.name !== 'desktop-en') { // la feuille ne change pas de place : Annuler reste sous le pouce
+    await expect(page.getByRole('button', { name: t.cancel })).toBeInViewport({ ratio: 1 });
   }
   release();
   await expect(page.getByTestId('headline')).toBeVisible({ timeout: 20_000 });
 });
 
-test('menu : défilé tout en haut au dépliage ; feuille réellement repliée', async ({ page }, info) => {
+test('menu : défilé tout en haut ; retour aux réglages : feuille à hauteur de contenu', async ({ page }, info) => {
   test.skip(info.project.name === 'desktop-en');
   const t = T();
   await setup(page); await mockPlan(page);
@@ -33,16 +31,10 @@ test('menu : défilé tout en haut au dépliage ; feuille réellement repliée',
   const content = page.locator('.sheet .content');
   await expect.poll(() => content.evaluate((e) => e.scrollTop)).toBe(0);
   await expect(page.getByRole('heading', { name: 'Menu' })).toBeInViewport();
-  // replié : poignée + barre minimale, le champ de recherche ne dépasse pas
-  await page.goBack(); // retour aux réglages : feuille repliée
-  await expect(page.locator('.sheet')).toHaveAttribute('data-snap', '0');
-  await expect.poll(async () => (await page.locator('.sheet').boundingBox())!.height).toBeLessThan(200);
-  await expect(page.locator('.start-row input').first()).not.toBeInViewport();
-  await expect(page.locator('.sheet .bar')).toBeInViewport({ ratio: 1 });
-  // déplié puis replié à la main : toujours rien du champ
-  await page.locator('.handle').click();
-  await expect(page.locator('.start-row input').first()).toBeInViewport();
-  await page.locator('.handle').click();
-  await expect.poll(async () => (await page.locator('.sheet').boundingBox())!.height).toBeLessThan(200);
-  await expect(page.locator('.start-row input').first()).not.toBeInViewport();
+  await expect(page.locator('.fold')).toHaveCount(0);
+  await page.goBack();
+  // réglages : tout est visible d'emblée (recherche, type, valeurs, barre), la carte reste visible au-dessus ; menu non repliable
+  await expect(page.locator('.search-open')).toBeInViewport({ ratio: 1 });
+  await expect(page.locator('.sheet .bar .btn.primary')).toBeInViewport({ ratio: 1 });
+  await expect.poll(async () => (await page.locator('.sheet').boundingBox())!.height).toBeLessThan(page.viewportSize()!.height * 0.6);
 });

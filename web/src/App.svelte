@@ -6,7 +6,8 @@
   import { TrailMap } from './lib/map';
   import { nearestIndex } from './lib/geo';
   import { load } from './lib/store';
-  import { REJECTED, errorText } from './i18n/format';
+  import { REJECTED, errorText, km, num } from './i18n/format';
+  import { byId } from './lib/catalog';
   import { i18n, t, setLang } from './i18n/i18n.svelte';
   import Sheet from './components/Sheet.svelte';
   import Planner from './components/Planner.svelte';
@@ -27,9 +28,11 @@
   $effect(() => { app.wide = desktop; });
   $effect(() => { app.dock = desktop && !!app.result && !!current(); });
   let view3d = $state(false);
+  // mobile : hauteur de la feuille du résultat dépliée (titre, profil et les deux rangées d'actions visibles sans défiler)
+  const resultH = () => Math.min(460, Math.round(innerHeight * 0.62));
   const padding = () => desktop
     ? { top: 60, bottom: 40 + (app.dock ? DOCK_H : 0), left: 60, right: 60 }
-    : { top: 60, bottom: Math.round(innerHeight * 0.5) + 20, left: 30, right: 30 };
+    : { top: 60, bottom: resultH() + 20, left: 30, right: 30 };
   const cap = new URLSearchParams(location.search).get('cap') === 'km1' ? 'km1' : 'centroid';
   function toggle3d() {
     view3d = !view3d;
@@ -109,6 +112,14 @@
     }
   }
 
+  // feuille mobile repliée : une ligne de résumé (réglages, ou sortie affichée) ; '' = couche non repliable
+  const summary = $derived.by(() => {
+    const L = i18n.lang;
+    if (layer === 'result' || layer === 'detail') { const c = current(); return c ? `${km(L, c.length_m)} · +${num(L, c.dplus_m)} m` : ''; }
+    if (layer) return '';
+    const ty = byId(app.settings.typeId), v = app.settings.values[ty.id];
+    return [t().types[ty.id].name, ...ty.fields.filter((f) => v[f.param] != null).map((f) => `${f.param === 'dplus_m' ? '+' : ''}${num(L, v[f.param]!, 1)} ${f.unit}`)].join(' · ');
+  });
   const sgLabel = $derived(suggestLabel(app.error?.suggest));
   // E13 : action proposée par code
   const errAction = $derived.by(() => {
@@ -119,7 +130,7 @@
     if (c === 'outside_coverage') return { label: a.seeCoverage, run: () => tmap?.fitCoverage() };
     if (c === 'no_way_in_zone') return { label: a.widenRoads, run: () => { app.settings.roads = 'all'; } };
     if (c === 'no_loop_of_distance' || c === 'distance_out_of_range' || c === 'dplus_out_of_range' || c === 'dplus_unreachable_proven')
-      return { label: a.changeSettings, run: () => { app.snap = 2; document.querySelector<HTMLInputElement>('.field input[type=number]')?.focus(); } };
+      return { label: a.changeSettings, run: () => { app.snap = 2; document.querySelector<HTMLElement>('[id^=f-]')?.focus(); } };
     if (c === 'zone_invalid') return { label: a.redraw, run: () => { app.zone = null; openLayer('zone'); } };
     if (c === 'start_outside_zone' || c === 'zone_too_large') return { label: a.editZone, run: () => openLayer('zone') };
     if (REJECTED.has(c)) return { label: a.reload, run: () => location.reload() };
@@ -206,7 +217,7 @@
     </div>
   {/if}
 
-  <Sheet {desktop} label={t().app.tagline} peek={layer === 'result' ? 72 : layer && layer !== 'computing' ? 40 : 0} fit={layer === 'zone'} full={layer === 'result' ? 340 : 0}>
+  <Sheet {desktop} label={t().app.tagline} {summary} fit={!layer || layer === 'computing' || layer === 'options' || layer === 'pad' || layer === 'zone'} full={layer === 'result' ? resultH() : 0}>
     {#if layer === 'zone' && tmap}
       {#await import('./components/Zone.svelte') then Z}<Z.default {tmap} />{/await}
     {:else if layer === 'menu'}

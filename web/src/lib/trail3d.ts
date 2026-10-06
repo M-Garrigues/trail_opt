@@ -1,10 +1,16 @@
 // T36 (D34) : tracé de la vue 3D rendu AU-DESSUS du relief, plus drapé dessus.
 // Une ligne MapLibre drapée est peinte dans la texture du terrain : en forte pente face à la caméra elle s'étire
-// (« bave »). MapLibre 6 n'a pas de line-z-offset → couche custom WebGL : ruban de largeur constante à l'écran, posé
-// sur le relief AFFICHÉ (queryTerrainElevation, déjà ×exagération ; nos altitudes seulement tant que les dalles manquent,
-// recalculé quand elles arrivent), + une surélévation de quelques pixels d'écran seulement (anti z-fighting, pas de
-// décalage fixe qui « flotte » en plaine), testé en profondeur contre le relief ; les parties
-// cachées par une crête restent visibles en transparence (passe sans test de profondeur).
+// (« bave »). MapLibre 6 n'a pas de line-z-offset → couche custom WebGL : ruban de largeur constante à l'écran, testé en
+// profondeur contre le relief ; les parties cachées par une crête restent visibles en transparence.
+// Hauteur : le ruban doit coller à la surface AFFICHÉE, or celle-ci bouge pendant plusieurs secondes après le passage
+// en 3D (plate, puis dalles grossières, puis fines). Donc :
+//  1. tant que le relief de la vue n'est pas chargé, c'est la ligne drapée de MapLibre qui reste affichée : visible à
+//     l'instant, toujours collée à la surface quel que soit son état (ni attente, ni lévitation) ;
+//  2. relief chargé et caméra posée → UNE passe : altitudes du relief affiché (queryTerrainElevation, déjà ×exagération ;
+//     à défaut les nôtres), le ruban remplace la ligne drapée au même endroit ;
+//  3. ensuite une passe par arrêt de caméra seulement (le relief change de résolution avec le zoom) : rien sous 0,5 m,
+//     transition de 200 ms au-delà de 3 px d'écran. Jamais de calcul par image ni par dalle reçue.
+// Surélévation anti z-fighting : ~2,5 px d'écran convertis en mètres (pas de décalage fixe qui « flotte » en plaine).
 import { MercatorCoordinate, type CustomLayerInterface, type CustomRenderMethodInput, type Map } from 'maplibre-gl';
 import type { Candidate } from './types';
 
@@ -42,16 +48,25 @@ export class Trail3D implements CustomLayerInterface {
   /** mètres → unités mercator (z de mainMatrix : conforme, comme x et y) */
   private mScale = 0;
   private loc: Record<string, WebGLUniformLocation | null> = {};
-  /** couleur, largeur (px CSS), surélévation maximale (m), exagération du relief */
-  constructor(public color: string, private exag: number, private widthPx = 5, private lift = 6) {}
+  /** altitudes (m, ×exagération) des sommets posés ; null = ruban pas encore posé (ligne drapée affichée) */
+  private z: Float32Array | null = null;
+  private xy: number[][] = [];
+  private timer = 0;
+  private raf = 0;
+  /** couleur, exagération du relief, bascule ligne drapée ↔ ruban, largeur (px CSS), surélévation maximale (m) */
+  constructor(public color: string, private exag: number, private onShown: (shown: boolean) => void = () => {}, private widthPx = 5, private lift = 6) {}
 
   setColor(c: string) { if (c !== this.color) { this.color = c; this.map?.triggerRepaint(); } }
-  private key = NaN;
-  private refresh = () => this.setLine(this.cand);
+  /** au plus une passe par « arrêt » : les rafales d'événements (dalles, fin de mouvement) sont regroupées */
+  private schedule = (e: object) => {
+    const src = (e as { sourceId?: string }).sourceId;
+    if (src && src !== 'dem') return;
+    clearTimeout(this.timer);
+    this.timer = window.setTimeout(() => this.pass(), 80);
+  };
   onAdd(map: Map, gl: WebGL2RenderingContext) {
     this.map = map;
-    this.key = NaN;
-    map.on('idle', this.refresh); // dalles MNT arrivées : altitudes du relief à jour
+    map.on('idle', this.schedule); map.on('moveend', this.schedule); map.on('sourcedata', this.schedule);
     this.gl = gl;
     const sh = (type: number, src: string) => { const s = gl.createShader(type)!; gl.shaderSource(s, src); gl.compileShader(s); return s; };
     const p = gl.createProgram()!;
@@ -72,30 +87,60 @@ export class Trail3D implements CustomLayerInterface {
       gl.vertexAttribPointer(l, size as number, gl.FLOAT, false, stride, (off as number) * 4);
     });
     gl.bindVertexArray(null);
-    this.setLine(this.cand);
+    this.setLine(this.cand, true);
   }
 
   /** Tracé à dessiner (null = rien). Coordonnées relatives au premier point : précision float32 au mètre près. */
-  setLine(c: Candidate | null) {
-    if (c !== this.cand) this.key = NaN;
+  setLine(c: Candidate | null, force = false) {
+    if (c === this.cand && !force) return;
     this.cand = c;
+    cancelAnimationFrame(this.raf);
+    this.z = null; this.n = 0; this.xy = [];
+    if (!this.gl) return;
+    this.onShown(false); // la ligne drapée du nouveau tracé, tout de suite
+    if (c && c.lat.length > 1) {
+      const m = c.lat.map((la, i) => MercatorCoordinate.fromLngLat([c.lon[i], la]));
+      this.origin = [m[0].x, m[0].y];
+      this.mScale = m[0].meterInMercatorCoordinateUnits();
+      for (let i = 0; i < m.length; i++) {
+        const x = m[i].x - this.origin[0], y = m[i].y - this.origin[1], last = this.xy[this.xy.length - 1];
+        if (last && Math.hypot(x - last[0], y - last[1]) < this.mScale) continue; // points < 1 m : pas de joint dégénéré
+        this.xy.push([x, y, i]);
+      }
+    }
+    this.map.triggerRepaint();
+    this.pass(); // relief déjà là (changement de boucle en 3D) : ruban immédiat
+  }
+
+  /** mètres par pixel d'écran au centre de la carte */
+  private mpp() { return 78271.5 * Math.cos((this.map.getCenter().lat * Math.PI) / 180) / 2 ** this.map.getZoom(); }
+
+  /** Pose (ou recale) le ruban sur le relief affiché, si celui-ci est chargé et la caméra posée. */
+  private pass() {
+    const c = this.cand, map = this.map;
+    if (!this.gl || !c || this.xy.length < 2 || map.isMoving() || !map.getTerrain() || !map.isSourceLoaded('dem')) return;
+    const to = Float32Array.from(this.xy, ([, , i]) => map.queryTerrainElevation([c.lon[i], c.lat[i]]) ?? c.ele[i] * this.exag);
+    const from = this.z;
+    if (!from) { this.upload(to); this.onShown(true); return; }
+    let d = 0;
+    for (let i = 0; i < to.length; i++) d = Math.max(d, Math.abs(to[i] - from[i]));
+    if (d < 0.5) return;
+    cancelAnimationFrame(this.raf);
+    if (d < 3 * this.mpp() || matchMedia('(prefers-reduced-motion: reduce)').matches) { this.upload(to); return; }
+    const t0 = performance.now();
+    const tick = () => {
+      const k = Math.min(1, (performance.now() - t0) / 200), e = k * (2 - k);
+      this.upload(to.map((v, i) => from[i] + (v - from[i]) * e));
+      if (k < 1) this.raf = requestAnimationFrame(tick);
+    };
+    tick();
+  }
+
+  private upload(z: Float32Array) {
     const gl = this.gl;
     if (!gl || !this.buf) return;
-    if (!c || c.lat.length < 2) { this.n = 0; this.map.triggerRepaint(); return; }
-    const m = c.lat.map((la, i) => MercatorCoordinate.fromLngLat([c.lon[i], la]));
-    this.origin = [m[0].x, m[0].y];
-    this.mScale = m[0].meterInMercatorCoordinateUnits();
-    const P: number[][] = [];
-    for (let i = 0; i < m.length; i++) {
-      const x = m[i].x - this.origin[0], y = m[i].y - this.origin[1], last = P[P.length - 1];
-      if (last && Math.hypot(x - last[0], y - last[1]) < this.mScale) continue; // points < 1 m : pas de joint dégénéré
-      P.push([x, y, this.map.queryTerrainElevation([c.lon[i], c.lat[i]]) ?? c.ele[i] * this.exag]); // relief affiché (déjà ×exagération) ; à défaut, nos altitudes
-    }
-    if (P.length < 2) { this.n = 0; return; }
-    // 'idle' rappelle setLine : ne repeindre que si les altitudes ont changé (sinon boucle idle → repaint → idle)
-    const key = P.reduce((a, p) => a + p[2], c.lat.length);
-    if (key === this.key) return;
-    this.key = key;
+    this.z = z;
+    const P = this.xy.map(([x, y], i) => [x, y, z[i]]);
     const N = P.length, d = new Float32Array(N * 2 * 10);
     for (let i = 0; i < N; i++) {
       const prev = i ? P[i - 1] : P[0].map((v, k) => 2 * v - P[1][k]);
@@ -103,7 +148,7 @@ export class Trail3D implements CustomLayerInterface {
       for (const [j, side] of [[0, -1], [1, 1]]) d.set([...P[i], ...prev, ...next, side], (2 * i + j) * 10);
     }
     gl.bindBuffer(gl.ARRAY_BUFFER, this.buf);
-    gl.bufferData(gl.ARRAY_BUFFER, d, gl.STATIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, d, gl.DYNAMIC_DRAW);
     this.n = N * 2;
     this.map.triggerRepaint();
   }
@@ -119,13 +164,12 @@ export class Trail3D implements CustomLayerInterface {
     gl.uniform2f(this.loc.u_half, gl.drawingBufferWidth / 2, gl.drawingBufferHeight / 2);
     gl.uniform1f(this.loc.u_m, this.mScale);
     // surélévation = ~2,5 px d'écran en mètres (au centre de la carte), bornée : ≥ 0,5 m, ≤ lift × exag
-    const mpp = 78271.5 * Math.cos((this.map.getCenter().lat * Math.PI) / 180) / 2 ** this.map.getZoom();
-    gl.uniform1f(this.loc.u_lift, Math.min(this.lift * this.exag, Math.max(0.5, 2.5 * mpp)));
+    gl.uniform1f(this.loc.u_lift, Math.min(this.lift * this.exag, Math.max(0.5, 2.5 * this.mpp())));
     gl.enable(gl.BLEND);
     gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA); // alpha prémultiplié (MapLibre)
     const dpr = devicePixelRatio || 1, [r, g, b] = rgb(this.color);
     const pass = (w: number, c: number[], depth: boolean) => {
-      if (depth && !(window as any).__nodepth) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); } else gl.disable(gl.DEPTH_TEST);
+      if (depth) { gl.enable(gl.DEPTH_TEST); gl.depthFunc(gl.LEQUAL); } else gl.disable(gl.DEPTH_TEST);
       gl.depthMask(false);
       gl.uniform1f(this.loc.u_width, w * dpr);
       gl.uniform4f(this.loc.u_color, c[0], c[1], c[2], c[3]);
@@ -138,5 +182,10 @@ export class Trail3D implements CustomLayerInterface {
     gl.bindVertexArray(null);
   }
 
-  onRemove() { this.map.off('idle', this.refresh); this.prog = null; this.gl = null; this.n = 0; }
+  onRemove() {
+    const m = this.map;
+    m.off('idle', this.schedule); m.off('moveend', this.schedule); m.off('sourcedata', this.schedule);
+    clearTimeout(this.timer); cancelAnimationFrame(this.raf);
+    this.prog = null; this.gl = null; this.n = 0; this.z = null;
+  }
 }

@@ -3,7 +3,10 @@
   import { t } from '../i18n/i18n.svelte';
   import { parseLatLon } from '../lib/geo';
 
-  let { onpick }: { onpick: (p: { lat: number; lon: number; label: string }) => void } = $props();
+  let { onpick, overlay = false }: { onpick: (p: { lat: number; lon: number; label: string }) => void; overlay?: boolean } = $props();
+  let full = $state(false);
+  let dlg: HTMLDialogElement | undefined = $state();
+  function show(d: HTMLDialogElement) { d.showModal(); const i = d.querySelector('input')!; i.focus(); i.select(); }
 
   type Hit = { label: string; lat: number; lon: number };
   let q = $state('');
@@ -38,6 +41,7 @@
     q = h.label;
     open = false;
     hits = [];
+    dlg?.close();
     onpick(h);
   }
   function key(e: KeyboardEvent) {
@@ -49,13 +53,13 @@
   }
 </script>
 
-<div class="search">
+{#snippet field()}
   <input
     type="search"
     bind:value={q}
     oninput={input}
     onkeydown={key}
-    onblur={() => setTimeout(() => (open = false), 150)}
+    onblur={() => { if (!overlay) setTimeout(() => (open = false), 150); }}
     placeholder={t().start.search}
     aria-label={t().start.search}
     role="combobox"
@@ -64,7 +68,10 @@
     aria-autocomplete="list"
     aria-activedescendant={active >= 0 ? `hit-${active}` : undefined}
     autocomplete="off"
+    enterkeyhint="search"
   />
+{/snippet}
+{#snippet list()}
   {#if open}
     <ul id="search-list" role="listbox">
       {#each hits as h, i}
@@ -76,7 +83,31 @@
       {/each}
     </ul>
   {/if}
-</div>
+{/snippet}
+
+{#if overlay}
+  <!-- mobile : la recherche s'ouvre en plein écran, champ en haut (jamais sous le clavier), Retour toujours visible -->
+  <button type="button" class="search-open" onclick={() => (full = true)}>
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="11" cy="11" r="7" /><path d="M16.500 16.500L21 21" /></svg>
+    <span class:ph={!q}>{q || t().start.search}</span>
+  </button>
+  {#if full}
+    <dialog class="fs" bind:this={dlg} use:show onclose={() => (full = false)} aria-label={t().start.search}>
+      <div class="fs-head">
+        <button type="button" class="icon-btn" onclick={() => dlg?.close()} aria-label={t().result.back} title={t().result.back}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.500" /></svg>
+        </button>
+        <div class="search">{@render field()}</div>
+      </div>
+      <div class="results">{@render list()}</div>
+    </dialog>
+  {/if}
+{:else}
+  <div class="search">
+    {@render field()}
+    {@render list()}
+  </div>
+{/if}
 
 <style>
   .search { position: relative; flex: 1; min-width: 0; }
@@ -89,4 +120,11 @@
   li button { all: unset; box-sizing: border-box; display: block; width: 100%; padding: 12px; min-height: 44px; cursor: pointer; }
   li[aria-selected='true'] button, li button:hover { background: var(--accent-soft); }
   .none { padding: 12px; color: var(--muted); }
+  .search-open { flex: 1; min-width: 0; min-height: 44px; display: flex; align-items: center; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--surface); color: var(--text); text-align: left; cursor: pointer; }
+  .search-open svg { flex: none; color: var(--muted); }
+  .search-open span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .ph { color: var(--muted); }
+  .results ul { position: static; box-shadow: none; border: 0; background: transparent; max-height: none; margin-top: 8px; }
+  .results li + li { border-top: 1px solid var(--border); }
 </style>

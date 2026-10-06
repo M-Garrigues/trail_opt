@@ -1,6 +1,6 @@
 // Parcours 3 : autres boucles, historique, langue, dernier type, partage et lien /b/<id>.
 import { test, expect } from '@playwright/test';
-import { setup, mockPlan, placeStart, openSheet, T, isFr, plan1, plan4 } from './helpers';
+import { setup, mockPlan, placeStart, T, isFr, plan1, plan4 } from './helpers';
 
 test('autres boucles + historique (AC9, AC15)', async ({ page }) => {
   const t = T();
@@ -44,7 +44,7 @@ test('réglage 3 boucles → « Autres boucles (2) » sans appel (AC9)', async (
   await expect(page.getByRole('button', { name: t.find })).toBeVisible(); // menu refermé (feuille redescendue)
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
-  await expect(page.getByText(isFr() ? 'Autres boucles (2)' : 'Other loops (2)')).toBeVisible();
+  await expect(page.getByText(isFr() ? 'Autres sorties (2)' : 'Other runs (2)')).toBeVisible();
   expect(calls.length).toBe(1);
   expect(calls[0].searchParams.get('n_candidates')).toBe('3');
 });
@@ -54,7 +54,6 @@ test('langue et dernier type gardés (AC20, AC22)', async ({ page }) => {
   await page.goto('/');
   const other = isFr() ? 'EN' : 'FR';
   await page.locator('.topbar').getByRole('radio', { name: other }).click();
-  await openSheet(page);
   await page.getByRole('radio', { name: isFr() ? /^Target/ : /^Cible/ }).click();
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', other.toLowerCase());
@@ -99,7 +98,7 @@ test('partage : confirmation, lien copié, /b/<id> sans calcul (AC12, AC13)', as
   const before = calls.length;
   await page.goto('/b/ZkD5HAVbAzLl');
   await expect(page.getByTestId('headline')).toHaveText('+424 m');
-  await expect(page.getByText(isFr() ? 'Boucle partagée' : 'Shared loop')).toBeVisible();
+  await expect(page.getByText(isFr() ? 'Sortie partagée' : 'Shared run')).toBeVisible();
   expect(calls.length).toBe(before);
   // repartage d'une boucle ouverte par lien : son URL, sans nouveau POST (GET ne rend pas sig)
   posted = null;

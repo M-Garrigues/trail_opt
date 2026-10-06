@@ -1,6 +1,6 @@
 // D40 : « message important » modal quand la demande n'est pas atteinte ; action « Inclure les routes ? » change le réglage et relance.
 import { test, expect } from '@playwright/test';
-import { setup, mockPlan, placeStart, openSheet, plan1, T, isFr } from './helpers';
+import { setup, mockPlan, placeStart, openOptions, closeOptions, plan1, T, isFr } from './helpers';
 
 test('demande non atteinte : popup + inclure les routes', async ({ page }) => {
   const t = T();
@@ -13,9 +13,9 @@ test('demande non atteinte : popup + inclure les routes', async ({ page }) => {
   });
   await page.goto('/');
   await placeStart(page);
-  await openSheet(page);
-  await page.locator('details.more summary').click();
+  await openOptions(page);
   await page.locator('#roads').selectOption('unpaved');
+  await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   const dlg = page.getByRole('alertdialog');
   await expect(dlg).toBeVisible({ timeout: 20_000 });
@@ -27,7 +27,7 @@ test('demande non atteinte : popup + inclure les routes', async ({ page }) => {
   expect(calls[2].searchParams.get('roads')).toBe('all');
   expect(calls[2].searchParams.has('diagnose')).toBe(false);
   await expect(dlg).toBeVisible();
-  await dlg.getByRole('button', { name: isFr() ? 'Garder cette boucle' : 'Keep this loop' }).click();
+  await dlg.getByRole('button', { name: isFr() ? 'Garder cette sortie' : 'Keep this run' }).click();
   await expect(dlg).toHaveCount(0);
 });
 
@@ -44,7 +44,7 @@ test('aucune boucle : erreur tout de suite, puis suggestion « routes » (diagno
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
   const alert = page.getByRole('alert');
-  await expect(alert).toContainText(isFr() ? 'Pas de boucle de cette longueur' : 'No loop');
+  await expect(alert).toContainText(isFr() ? 'Aucune sortie de cette longueur' : 'No run');
   await alert.getByRole('button', { name: isFr() ? 'Inclure toutes les routes ?' : 'Include all roads?' }).click();
   await expect.poll(() => calls.length).toBeGreaterThanOrEqual(3); // la réponse simulée manque encore la cible : un nouveau diagnostic peut suivre
   expect(calls[2].searchParams.get('roads')).toBe('all');

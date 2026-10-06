@@ -67,14 +67,6 @@
     {#if climbs}<p class="climbs" data-testid="climbs">{climbs}</p>{/if}
     <Profile cand={c} bind:cursor={app.cursor} height={110} onpick={mapUi.center} marks={profileMarks(c, viaIdx(c))} />
     <p class="hint">{t().detail.centerHint}</p>
-    <div class="actions-grid">
-      <button class="btn secondary" onclick={() => openLayer('detail')}>{t().result.details}</button>
-      <button class="btn primary" onclick={() => saveGpx(c, res.data_version)}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
-      {#if c.sig || app.shared}<button class="btn secondary" onclick={() => openLayer('share')} disabled={app.offline}>{t().result.share}</button>{/if}
-      {#if !app.fromHistory}
-        <button class="btn secondary" onclick={() => compute('seed')}>{t().result.newSuggestions}</button>
-      {/if}
-    </div>
   {/if}
 
   {@render loops()}
@@ -88,16 +80,40 @@
   {#if !app.fromHistory && app.cands.length < 2 && !app.noMore}
     <button class="btn secondary wide" onclick={() => compute('more')}>{t().result.otherLoops}</button>
   {/if}
+  {#if !app.wide}
+    <!-- mobile : actions toujours visibles au bas de la feuille (une rangée, le contenu défile au-dessus) -->
+    <div class="bar">
+      <button class="btn secondary ico" onclick={() => openLayer('detail')} aria-label={t().result.details}>
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M9 6h11M9 12h11M9 18h11" /><circle cx="4.500" cy="6" r="1" /><circle cx="4.500" cy="12" r="1" /><circle cx="4.500" cy="18" r="1" /></svg>
+        <span class="cap">{t().result.details}</span>
+      </button>
+      {#if c.sig || app.shared}
+        <button class="btn secondary ico" onclick={() => openLayer('share')} disabled={app.offline} aria-label={t().result.share}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15V3M8 7l4-4 4 4M8 11H6v10h12V11h-2" /></svg>
+          <span class="cap">{t().result.share}</span>
+        </button>
+      {/if}
+      {#if !app.fromHistory}
+        <button class="btn secondary ico" onclick={() => compute('seed')} aria-label={t().result.newSuggestions}>
+          <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 1 1-2.300-5.600M20 4v5h-5" /></svg>
+          <span class="cap">{t().result.again}</span>
+        </button>
+      {/if}
+      <button class="btn primary gpx" onclick={() => saveGpx(c, res.data_version)}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
+    </div>
+  {/if}
 {/if}
 
 <style>
   .head { display: flex; gap: 10px; align-items: center; }
-  .headline { font-size: 1.6rem; font-weight: 800; margin: 0; line-height: 1.1; }
+  .headline { font-size: clamp(1.2rem, 5.6vw, 1.6rem); font-weight: 800; margin: 0; line-height: 1.1; }
   .sub { margin: 2px 0 0; color: var(--muted); }
   .stats { margin: 6px 0 2px; font-weight: 600; }
   .climbs { margin: 0 0 6px; color: var(--muted); }
   .warnings { margin: 6px 0; padding-left: 1.2em; color: var(--warn-text); }
-  .actions-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 10px 0; }
+  .bar { position: sticky; bottom: 0; z-index: 11; display: flex; gap: 8px; margin: auto -16px 0; padding: 8px 16px 12px; background: var(--here, var(--lvl-2));
+    border-top: 1px solid var(--border); box-shadow: 0 -6px 12px -8px rgb(var(--sh-rgb) / 0.25); }
+  .gpx { flex: 1; min-width: 0; padding-inline: 6px; white-space: nowrap; }
   .other-title { font-size: 1rem; margin: 12px 0 6px; }
   .loops { display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px; }
   .loop {

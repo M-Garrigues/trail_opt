@@ -1,7 +1,7 @@
 // Parcours 1 : première visite → départ → réglages → calcul → résultat, profil, détail, GPX.
 import { test, expect } from '@playwright/test';
 import AxeBuilder from '@axe-core/playwright';
-import { setup, mockPlan, placeStart, zoneClick, T, isFr } from './helpers';
+import { setup, mockPlan, placeStart, zoneClick, openOptions, closeOptions, T, isFr } from './helpers';
 
 async function axe(page: import('@playwright/test').Page) {
   const r = await new AxeBuilder({ page }).exclude('.map').analyze();
@@ -28,7 +28,7 @@ test('parcours principal', async ({ page }) => {
   await expect(page.getByRole('button', { name: t.find })).toBeEnabled();
 
   // AC4 radiogroup, flèches
-  const radios = page.getByRole('radiogroup', { name: isFr() ? 'Type d’entraînement' : 'Training type' }).getByRole('radio');
+  const radios = page.getByRole('radiogroup', { name: isFr() ? 'Type de sortie' : 'Run type' }).getByRole('radio');
   await expect(radios).toHaveCount(3);
   await radios.first().focus();
   await page.keyboard.press('ArrowRight');
@@ -37,18 +37,36 @@ test('parcours principal', async ({ page }) => {
   await page.keyboard.press('ArrowLeft');
   await expect(page.locator('#f-dplus_m')).toHaveCount(0);
 
-  // AC5 1 km → 2 + message
-  await page.locator('#f-distance_km').fill('1');
-  await page.locator('#f-distance_km').blur();
-  await expect(page.locator('#f-distance_km')).toHaveValue('2');
-  await expect(page.locator('#m-distance_km')).not.toBeEmpty();
-  await page.locator('#f-distance_km').fill('10');
-  await page.locator('#f-distance_km').blur();
+  // AC5 1 km : bureau → ramené à 2 + message ; mobile → refusé par le pavé
+  const mobile = (await page.locator('.sheet').count()) > 0;
+  if (mobile) { // pavé numérique intégré : hors bornes = OK désactivé et plage signalée
+    const ok = page.getByRole('button', { name: 'OK', exact: true }), k = (d: string) => page.locator(`.pad [data-k="${d}"]`).click();
+    await page.locator('#f-distance_km').click();
+    await k('1');
+    await expect(ok).toBeDisabled();
+    await expect(page.locator('#pad-range')).toHaveClass(/bad/);
+    expect(await axe(page), 'axe pavé').toEqual([]);
+    await k('back'); await k('2');
+    await ok.click();
+    await expect(page.locator('#f-distance_km strong')).toHaveText('2');
+    await page.locator('#f-distance_km').click();
+    await k('1'); await k('0');
+    await ok.click();
+    await expect(page.locator('#f-distance_km strong')).toHaveText('10');
+  } else {
+    await page.locator('#f-distance_km').fill('1');
+    await page.locator('#f-distance_km').blur();
+    await expect(page.locator('#f-distance_km')).toHaveValue('2');
+    await expect(page.locator('#m-distance_km')).not.toBeEmpty();
+    await page.locator('#f-distance_km').fill('10');
+    await page.locator('#f-distance_km').blur();
+  }
 
   // AC6 note « courtes » et durée ~1 h 00
-  if (await page.locator('.summary').isVisible()) await page.locator('.summary').click(); // mobile : déplier la feuille (2 états)
+  if (mobile) await openOptions(page);
   await page.locator('label', { hasText: isFr() ? 'Courtes et raides' : 'Short & steep' }).click();
   await expect(page.getByText(isFr() ? /moins de D\+ au total/ : /less total climb/)).toBeVisible();
+  if (mobile) { expect(await axe(page), 'axe options').toEqual([]); await closeOptions(page); }
   await expect(page.locator('.estimate strong')).toHaveText('~1 h 00');
   expect(await axe(page), 'axe E3').toEqual([]);
 

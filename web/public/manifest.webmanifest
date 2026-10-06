@@ -2,7 +2,7 @@
   "id": "/",
   "name": "Optrail",
   "short_name": "Optrail",
-  "description": "Générateur de boucles trail sur mesure, sur les chemins de la carte IGN.",
+  "description": "Générateur de sorties trail sur mesure, sur les chemins de la carte IGN.",
   "lang": "fr",
   "dir": "ltr",
   "start_url": "/",

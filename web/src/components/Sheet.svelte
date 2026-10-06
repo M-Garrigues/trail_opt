@@ -1,79 +1,25 @@
 <script lang="ts">
-  // Bottom sheet 2 états (replié = 0, déplié ≈ 90 % = 2 ; plus de mi-hauteur) ; bureau : panneau latéral (pas de poignée).
-  // Niveaux (D27, D34) : plus le panneau est déplié, plus il « monte » au-dessus de la carte : ombre en couches plus large,
-  // teinte plus claire. Bords nets (D34 : pas de bord « organique » sans modèle crédible).
+  // Feuille du bas (mobile) ; bureau : panneau latéral.
+  // Deux états seulement, sans poignée ni glissement : dépliée (`fit` = hauteur du contenu ; sinon `full` px ou 90 %) ou
+  // repliée sur UNE ligne de résumé. `summary` non vide = feuille repliable : chevron d'accent en haut à droite
+  // (replié : toute la ligne de résumé est le bouton). État gardé en mémoire le temps de la session (app.snap : 0 / 2).
+  // Aucune gestion du clavier ici : la saisie se fait au pavé intégré ou dans un plein écran (<dialog class="fs">).
+  // Niveaux (D27, D34) : dépliée, la feuille « monte » : ombre en couches plus large, teinte plus claire.
   import type { Snippet } from 'svelte';
   import { app, level as uiLevel } from '../lib/app.svelte';
+  import { t } from '../i18n/i18n.svelte';
 
-  let { desktop, children, label, peek = 0, fit = false, full = 0 }: { desktop: boolean; children: Snippet; label: string; peek?: number; fit?: boolean; full?: number } = $props();
+  let { desktop, children, label, summary = '', fit = false, full = 0 }: { desktop: boolean; children: Snippet; label: string; summary?: string; fit?: boolean; full?: number } = $props();
 
   const level = $derived(uiLevel(desktop));
-
-  let vh = $state(window.visualViewport?.height ?? innerHeight);
-  // clavier virtuel : hauteur visible (visualViewport) ; la feuille se cale au-dessus du clavier
-  let kb = $state(0);
-  $effect(() => {
-    const v = window.visualViewport;
-    if (!v) return;
-    const f = () => { vh = v.height; kb = Math.max(0, Math.round(innerHeight - v.height - v.offsetTop)); if (kb > 80) app.snap = 2; };
-    v.addEventListener('resize', f); v.addEventListener('scroll', f);
-    return () => { v.removeEventListener('resize', f); v.removeEventListener('scroll', f); };
-  });
-  // replié (peek) : poignée + barre collante du contenu (réglages : résumé + boutons) restent visibles
-  // replié : peek > 0 = hauteur imposée ; 0 = poignée + barre collante mesurée (réglages), sans rien du champ de recherche
-  let bar = $state(0);
-  const heights = () => [peek || 32 + bar, 0, full || Math.round(vh * 0.9)];
+  const folded = $derived(!!summary && app.snap === 0);
   let content: HTMLElement | undefined = $state();
-  // hauteur de la barre collante (suit ses changements : progression, annulation…)
-  $effect(() => {
-    const b = content?.querySelector<HTMLElement>('.bar');
-    void peek; void app.layers.length;
-    if (!content || !b) { bar = 0; return; }
-    const pad = parseFloat(getComputedStyle(content.parentElement!).paddingBottom || '0');
-    const ro = new ResizeObserver(() => { bar = b.offsetHeight + pad; });
-    ro.observe(b);
-    return () => ro.disconnect();
-  });
-  // à chaque changement d'état/de couche : replié = voir le CSS (rien ne défile) ; déplié = tout en haut (sauf champ focalisé)
+  // à chaque changement d'état/de couche : contenu tout en haut
   $effect(() => {
     void app.snap; void app.layers.length;
-    if (!content) return;
-    if (app.snap === 0) { if (!content.querySelector('.bar')) content.scrollTop = 0; }
-    else if (!content.contains(document.activeElement) || document.activeElement === document.body) content.scrollTop = 0;
+    if (content) content.scrollTop = 0;
   });
-  let drag = $state<{ y0: number; h0: number; t0: number; y: number; moved: boolean } | null>(null);
-  const height = $derived.by(() => {
-    const h = heights()[app.snap];
-    if (!drag) return h;
-    return Math.min(heights()[2], Math.max(heights()[0], drag.h0 + drag.y0 - drag.y));
-  });
-
-  function down(e: PointerEvent) {
-    (e.currentTarget as HTMLElement).setPointerCapture(e.pointerId);
-    drag = { y0: e.clientY, h0: heights()[app.snap], t0: performance.now(), y: e.clientY, moved: false };
-  }
-  function move(e: PointerEvent) {
-    if (!drag) return;
-    drag.y = e.clientY;
-    if (Math.abs(drag.y - drag.y0) > 6) drag.moved = true;
-  }
-  function up() {
-    if (!drag) return;
-    const d = drag;
-    drag = null;
-    if (!d.moved) { app.snap = app.snap === 2 ? 0 : 2; return; }
-    const h = Math.min(heights()[2], Math.max(heights()[0], d.h0 + d.y0 - d.y));
-    const v = (d.y0 - d.y) / Math.max(1, performance.now() - d.t0); // px/ms, > 0 vers le haut
-    const [lo, , hi] = heights();
-    app.snap = Math.abs(v) > 0.5 ? (v > 0 ? 2 : 0) : Math.abs(hi - h) < Math.abs(h - lo) ? 2 : 0;
-  }
-  function key(e: KeyboardEvent) {
-    if (e.key === 'ArrowUp') { app.snap = 2; e.preventDefault(); }
-    if (e.key === 'ArrowDown') { app.snap = 0; e.preventDefault(); }
-  }
 </script>
-
-
 
 {#if desktop}
   <aside class="panel" aria-label={label} data-level={level}>
@@ -81,44 +27,48 @@
     <div class="scroll">{@render children()}</div>
   </aside>
 {:else}
-  <section class="sheet" class:dragging={!!drag} style:height={fit ? 'auto' : `${kb > 80 ? Math.min(height, vh - 8) : height}px`} style:max-height="{Math.round(vh * 0.9)}px" style:bottom="{kb > 80 ? kb : 0}px" aria-label={label} data-snap={app.snap} data-level={level}>
+  <section class="sheet" class:fit class:folded class:foldable={!!summary} aria-label={label} data-level={folded ? 1 : level}>
     <div class="topo head-topo"></div>
-    <button
-      class="handle"
-      aria-label="{label} ({['1/3', '2/3', '3/3'][app.snap]})"
-      onpointerdown={down}
-      onpointermove={move}
-      onpointerup={up}
-      onpointercancel={() => (drag = null)}
-      onkeydown={key}
-    ><span></span></button>
-    <div class="content" bind:this={content}>
-      {@render children()}
-    </div>
+    {#if summary}
+      <button class="fold" aria-expanded={!folded} aria-controls="sheet-content" aria-label={folded ? `${t().sheet.unfold} : ${summary}` : t().sheet.fold}
+        onclick={() => (app.snap = folded ? 2 : 0)}>
+        {#if folded}<span class="sum">{summary}</span>{/if}
+        <svg viewBox="0 0 24 24" width="26" height="26" aria-hidden="true"><path d="M6 9l6 6 6-6" fill="none" stroke="currentColor" stroke-width="2.800" stroke-linecap="round" stroke-linejoin="round" /></svg>
+      </button>
+    {/if}
+    <div class="body"><div class="clip">
+      <div class="content" id="sheet-content" bind:this={content} style:height={fit ? 'auto' : `${full || Math.round(innerHeight * 0.9)}px`}>
+        {@render children()}
+      </div>
+    </div></div>
   </section>
-  {#if kb > 80}<button class="kb-ok" style:bottom="{kb + 8}px" onpointerdown={(e) => e.preventDefault()} onclick={() => (document.activeElement as HTMLElement | null)?.blur()}>OK</button>{/if}
 {/if}
 
 <style>
-  /* clavier ouvert : toujours de quoi le fermer */
-  .kb-ok { position: absolute; right: 12px; z-index: 7; min-height: 44px; min-width: 64px; border-radius: 22px; border: 0; font-weight: 800; background: var(--accent); color: var(--on-accent); box-shadow: 0 2px 8px rgb(0 0 0 / 0.35); }
   .panel, .sheet { position: absolute; z-index: 5; color: var(--text); background: var(--lvl-2); box-sizing: border-box; display: flex; flex-direction: column;
     transition: box-shadow 0.4s var(--ease), background-color 0.4s; }
   .panel { inset: 0 auto 0 0; width: 400px; }
   .scroll { position: relative; flex: 1; overflow-y: auto; padding: 12px 16px 0; display: flex; flex-direction: column; }
   .scroll > :global(*) { flex: none; }
-  .sheet { left: 0; right: 0; bottom: 0; border-radius: 14px 14px 0 0; padding-bottom: env(safe-area-inset-bottom);
-    transition: height 0.32s var(--ease), box-shadow 0.4s var(--ease), background-color 0.4s; }
-  .sheet.dragging { transition: none; }
-  .handle { position: relative; flex: none; height: 32px; width: 100%; border: 0; background: transparent; cursor: grab; touch-action: none;
-    display: grid; place-items: center; padding: 0; }
-  .handle span { width: 44px; height: 5px; border-radius: 3px; background: var(--muted); }
-  .content { position: relative; overflow-y: auto; padding: 0 16px; flex: 1; overscroll-behavior: contain; display: flex; flex-direction: column; }
+  .sheet { left: 0; right: 0; bottom: 0; border-radius: 14px 14px 0 0; padding-bottom: env(safe-area-inset-bottom); }
+  /* dépliage / repliage : la rangée de grille passe de 1fr à 0fr (hauteur animée sans mesure) */
+  .body { display: grid; grid-template-rows: 1fr; transition: grid-template-rows 0.22s var(--ease); min-height: 0; }
+  .folded .body { grid-template-rows: 0fr; }
+  .clip { min-height: 0; overflow: hidden; }
+  .content { position: relative; min-height: 0; max-height: 90vh; max-height: calc(90dvh - env(safe-area-inset-bottom)); overflow-y: auto; padding: 12px 16px 0; overscroll-behavior: contain;
+    display: flex; flex-direction: column; box-sizing: border-box; }
   .content > :global(*) { flex: none; }
-  /* replié : rien ne défile ; avec la barre des réglages, seul le bas du contenu (la barre) reste visible, le champ de recherche est rogné */
-  .sheet[data-snap='0'] .content { overflow: hidden; }
-  .sheet[data-snap='0'] .content:has(:global(.bar)) { justify-content: flex-end; }
-  .head-topo { inset: 0 0 auto 0; height: 140px; border-radius: inherit;
+  /* repliée : RIEN du contenu ne reste visible ni atteignable */
+  .folded .content { visibility: hidden; overflow: hidden; padding-top: 0; transition: visibility 0s 0.22s; }
+  /* la première ligne du contenu laisse la place du chevron */
+  .foldable .content > :global(:first-child) { margin-right: 48px; }
+  .fold { position: absolute; z-index: 2; top: 12px; right: 12px; width: 44px; height: 44px; padding: 0; border: 0; border-radius: 10px; background: transparent;
+    color: var(--accent-text); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+  .fold svg { flex: none; transition: transform 0.22s var(--ease); }
+  .folded .fold { position: relative; top: 0; right: 0; width: 100%; height: auto; min-height: 56px; padding: 0 21px 0 16px; gap: 8px; justify-content: space-between; text-align: left; }
+  .folded .fold svg { transform: rotate(180deg); }
+  .sum { min-width: 0; font-weight: 700; font-size: 1.05rem; color: var(--text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-variant-numeric: tabular-nums; }
+  .head-topo { inset: 0 0 auto 0; height: 140px; max-height: 100%; border-radius: inherit;
     -webkit-mask-image: var(--topo), linear-gradient(#000, transparent); mask-image: var(--topo), linear-gradient(#000, transparent);
     -webkit-mask-composite: source-in; mask-composite: intersect; -webkit-mask-size: 1000px, 100% 100%; mask-size: 1000px, 100% 100%; }
   /* élévation : ombre vers la carte (haut pour la feuille, droite pour le panneau) */
@@ -128,5 +78,5 @@
   .panel[data-level='1'] { --here: var(--lvl-1); background: var(--lvl-1); box-shadow: 1px 0 1px rgb(var(--sh-rgb) / 0.10), 2px 0 6px rgb(var(--sh-rgb) / 0.10); }
   .panel[data-level='2'] { --here: var(--lvl-2); background: var(--lvl-2); box-shadow: 1px 0 2px rgb(var(--sh-rgb) / 0.12), 4px 0 10px rgb(var(--sh-rgb) / 0.12), 12px 0 28px rgb(var(--sh-rgb) / 0.12); }
   .panel[data-level='3'] { --here: var(--lvl-3); background: var(--lvl-3); box-shadow: 1px 0 2px rgb(var(--sh-rgb) / 0.14), 6px 0 14px rgb(var(--sh-rgb) / 0.14), 20px 0 44px rgb(var(--sh-rgb) / 0.16); }
-  @media (prefers-reduced-motion: reduce) { .sheet, .panel { transition: none; } }
+  @media (prefers-reduced-motion: reduce) { .sheet, .panel, .body, .fold svg, .folded .content { transition: none; } }
 </style>

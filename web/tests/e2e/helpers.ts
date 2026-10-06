@@ -6,8 +6,8 @@ export const plan4 = readFileSync(new URL('../fixtures/plan4.json', import.meta.
 
 export const isFr = () => test.info().project.name.endsWith('-fr');
 export const T = (fr = isFr()) => fr
-  ? { go: 'C’est parti', find: 'Trouver ma boucle', cancel: 'Annuler', details: 'Détail', back: 'Retour', other: 'Autres boucles', history: 'Mes boucles', clear: 'Effacer l’historique', share: 'Partager', create: 'Créer le lien', menu: 'Menu', download: 'Télécharger le GPX' }
-  : { go: 'Let’s go', find: 'Find my loop', cancel: 'Cancel', details: 'Details', back: 'Back', other: 'Other loops', history: 'My loops', clear: 'Clear history', share: 'Share', create: 'Create link', menu: 'Menu', download: 'Download GPX' };
+  ? { go: 'C’est parti', find: 'Trouver ma sortie', cancel: 'Annuler', details: 'Détail', back: 'Retour', other: 'Autres sorties', history: 'Mes sorties', clear: 'Effacer l’historique', share: 'Partager', create: 'Créer le lien', menu: 'Menu', download: 'Télécharger le GPX' }
+  : { go: 'Let’s go', find: 'Find my run', cancel: 'Cancel', details: 'Details', back: 'Back', other: 'Other runs', history: 'My runs', clear: 'Clear history', share: 'Share', create: 'Create link', menu: 'Menu', download: 'Download GPX' };
 
 
 /** Départ mémorisé à Massy (cadre la carte) ; Turnstile coupé (jeton absent, accepté en local). */
@@ -60,11 +60,15 @@ export async function placeStart(page: Page) {
   await expect(page.locator('.start-marker')).toBeVisible();
 }
 
-/** Mobile : la feuille démarre repliée (poignée + barre) ; la déplie pour atteindre les réglages. Bureau : sans effet. */
-export async function openSheet(page: Page) {
-  const sheet = page.locator('.sheet');
-  if (!(await sheet.count()) || (await sheet.getAttribute('data-snap')) === '2') return;
-  await page.locator('.handle').click();
-  await expect(sheet).toHaveAttribute('data-snap', '2');
-  await expect.poll(async () => (await sheet.boundingBox())!.height).toBeGreaterThan(300);
+/** Options (montées, pente, voies…) : mobile = page « Options » de la feuille ; bureau = « Plus d'options » déplié dans le panneau. */
+export async function openOptions(page: Page) {
+  if (await page.locator('.sheet').count()) await page.locator('.bar .btn.ico').first().click();
+  else if (await page.locator('details.more:not([open])').count()) await page.locator('details.more summary').click();
+  await expect(page.locator('#roads')).toBeVisible();
+}
+/** Mobile : referme la page Options (« Terminé ») ; bureau : sans effet. */
+export async function closeOptions(page: Page) {
+  if (!(await page.locator('.sheet').count())) return;
+  await page.locator('.bar .btn.primary').click();
+  await expect(page.locator('.start-row')).toBeVisible();
 }

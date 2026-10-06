@@ -19,7 +19,7 @@ export const debug = new URLSearchParams(location.search).get('debug') === '1';
 export const VIA = true;
 export const VIA_MAX = 5;
 
-export type Layer = 'computing' | 'result' | 'detail' | 'share' | 'history' | 'menu' | 'zone';
+export type Layer = 'computing' | 'result' | 'detail' | 'share' | 'history' | 'menu' | 'zone' | 'options' | 'pad';
 
 export const app = $state({
   settings: mergeSettings(load('settings', null)),
@@ -49,7 +49,8 @@ export const app = $state({
   /** durée du dernier calcul vue du client (s), pour ?debug=1 */
   clientS: 0,
   cursor: -1,
-  snap: 0 as 0 | 2,
+  /** feuille mobile : 2 = dépliée (défaut), 0 = repliée sur sa ligne de résumé ; le temps de la session */
+  snap: 2 as 0 | 2,
   noMore: false,
   geoError: false,
   /** profil affiché dans la bande du bas (bureau, directions nature) */
@@ -136,7 +137,7 @@ export function onLayerClose(l: Layer, f: () => void) { onClose[l] = f; }
 export function open(l: Layer) {
   app.layers.push(l);
   history.pushState({ depth: app.layers.length }, '');
-  if (l === 'detail' || l === 'history' || l === 'menu' || l === 'share') app.snap = 2;
+  app.snap = 2; // toute nouvelle couche (pavé, options, calcul, menu…) redéplie la feuille
 }
 /** Remplace la couche du dessus sans nouvelle entrée history. */
 function replaceTop(l: Layer) { app.layers[app.layers.length - 1] = l; }
@@ -158,8 +159,6 @@ function popTo(depth: number) {
     if (l === 'computing') abort();
     if (l === 'result') clearResult();
   }
-  if (!app.layers.length) app.snap = 0;
-  else if (top() === 'result') app.snap = 2;
 }
 addEventListener('popstate', (e) => popTo((e.state as { depth?: number } | null)?.depth ?? 0));
 

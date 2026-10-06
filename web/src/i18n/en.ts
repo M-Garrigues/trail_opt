@@ -6,15 +6,15 @@ export type Dict = Widen<typeof fr>;
 
 export const en: Dict = {
   app: {
-    tagline: 'Your custom trail run',
+    tagline: 'Your tailor-made trail run',
     langLabel: 'Language',
   },
   intro: {
-    text: 'Pick a workout and a start: optrail plans the loop on the paths of the IGN map.',
-    coverage: 'Current coverage: Île-de-France and Isère.',
+    text: 'Pick a run type and a start: optrail plans a loop (back to the start) on the paths of the IGN map.',
+    coverage: 'Coverage: the areas of the map that are not greyed out.',
     go: 'Let’s go',
   },
-  safety: 'Loops are planned automatically: a path may be closed, private or dangerous.',
+  safety: 'Runs are planned automatically: a path may be closed, private or dangerous.',
   start: {
     tapMap: 'Tap the map to set your start',
     myLocation: 'My location',
@@ -25,7 +25,7 @@ export const en: Dict = {
     marker: 'Start (draggable)',
   },
   types: {
-    label: 'Training type',
+    label: 'Run type',
     max_dplus: { name: 'Max climb', tagline: 'Most climbing for your distance' },
     target: { name: 'Target', tagline: 'Your distance and climb, spot on' },
     shortest: { name: 'Shortest', tagline: 'Your climb in the fewest km' },
@@ -36,6 +36,12 @@ export const en: Dict = {
     max_distance_km: 'Max distance',
     auto: (p: P) => `auto (${p.km} km)`,
     autoToggle: 'Automatic',
+    less: (p: P) => `Decrease: ${p.name}`,
+    more: (p: P) => `Increase: ${p.name}`,
+    edit: (p: P) => `${p.name}: ${p.v}. Edit`,
+    range: (p: P) => `From ${p.min} to ${p.max}`,
+    presets: 'Common values',
+    erase: 'Delete',
     clamped: (p: P) => `Set to ${p.v} (between ${p.min} and ${p.max}).`,
   },
   climbs: {
@@ -61,16 +67,14 @@ export const en: Dict = {
     noRepeat: 'No repeated junctions',
     pace: 'Pace',
     paceUnit: 'min/effort-km',
-    loops: 'Default loops',
+    loops: 'Runs suggested',
   },
   estimate: 'Estimated time',
-  summary: {
-    open: 'Open settings',
-    settings: 'Settings',
-    climbs: { short: 'short climbs', balanced: 'balanced climbs', long: 'long climbs' },
-  },
+  options: { title: 'Options', done: 'Done' },
+  sheet: { fold: 'Collapse', unfold: 'Expand' },
   via: {
     button: 'Waypoint',
+    short: 'Via',
     hint: (p: P) => `Tap the map to add a waypoint (up to ${p.max}, any order).`,
     list: 'Waypoints',
     point: (p: P) => `Point ${p.n}`,
@@ -78,8 +82,8 @@ export const en: Dict = {
     marker: (p: P) => `Waypoint ${p.n} (draggable)`,
   },
   compute: {
-    find: 'Find my loop',
-    computing: 'Finding your loop…',
+    find: 'Find my run',
+    computing: 'Finding your run…',
     cancel: 'Cancel',
     needStart: 'Set a start first.',
   },
@@ -100,18 +104,19 @@ export const en: Dict = {
     details: 'Details',
     share: 'Share',
     newSuggestions: 'New suggestions',
-    otherLoops: 'Other loops',
-    otherLoopsN: (p: P) => `Other loops (${p.n})`,
-    noOther: 'No other loop here.',
-    loop: (p: P) => `Loop ${p.n}`,
-    choose: (p: P) => `Choose loop ${p.n}`,
+    again: 'Again',
+    otherLoops: 'Other runs',
+    otherLoopsN: (p: P) => `Other runs (${p.n})`,
+    noOther: 'No other run here.',
+    loop: (p: P) => `Run ${p.n}`,
+    choose: (p: P) => `Choose run ${p.n}`,
     perKm: 'm/km',
     noneUnder: (p: P) => `nothing under ${p.km} km`,
     effectiveStart: 'Actual start',
     back: 'Back',
   },
   detail: {
-    title: 'Loop details',
+    title: 'Run details',
     distance: 'Distance',
     dplus: 'Climb',
     altMin: 'Min alt.',
@@ -148,16 +153,16 @@ export const en: Dict = {
     soon: 'Sharing by link: coming soon.',
     copied: 'Link copied',
     creating: 'Creating link…',
-    banner: 'Shared loop',
-    title: 'optrail: my trail loop',
+    banner: 'Shared run',
+    title: 'optrail: my trail run',
   },
   history: {
-    title: 'My loops',
+    title: 'My runs',
     clear: 'Clear history',
-    confirmClear: 'Delete all loops kept on this device?',
-    empty: 'No loops yet.',
+    confirmClear: 'Delete all runs kept on this device?',
+    empty: 'No runs yet.',
     remove: 'Delete',
-    full: 'Browser storage full: loop not saved.',
+    full: 'Browser storage full: run not saved.',
     unavailable: 'Browser storage unavailable: history disabled.',
   },
   menu: {
@@ -174,15 +179,15 @@ export const en: Dict = {
     forgotten: 'Position forgotten.',
     eraseAll: 'Erase my data',
     confirmErase: 'Erase all optrail data on this device (settings, history, position)?',
-    aboutText: 'optrail generates specific trail runs: pick a training type and optrail finds the loop that fits it best on the path network of IGN’s BD TOPO®. © Mathieu Garrigues. PolyForm Noncommercial 1.0.0 licence (github.com/M-Garrigues/trail_opt).',
+    aboutText: 'optrail generates tailor-made trail runs: pick a run type and optrail finds the loop (back to the start) that fits it best on the path network of IGN’s BD TOPO®. © Mathieu Garrigues. PolyForm Noncommercial 1.0.0 licence (github.com/M-Garrigues/trail_opt).',
     legalText: 'Publisher: Mathieu Garrigues, private individual; free, non-professional personal project. Contact: contact@optrail.eu.\n\n' +
       'Host: Amazon Web Services EMEA SARL, 38 avenue John F. Kennedy, L-1855 Luxembourg, phone +352 2789 0000. Servers in the European Union; pages delivered by the global Amazon CloudFront network.\n\n' +
       'Code licensed under PolyForm Noncommercial 1.0.0; data: see Credits.\n\n' +
-      'Loops are computed automatically and come with no warranty: you alone judge the terrain, weather, access and your safety. The French version prevails.',
+      'Runs are computed automatically and come with no warranty: you alone judge the terrain, weather, access and your safety. The French version prevails.',
     privacyText: 'Controller: the publisher (see Legal notice), contact@optrail.eu. No account, no cookie, no analytics, no ads.\n\n' +
-      'Planning: your start and the area you draw are sent to the server when planning, to compute the loop (basis: providing the service you request). Logs keep only a position rounded to the kilometre, with settings and result, for 14 days (legitimate interest: operations, abuse prevention).\n\n' +
-      'Sharing: “Create link” stores the loop, exact start included, for 90 days; anyone with the link can see it. To delete it sooner, e-mail contact@optrail.eu with the link.\n\n' +
-      'On your device: language, settings, loop history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
+      'Planning: your start and the area you draw are sent to the server when planning, to compute the run (basis: providing the service you request). Logs keep only a position rounded to the kilometre, with settings and result, for 14 days (legitimate interest: operations, abuse prevention).\n\n' +
+      'Sharing: “Create link” stores the run, exact start included, for 90 days; anyone with the link can see it. To delete it sooner, e-mail contact@optrail.eu with the link.\n\n' +
+      'On your device: language, settings, run history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
       'IP address: optrail does not record it, but it is seen by Amazon Web Services (hosting), Cloudflare (Turnstile bot check when planning and sharing; legitimate interest: security), IGN (base map; place search, which also receives what you type) and Mapterhorn (3D relief). Amazon and Cloudflare are US companies: transfers covered by the EU–US Data Privacy Framework and standard contractual clauses.\n\n' +
       'Your rights: access, rectification, erasure, objection and restriction, by e-mail to contact@optrail.eu; you may complain to the CNIL (cnil.fr). Without accounts, optrail cannot link logs to a person.',
     attributionsText: 'Base map: Plan IGN © IGN – Géoplateforme. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
@@ -210,16 +215,16 @@ export const en: Dict = {
       roads_minor: 'Include minor roads?', roads_all: 'Include all roads?', max_grade_pct: 'Remove the grade limit?', polygon: 'Remove the area?',
       no_repeat_junction: 'Allow revisiting junctions?', via: 'Remove waypoints?', max_distance_km: 'Double the max distance?',
     },
-    keep: 'Keep this loop',
+    keep: 'Keep this run',
     ok: 'OK',
   },
   err: {
-    via_too_far: (p: P) => `Point ${p.n} is too far from the start for a loop of this length (max ${p.max_km} km as the crow flies).`,
+    via_too_far: (p: P) => `Point ${p.n} is too far from the start for a run of this length (max ${p.max_km} km as the crow flies).`,
     via_outside_zone: (p: P) => `Point ${p.n} is outside the drawn area.`,
     via_unreachable: (p: P) => `Point ${p.n} is not on any usable path (or on a dead end).`,
-    outside_coverage: () => 'No data here yet (Île-de-France and Isère only).',
+    outside_coverage: () => 'No data here yet.',
     no_way_in_zone: () => 'No paths of this kind here.',
-    no_loop_of_distance: () => 'No loop of this length from this start.',
+    no_loop_of_distance: () => 'No run of this length from this start.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible: needs at least ${p.min_km} km.` : 'Not enough relief here.',
     zone_invalid: () => 'Invalid area: 3 to 50 points.',
@@ -248,10 +253,10 @@ export const en: Dict = {
     target_dplus_probably_unreachable: () => 'Target climb probably out of reach.',
     dplus_not_reached: (p: P) => `+${p.dplus_m} m not found under ${p.max_km} km: best +${p.best_dplus_m} m.`,
     profile_mismatch: () => '',
-    candidates_reduced: (p: P) => `Over ${p.km} km: at most ${p.max_n} loops.`,
+    candidates_reduced: (p: P) => `Over ${p.km} km: at most ${p.max_n} runs.`,
     target_not_reached: (p: P) => [p.dplus_m && `Elevation: +${p.best_dplus_m} m found for +${p.dplus_m} m requested.`, p.km && `Distance: ${p.best_km} km found (requested: ${p.km} km).`].filter(Boolean).join(' '),
-    fewer_loops: (p: P) => `${p.got} loop${Number(p.got) === 1 ? '' : 's'} found out of ${p.asked} requested.`,
-    via_missed: (p: P) => `The loop does not pass through point ${p.n}.`,
+    fewer_loops: (p: P) => `${p.got} run${Number(p.got) === 1 ? '' : 's'} found out of ${p.asked} requested.`,
+    via_missed: (p: P) => `The run does not pass through point ${p.n}.`,
     coverage_edge: () => 'Area at the edge of coverage: paths beyond are ignored.',
   },
   install: {
