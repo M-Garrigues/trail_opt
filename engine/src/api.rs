@@ -224,8 +224,7 @@ pub fn covered(store: &TileStore, lat: f64, lon: f64) -> bool {
     if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
         return false;
     }
-    let (x, y) = crate::l93::forward(lon, lat);
-    store.tile_l93(x, y).is_some()
+    store.tile_at(lat, lon).is_some()
 }
 
 /// Douglas–Peucker en plan (`eps` m) d'une boucle de la réponse : `lat`, `lon`, `ele`, `dist`
@@ -322,12 +321,12 @@ pub fn check_bot(
     r.map_err(|e| Msg::error(Code::BotCheckFailed, e))
 }
 
-/// Coordonnées arrondies au km (Lambert-93) pour les logs.
-fn km(lat: f64, lon: f64) -> Value {
+/// Coordonnées arrondies au km pour les logs (Lambert-93 ; DOM : UTM de la zone, champ `zone`).
+fn km(store: &TileStore, lat: f64, lon: f64) -> Value {
     if !lat.is_finite() || !lon.is_finite() {
         return Value::Null;
     }
-    let (x, y) = crate::l93::forward(lon, lat);
+    let (x, y) = store.zone(lat, lon).proj.forward(lon, lat);
     json!([(x / 1000.0).round(), (y / 1000.0).round()])
 }
 
@@ -351,7 +350,8 @@ pub fn handle(
             .unwrap_or(f64::NAN)
     };
     let mut log = json!({
-        "msg": "plan", "start_l93_km": km(get("lat"), get("lon")),
+        "msg": "plan", "start_l93_km": km(store, get("lat"), get("lon")),
+        "zone": store.zone(get("lat"), get("lon")).name,
         "goal": query.iter().find(|x| x.0 == "goal").map(|x| x.1.clone()),
         "distance_km": get("distance_km").is_finite().then(|| get("distance_km")),
         "dplus_m": get("dplus_m").is_finite().then(|| get("dplus_m")),
@@ -399,7 +399,8 @@ pub fn handle(
         );
     }
     // points de passage hors de portée ou de la zone : avant Turnstile (jeton non consommé)
-    if let Err(m) = plan::check_via(&plan::resolve_cap(store, &req)) {
+    let located = plan::resolve_cap(store, &req);
+    if let Err(m) = plan::check_zone(store, &located).and_then(|_| plan::check_via(&located)) {
         return fail(m, log);
     }
     if let Err(m) = check_bot(token, internal, verify) {

@@ -19,7 +19,8 @@ fn pilot_tiles_read_and_invariants() {
     let mut t = Troncons::new();
     for k in &keys {
         let n0 = t.len();
-        let (ix, iy) = k.split_once('_').unwrap();
+        // DOM : `<zone>/<ix>_<iy>`, même grille dans le repère de la zone
+        let (ix, iy) = k.rsplit('/').next().unwrap().split_once('_').unwrap();
         read_tile(
             &root.join(format!("{k}.npz")),
             ix.parse().unwrap(),
@@ -234,7 +235,7 @@ fn landmarks_within_distance() {
         "lon": pts.iter().map(|p| p.0).collect::<Vec<_>>(),
         "lat": pts.iter().map(|p| p.1).collect::<Vec<_>>(),
         "dist": (0..=10).map(|i| 100.0 * i as f64).collect::<Vec<_>>()});
-    let l = engine::plan::landmarks(&pois, &c);
+    let l = engine::plan::landmarks(&pois, &Default::default(), &c);
     let names: Vec<_> = l
         .as_array()
         .unwrap()

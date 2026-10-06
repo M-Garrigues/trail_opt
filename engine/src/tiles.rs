@@ -3,7 +3,8 @@
 //!
 //! `.npz` = zip deflate de `.npy` : lecteur `.npy` maison (en-tête texte + données petit-boutistes,
 //! entiers seulement), décompression par la crate `zip`. Tous les tronçons des dalles chargées
-//! sont concaténés dans `Troncons` (colonnes, coordonnées L93 absolues en dm).
+//! sont concaténés dans `Troncons` (colonnes, coordonnées absolues en dm dans le repère de la zone :
+//! Lambert-93 en métropole, UTM dans les DOM ; une requête ne charge qu'une zone).
 use std::collections::HashMap;
 use std::fs::File;
 use std::io::Read;
@@ -11,6 +12,8 @@ use std::path::{Path, PathBuf};
 
 use ring::digest;
 use serde::Deserialize;
+
+use crate::l93::Proj;
 
 pub const FORMAT: &str = "tiles/1";
 pub const TILE_M: f64 = 20_000.0;
@@ -40,9 +43,38 @@ pub struct Manifest {
     /// `pois.json` (format pois/1, tiles.md § Repères) ; absent : pas de repères.
     #[serde(default)]
     pub pois: Option<serde_json::Value>,
+    /// Zones DOM (tiles.md § Zones) ; absent : métropole seule.
+    #[serde(default)]
+    pub zones: HashMap<String, ZoneDef>,
 }
 
-/// Repère col/pic/sommet (pois/1) : position L93 au dm, altitude approchée en dm.
+#[derive(Deserialize)]
+pub struct ZoneDef {
+    pub crs: String,
+    /// WGS84 : ouest, sud, est, nord.
+    pub bbox: [f64; 4],
+}
+
+/// Zone de dalles : nom (`""` = métropole, sinon préfixe des clés `<nom>/<ix>_<iy>`) et projection.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Zone {
+    pub name: String,
+    pub proj: Proj,
+}
+
+impl Zone {
+    /// Clé de manifeste (et chemin sans `.npz`) de la dalle (ix, iy).
+    pub fn key(&self, ix: i64, iy: i64) -> String {
+        if self.name.is_empty() {
+            format!("{ix}_{iy}")
+        } else {
+            format!("{}/{ix}_{iy}", self.name)
+        }
+    }
+}
+
+/// Repère col/pic/sommet (pois/1) : position au dm dans le repère de sa zone (L93 sans `zone`),
+/// altitude approchée en dm.
 #[derive(Deserialize, Clone, Debug)]
 pub struct Poi {
     pub nature: String,
@@ -50,6 +82,9 @@ pub struct Poi {
     pub x_dm: i64,
     pub y_dm: i64,
     pub z_dm: Option<i64>,
+    /// Zone DOM du repère ; absent : métropole.
+    #[serde(default)]
+    pub zone: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -273,7 +308,7 @@ const DEFAULT_CACHE_MB: u64 = 1_500;
 /// `busy` (503, réessayer) et non en erreur de calcul.
 pub const REMOTE_ERR: &str = "source distante : ";
 
-/// Dossier de dalles (manifest.json + <ix>_<iy>.npz). Source distante : `root` est le cache
+/// Dossier de dalles (manifest.json + <ix>_<iy>.npz, DOM : <zone>/<ix>_<iy>.npz). Source distante : `root` est le cache
 /// local (/tmp), rempli par `ensure` avant chaque `load`.
 pub struct TileStore {
     pub root: PathBuf,
@@ -282,7 +317,22 @@ pub struct TileStore {
     pub pois: Vec<Poi>,
     /// Taille maximale du cache (octets) : au-delà, éviction LRU avant téléchargement.
     pub budget_bytes: u64,
+    /// Zones DOM du manifeste et leur emprise WGS84 (ouest, sud, est, nord), rangées par nom.
+    zones: Vec<(Zone, [f64; 4])>,
     remote: Option<Fetch>,
+}
+
+/// Zones du manifeste ; CRS inconnu : refus (mieux qu'une projection fausse).
+fn parse_zones(m: &Manifest) -> Result<Vec<(Zone, [f64; 4])>, String> {
+    let mut zones = Vec::new();
+    for (name, z) in &m.zones {
+        let proj = Proj::from_crs(&z.crs)
+            .ok_or_else(|| format!("manifest.json : zone {name} : CRS inconnu {}", z.crs))?;
+        let name = name.clone();
+        zones.push((Zone { name, proj }, z.bbox));
+    }
+    zones.sort_by(|a, b| a.0.name.cmp(&b.0.name));
+    Ok(zones)
 }
 
 fn parse_manifest(text: &str) -> Result<Manifest, String> {
@@ -315,6 +365,7 @@ impl TileStore {
         };
         Ok(TileStore {
             root: root.to_path_buf(),
+            zones: parse_zones(&manifest)?,
             manifest,
             pois,
             budget_bytes: u64::MAX,
@@ -327,9 +378,9 @@ impl TileStore {
     pub fn open_remote(fetch: Fetch, cache: &Path) -> Result<TileStore, String> {
         std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
         // reprise après coupure : fichiers partiels d'un environnement précédent
-        for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
-            if e.file_name().to_string_lossy().ends_with(".part") {
-                let _ = std::fs::remove_file(e.path());
+        for (_, _, path, name) in cache_files(cache) {
+            if name.ends_with(".part") {
+                let _ = std::fs::remove_file(path);
             }
         }
         // un seul retry : S3 peut hoqueter au démarrage à froid
@@ -355,6 +406,7 @@ impl TileStore {
         };
         Ok(TileStore {
             root: cache.to_path_buf(),
+            zones: parse_zones(&manifest)?,
             manifest,
             pois,
             budget_bytes: u64::MAX,
@@ -412,12 +464,17 @@ impl TileStore {
     /// là sont « touchées » (LRU) ; si le cache dépasse `budget_bytes`, les plus anciennes hors
     /// requête sont évincées AVANT le téléchargement. Sans effet en local.
     pub fn ensure(&self, keys: &[(i64, i64)]) -> Result<(), String> {
+        self.ensure_in(&Zone::default(), keys)
+    }
+
+    /// `ensure` pour les dalles d'une zone (cache : sous-dossier de la zone).
+    pub fn ensure_in(&self, zone: &Zone, keys: &[(i64, i64)]) -> Result<(), String> {
         let Some(fetch) = &self.remote else {
             return Ok(());
         };
         let keep: Vec<String> = keys
             .iter()
-            .map(|(ix, iy)| format!("{ix}_{iy}.npz"))
+            .map(|&(ix, iy)| zone.key(ix, iy) + ".npz")
             .collect();
         let (mut missing, mut need) = (Vec::new(), 0u64);
         for n in &keep {
@@ -507,19 +564,53 @@ impl TileStore {
             })
     }
 
-    /// Entrée du manifeste de la dalle qui contient le point L93 (m), si elle existe.
-    pub fn tile_l93(&self, x: f64, y: f64) -> Option<&serde_json::Value> {
-        let f = |v: f64| (v / TILE_M).floor() as i64;
-        self.manifest.tiles.get(&format!("{}_{}", f(x), f(y)))
+    /// Zone d'un point : celle dont l'emprise le contient (emprises disjointes), sinon métropole.
+    pub fn zone(&self, lat: f64, lon: f64) -> Zone {
+        self.zones
+            .iter()
+            .find(|(_, b)| (b[0]..=b[2]).contains(&lon) && (b[1]..=b[3]).contains(&lat))
+            .map(|z| z.0.clone())
+            .unwrap_or_default()
     }
 
-    /// Dalles du manifeste qui touchent la boîte L93 (m) [x0, y0, x1, y1], marge comprise.
+    /// Le point peut-il figurer dans une requête de `zone` ? Oui dans sa zone ; autour d'un DOM, oui
+    /// aussi en mer, jusqu'à 0,5° de l'emprise (polygone dessiné plus large que l'île).
+    pub fn near(&self, zone: &Zone, lat: f64, lon: f64) -> bool {
+        const PAD: f64 = 0.5;
+        let z = self.zone(lat, lon);
+        z == *zone
+            || z.name.is_empty()
+                && self.zones.iter().any(|(q, b)| {
+                    q == zone
+                        && (b[0] - PAD..=b[2] + PAD).contains(&lon)
+                        && (b[1] - PAD..=b[3] + PAD).contains(&lat)
+                })
+    }
+
+    /// Entrée du manifeste de la dalle de `zone` qui contient le point, si elle existe.
+    pub fn tile_in(&self, zone: &Zone, lat: f64, lon: f64) -> Option<&serde_json::Value> {
+        let (x, y) = zone.proj.forward(lon, lat);
+        let f = |v: f64| (v / TILE_M).floor() as i64;
+        self.manifest.tiles.get(&zone.key(f(x), f(y)))
+    }
+
+    /// Entrée du manifeste de la dalle qui contient le point (zone du point), si elle existe.
+    pub fn tile_at(&self, lat: f64, lon: f64) -> Option<&serde_json::Value> {
+        self.tile_in(&self.zone(lat, lon), lat, lon)
+    }
+
+    /// Dalles de métropole du manifeste qui touchent la boîte L93 (m) [x0, y0, x1, y1], marge comprise.
     pub fn keys(&self, b: [f64; 4]) -> Vec<(i64, i64)> {
+        self.keys_in(&Zone::default(), b)
+    }
+
+    /// Dalles de `zone` qui touchent la boîte (m, repère de la zone), marge comprise.
+    pub fn keys_in(&self, zone: &Zone, b: [f64; 4]) -> Vec<(i64, i64)> {
         let f = |v: f64| (v / TILE_M).floor() as i64;
         let mut out = Vec::new();
         for ix in f(b[0] - MARGIN_M)..=f(b[2] + MARGIN_M) {
             for iy in f(b[1] - MARGIN_M)..=f(b[3] + MARGIN_M) {
-                if self.manifest.tiles.contains_key(&format!("{ix}_{iy}")) {
+                if self.manifest.tiles.contains_key(&zone.key(ix, iy)) {
                     out.push((ix, iy));
                 }
             }
@@ -527,20 +618,25 @@ impl TileStore {
         out
     }
 
-    /// Charge les dalles qui touchent la boîte L93 (m).
+    /// Charge les dalles de métropole qui touchent la boîte L93 (m).
     pub fn load(&self, b: [f64; 4]) -> Result<Troncons, String> {
+        self.load_in(&Zone::default(), b)
+    }
+
+    /// Charge les dalles de `zone` qui touchent la boîte (m, repère de la zone).
+    pub fn load_in(&self, zone: &Zone, b: [f64; 4]) -> Result<Troncons, String> {
         let mut t = Troncons::new();
-        let keys = self.keys(b);
-        self.ensure(&keys)?;
+        let keys = self.keys_in(zone, b);
+        self.ensure_in(zone, &keys)?;
         for (ix, iy) in keys {
-            let path = self.root.join(format!("{ix}_{iy}.npz"));
+            let path = self.root.join(zone.key(ix, iy) + ".npz");
             // cache /tmp corrompu : on le jette et on retélécharge une fois
             if let Err(e) = read_tile(&path, ix, iy, &mut t) {
                 if self.remote.is_none() {
                     return Err(e);
                 }
                 let _ = std::fs::remove_file(&path);
-                self.ensure(&[(ix, iy)])?;
+                self.ensure_in(zone, &[(ix, iy)])?;
                 read_tile(&path, ix, iy, &mut t).map_err(|e| format!("{REMOTE_ERR}{e}"))?;
             }
         }
@@ -548,36 +644,40 @@ impl TileStore {
     }
 }
 
+/// Fichiers du cache : (date, taille, chemin, nom relatif `<ix>_<iy>.npz` ou `<zone>/<ix>_<iy>.npz`).
+fn cache_files(dir: &Path) -> Vec<(Option<std::time::SystemTime>, u64, PathBuf, String)> {
+    let ls = |d: &Path| std::fs::read_dir(d).into_iter().flatten().flatten();
+    let mut out = Vec::new();
+    for e in ls(dir) {
+        let name = e.file_name().to_string_lossy().into_owned();
+        let Ok(m) = e.metadata() else { continue };
+        if !m.is_dir() {
+            out.push((m.modified().ok(), m.len(), e.path(), name));
+            continue;
+        }
+        // sous-dossier d'une zone DOM
+        for f in ls(&e.path()) {
+            if let Ok(m) = f.metadata() {
+                let rel = format!("{name}/{}", f.file_name().to_string_lossy());
+                out.push((m.modified().ok(), m.len(), f.path(), rel));
+            }
+        }
+    }
+    out
+}
+
 /// Octets du cache (dalles et fichiers partiels).
 fn cache_bytes(dir: &Path) -> u64 {
-    std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter_map(|e| e.metadata().ok())
-        .map(|m| m.len())
-        .sum()
+    cache_files(dir).iter().map(|f| f.1).sum()
 }
 
 /// Supprime les dalles les plus anciennes (hors `keep`) jusqu'à libérer `need` octets.
 fn evict(dir: &Path, keep: &[String], need: u64) -> u64 {
-    let mut files: Vec<_> = std::fs::read_dir(dir)
-        .into_iter()
-        .flatten()
-        .flatten()
-        .filter(|e| {
-            let n = e.file_name().to_string_lossy().into_owned();
-            n.ends_with(".npz") && !keep.contains(&n)
-        })
-        .filter_map(|e| {
-            e.metadata()
-                .ok()
-                .map(|m| (m.modified().ok(), m.len(), e.path()))
-        })
-        .collect();
+    let mut files = cache_files(dir);
+    files.retain(|f| f.3.ends_with(".npz") && !keep.contains(&f.3));
     files.sort();
     let mut freed = 0;
-    for (_, len, p) in files {
+    for (_, len, p, _) in files {
         if freed >= need {
             break;
         }

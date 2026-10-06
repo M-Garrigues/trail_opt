@@ -299,8 +299,10 @@ fn deux_boucles_au_dela_de_40_km_et_bord_de_couverture() {
     let Some((_, mut store)) = common::tiles(&[common::MASSY]) else {
         return;
     };
-    let (x, y) = engine::l93::forward(common::MASSY.1, common::MASSY.0);
-    let start = store.tile_l93(x, y).unwrap().clone();
+    let start = store
+        .tile_at(common::MASSY.0, common::MASSY.1)
+        .unwrap()
+        .clone();
     store.manifest.tiles.retain(|_, t| *t == start);
     let never = |_: &str| -> Result<bool, String> { panic!() };
     let r = handle(

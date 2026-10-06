@@ -91,6 +91,9 @@ pub struct Request {
     /// Points de passage obligatoires [[lat, lon], …] (ordre libre), au plus `VIA_MAX`.
     #[serde(default)]
     pub via: Vec<[f64; 2]>,
+    /// Zone de dalles du départ (métropole par défaut) : posée par `resolve_cap`, jamais lue du JSON.
+    #[serde(skip)]
+    pub zone: crate::tiles::Zone,
 }
 
 fn ten() -> f64 {
@@ -285,13 +288,38 @@ fn lengths(r: &Request) -> (f64, f64) {
     (l, lmax)
 }
 
+/// Une requête ne mélange pas deux zones de dalles (métropole, DOM) : sommet du polygone dans une
+/// autre zone = `zone_invalid`, point de passage = `via_too_far` (`TileStore::near`).
+/// `r` : requête de `resolve_cap`.
+pub fn check_zone(store: &TileStore, r: &Request) -> Result<(), Msg> {
+    let other = |lat: f64, lon: f64| !store.near(&r.zone, lat, lon);
+    if r.polygon
+        .iter()
+        .flatten()
+        .any(|&[lon, lat]| other(lat, lon))
+    {
+        return Err(err(
+            Code::ZoneInvalid,
+            "polygon vertex in another tile zone",
+        ));
+    }
+    if let Some(i) = r.via.iter().position(|&[lat, lon]| other(lat, lon)) {
+        let max_km = round1(default_radius(lengths(r).0) / 1000.0);
+        return Err(Msg::new(
+            Code::ViaTooFar,
+            json!({"n": i + 1, "max_km": max_km}),
+        ));
+    }
+    Ok(())
+}
+
 /// Points de passage hors de portée (`via_too_far`) ou hors du polygone (`via_outside_zone`) :
 /// géométrie seule, avant tout calcul (et avant Turnstile côté API).
 pub fn check_via(r: &Request) -> Result<(), Msg> {
     if r.via.is_empty() {
         return Ok(());
     }
-    let frame = Frame::new(r.lat, r.lon);
+    let frame = Frame::new_in(r.zone.proj, r.lat, r.lon);
     let (l, lmax) = lengths(r);
     let region = build_region(r, &frame, lmax, l)?;
     for (i, &[lat, lon]) in r.via.iter().enumerate() {
@@ -859,13 +887,14 @@ fn assemble(
 }
 
 /// Mode min_distance sans distance max : défaut clamp(X / k, 3, 60) km, k = 25 m/km en relief,
-/// `MD_CAP_PER_KM_FLAT` en plaine (relief de la dalle du départ, I2). Sinon, requête inchangée.
+/// `MD_CAP_PER_KM_FLAT` en plaine (relief de la dalle du départ, I2). Pose aussi la zone de
+/// dalles du départ (`Request::zone`). Sinon, requête inchangée.
 pub fn resolve_cap(store: &TileStore, req: &Request) -> Request {
     let mut r = req.clone();
+    r.zone = store.zone(r.lat, r.lon);
     if r.min_distance() && r.max_distance_km.is_none() && (-90.0..=90.0).contains(&r.lat) {
-        let (x, y) = crate::l93::forward(r.lon, r.lat);
         let relief = store
-            .tile_l93(x, y)
+            .tile_in(&r.zone, r.lat, r.lon)
             .and_then(|t| Some(t["z_max_m"].as_f64()? - t["z_min_m"].as_f64()?));
         let k = if relief.is_some_and(|z| z < MD_FLAT_RELIEF_M) {
             MD_CAP_PER_KM_FLAT
@@ -1021,7 +1050,14 @@ fn important(req: &Request, out: &mut Value) {
 pub fn diagnose(store: &TileStore, req: &Request) -> Value {
     let auto_cap = req.max_distance_km.is_none();
     let req = resolve_cap(store, req);
-    let run = |r: &Request| plan_with(|b| store.load(b), &store.manifest.natures, r, false);
+    let run = |r: &Request| {
+        plan_with(
+            |b| store.load_in(&r.zone, b),
+            &store.manifest.natures,
+            r,
+            false,
+        )
+    };
     diagnose_with(run, &req, auto_cap)
 }
 
@@ -1105,20 +1141,21 @@ fn diagnose_with(
 pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, Msg> {
     let auto_cap = req.max_distance_km.is_none();
     let mut req = resolve_cap(store, req);
-    let mut out = plan_with(|b| store.load(b), &store.manifest.natures, &req, prep_only)?;
+    check_zone(store, &req)?;
+    let run = |r: &Request, prep_only: bool| {
+        plan_with(
+            |b| store.load_in(&r.zone, b),
+            &store.manifest.natures,
+            r,
+            prep_only,
+        )
+    };
+    let mut out = run(&req, prep_only)?;
     if !prep_only && auto_cap {
-        widen_cap(
-            |r| plan_with(|b| store.load(b), &store.manifest.natures, r, false),
-            &mut req,
-            &mut out,
-        );
+        widen_cap(|r| run(r, false), &mut req, &mut out);
     }
     if !prep_only {
-        polish_min_distance(
-            |r| plan_with(|b| store.load(b), &store.manifest.natures, r, false),
-            &req,
-            &mut out,
-        );
+        polish_min_distance(|r| run(r, false), &req, &mut out);
     }
     if !prep_only {
         important(&req, &mut out);
@@ -1126,7 +1163,7 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
     out["data_version"] = json!(store.manifest.data_version);
     if let Some(cands) = out["candidates"].as_array_mut() {
         for c in cands {
-            c["landmarks"] = landmarks(&store.pois, c);
+            c["landmarks"] = landmarks(&store.pois, &req.zone, c);
         }
     }
     // zone en partie hors des dalles : réseau tronqué au bord de la couverture
@@ -1142,8 +1179,7 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
                         q[0].as_f64().unwrap_or(f64::NAN),
                         q[1].as_f64().unwrap_or(f64::NAN),
                     );
-                    let (x, y) = crate::l93::forward(lon, lat);
-                    store.tile_l93(x, y).is_none()
+                    store.tile_in(&req.zone, lat, lon).is_none()
                 })
         });
     if edge && let Some(w) = out["warnings"].as_array_mut() {
@@ -1154,10 +1190,11 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
 
 /// Repères traversés (api.md v1.5, D34) : col à <= `LANDMARK_COL_M` du tracé, pic/sommet à
 /// <= `LANDMARK_SUMMIT_M` (point du toponyme imprécis) ; abscisse du point le plus proche de la
-/// boucle, ordre de passage, un repère une fois. `c` : boucle de la réponse (lat, lon, dist).
+/// boucle, ordre de passage, un repère une fois. `c` : boucle de la réponse (lat, lon, dist) ;
+/// `zone` : zone de dalles de la boucle (repères et projection de cette zone seulement).
 pub const LANDMARK_COL_M: f64 = 50.0;
 pub const LANDMARK_SUMMIT_M: f64 = 100.0;
-pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
+pub fn landmarks(pois: &[crate::tiles::Poi], zone: &crate::tiles::Zone, c: &Value) -> Value {
     let col = |k: &str| -> Vec<f64> {
         c[k].as_array()
             .map_or(Vec::new(), |a| a.iter().filter_map(Value::as_f64).collect())
@@ -1169,7 +1206,7 @@ pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
     let pts: Vec<(f64, f64)> = lat
         .iter()
         .zip(&lon)
-        .map(|(&la, &lo)| crate::l93::forward(lo, la))
+        .map(|(&la, &lo)| zone.proj.forward(lo, la))
         .collect();
     let m = LANDMARK_SUMMIT_M;
     let (x0, x1) = pts
@@ -1180,6 +1217,7 @@ pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
         .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
     let mut found: Vec<(f64, Value)> = pois
         .iter()
+        .filter(|poi| poi.zone.as_deref().unwrap_or("") == zone.name)
         .filter_map(|poi| {
             let (px, py) = (poi.x_dm as f64 / 10.0, poi.y_dm as f64 / 10.0);
             if px < x0 - m || px > x1 + m || py < y0 - m || py > y1 + m {
@@ -1209,7 +1247,7 @@ pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
             } {
                 return None;
             }
-            let (lo, la) = crate::l93::inverse(px, py);
+            let (lo, la) = zone.proj.inverse(px, py);
             Some((
                 s,
                 json!({"kind": if is_col { "col" } else { "summit" }, "name": poi.name,
@@ -1222,7 +1260,7 @@ pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
     Value::Array(found.into_iter().map(|f| f.1).collect())
 }
 
-/// Comme `plan`, avec un chargeur de tronçons (boîte L93 en m) : dalles ou données d'essai.
+/// Comme `plan`, avec un chargeur de tronçons (boîte en m dans le repère de `req.zone`, L93 par défaut) : dalles ou données d'essai.
 /// `natures` : table des codes de nature (manifeste).
 pub fn plan_with(
     load: impl FnOnce([f64; 4]) -> Result<Troncons, String>,
@@ -1246,7 +1284,7 @@ pub fn plan_with(
     }
     // min_distance : zone et bornes de la distance max Lcap (Lmin = 0).
     let (l, lmax) = lengths(&r);
-    let frame = Frame::new(r.lat, r.lon);
+    let frame = Frame::new_in(r.zone.proj, r.lat, r.lon);
     check_via(&r)?;
     let mut region = build_region(&r, &frame, lmax, l)?;
     let area_km2 = region.area() / 1e6;

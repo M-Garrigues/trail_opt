@@ -11,6 +11,7 @@ pub mod problem;
 pub mod share;
 pub mod solve;
 pub mod tiles;
+pub mod utm;
 
 pub use anneal::Annealer;
 pub use codes::{Code, Msg};
