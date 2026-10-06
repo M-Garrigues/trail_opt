@@ -1,13 +1,14 @@
-# Étiquettes d'agrément (pipeline/enrich.py, contrat .team/contracts/tiles.md § Étiquettes) ajoutées à une
-# release de dalles EXISTANTE, sans reconstruire : `calm` (depuis les dalles seules), `osm_hike` et `osm_water`
-# (extraits Geofabrik filtrés par osmium ; © les contributeurs d'OpenStreetMap, ODbL). Aucune requête IGN,
+# Étiquettes par tronçon (pipeline/enrich.py, contrat .team/contracts/tiles.md § Étiquettes) ajoutées à une
+# release de dalles EXISTANTE, sans reconstruire : `calm`, `ign_cross` (depuis les dalles seules) et les colonnes
+# `osm_*` (balisage, eau, classe de voie, highway/surface bruts, roulant, sac_scale, visibilité, drapeaux, forêt ;
+# extraits Geofabrik filtrés par osmium ; © les contributeurs d'OpenStreetMap, ODbL). Aucune requête IGN,
 # aucun accès AWS. La release d'entrée n'est jamais modifiée : la sortie est `tiles-<base>.<n>` (premier n
 # libre), au même format que data.yml (zips de 300 dalles, manifest.json, pois.json, coverage.geojson), donc
 # `scripts/tiles_to_s3.sh <base>.<n>` marche tel quel.
 #
-# Un seul job. Mesures du 2026-10-06 (pipeline/README.md) : osmium tags-filter 1,6 Go de RAM quel que soit
-# l'extrait ; ~1 s par dalle pour les trois étiquettes ; France = 5,1 Go d'extrait -> ~1,2 Go filtré,
-# 2 à 3 Go de RAM en Python, ~9 Go de disque au plus haut, ~1 h.
+# Un seul job. Mesuré le 2026-10-07 sur Rhône-Alpes (18 dalles, poste chargé) : ~2 à 5 s par dalle, 1 Go de RAM
+# Python pour 17 M de sommets OSM (float32) ; France estimée ~170 M de sommets -> 6 à 8 Go, OPL filtré ~6 Go,
+# 1 à 2 h.
 name: enrich
 
 on:
@@ -18,7 +19,7 @@ on:
         required: true
       osm:
         description: "Extraits Geofabrik (chemins sans -latest.osm.pbf, séparés par des espaces ; vide = calm seul). DOM : europe/france/reunion, …/guadeloupe, …/martinique, …/guyane, …/mayotte"
-        default: "europe/france"
+        default: "europe/france europe/france/guadeloupe europe/france/martinique europe/france/guyane europe/france/mayotte europe/france/reunion"
       publish:
         description: "Publier la release (sinon artefact seul)"
         type: boolean
@@ -33,7 +34,7 @@ concurrency:
 jobs:
   enrich:
     runs-on: ubuntu-24.04
-    timeout-minutes: 180
+    timeout-minutes: 330
     permissions:
       contents: read
     outputs:
@@ -43,6 +44,11 @@ jobs:
       BASE: ${{ inputs.base }}
       OSM: ${{ inputs.osm }}
     steps:
+      # France : extrait 4,5 Go + OPL filtré ~6 Go + dalles et zips 2,3 Go : place faite d'abord (outils préinstallés inutiles ici)
+      - name: Place disque
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL /usr/local/share/boost
+          df -h . | tail -1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -88,18 +94,23 @@ jobs:
       - name: Extraits OSM (Geofabrik)
         run: |
           mkdir -p osm
+          # extrait -> OPL filtré + forêts (pipeline/enrich.py filter_pbf), puis extrait supprimé (disque) ;
+          # un DOM présent dans deux extraits est lu deux fois : sans effet sur les étiquettes
           for e in $OSM; do
             f="osm/$(basename "$e").osm.pbf"
             curl -fsSL --retry 3 -o "$f" "https://download.geofabrik.de/$e-latest.osm.pbf"
             osmium fileinfo -g header.option.osmosis_replication_timestamp "$f"
+            python -c 'import sys; from pathlib import Path; from pipeline.enrich import filter_pbf; filter_pbf(Path(sys.argv[1]))' "$f"
+            rm "$f"
           done
           ls -l osm
+          df -h . | tail -1
 
-      - name: Étiquettes (calm ; osm_hike et osm_water si des extraits sont donnés)
+      - name: Étiquettes (calm, ign_cross ; colonnes osm_* si des extraits sont donnés)
         run: |
           args=(--tiles tiles --version "$V")
           if [ -n "$OSM" ]; then
-            args+=(--osm osm/*.osm.pbf)
+            args+=(--osm osm/*.opl osm/*.foret.pbf)
           fi
           python -m pipeline enrich "${args[@]}"
           rm -rf osm
@@ -150,5 +161,5 @@ jobs:
         run: |
           gh release create "tiles-$V" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Dalles $V" \
-            --notes "Dalles tiles/1 $V = tiles-$BASE + étiquettes par tronçon (pipeline enrich). Colonnes d'origine et colonne calm : BD TOPO® IGN, RGE ALTI®, LiDAR HD — Licence Ouverte Etalab 2.0. Colonnes osm_hike et osm_water : © les contributeurs d'OpenStreetMap, sous licence ODbL 1.0 (https://www.openstreetmap.org/copyright). Licence par colonne : clé columns de manifest.json. Fichiers : tiles-$V-NN.zip, manifest.json, pois.json, coverage.geojson. Copie S3 : scripts/tiles_to_s3.sh." \
+            --notes "Dalles tiles/1 $V = tiles-$BASE + étiquettes par tronçon (pipeline enrich). Colonnes d'origine, calm et ign_cross : BD TOPO® IGN, RGE ALTI®, LiDAR HD — Licence Ouverte Etalab 2.0. Colonnes osm_* : © les contributeurs d'OpenStreetMap, sous licence ODbL 1.0 (https://www.openstreetmap.org/copyright). Licence par colonne : clé columns de manifest.json. Fichiers : tiles-$V-NN.zip, manifest.json, pois.json, coverage.geojson. Copie S3 : scripts/tiles_to_s3.sh." \
             out/*

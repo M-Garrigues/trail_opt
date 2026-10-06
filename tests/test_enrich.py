@@ -7,7 +7,7 @@ from pyproj import Transformer
 
 from pipeline.build import tile_columns
 from pipeline.check import check
-from pipeline.enrich import calm, derived_version, enrich
+from pipeline.enrich import NOCLASS, calm, derived_version, enrich, way_class
 from trailopt import ign
 
 A, B = "32_342", "33_342"                      # B est à l'est de A
@@ -22,8 +22,9 @@ TRONCONS = {
     5: ("Route à 1 chaussée", 3, [(E + 100, 95000), (E + 100, 105000)]),
     6: ("Route à 1 chaussée", 5, [(1000, 80000), (6000, 80000)]),    # petite route tranquille
     7: ("Route à 1 chaussée", 4, [(1000, 90000), (6000, 90000)]),    # route de desserte, loin de tout
+    8: ("Sentier", 6, [(6000, 1300), (6000, 3000)]),                 # part du bout de la route 2 (traversée)
 }
-SENTIER_PRES, ROUTE, SENTIER_LOIN, CHEMIN_BORD, PETITE_ROUTE, DESSERTE = 0, 1, 2, 3, 4, 5   # rangs dans A (par id)
+SENTIER_PRES, ROUTE, SENTIER_LOIN, CHEMIN_BORD, PETITE_ROUTE, DESSERTE, DEPART = 0, 1, 2, 3, 4, 5, 6   # rangs dans A (par id)
 
 
 def _write(d, key, ids):
@@ -47,10 +48,16 @@ def tiles(tmp_path):
     return tmp_path
 
 
-def _opl(path, ways, rels):
-    """ways : id -> (tags, sommets dm relatifs à A) ; rels : id -> (tags, [ids de ways])."""
-    to_wgs = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
+TO_WGS = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
+
+
+def _opl(path, ways, rels, nodes=None):
+    """ways : id -> (tags, sommets dm relatifs à A) ; rels : id -> (tags, [ids de ways]) ; nodes : id -> (tags, point)."""
+    to_wgs = TO_WGS
     out = []
+    for i, (tags, (x, y)) in (nodes or {}).items():
+        lon, lat = to_wgs.transform((X0 + x) / 10, (Y0 + y) / 10)
+        out.append(f"n{i} T{tags} x{lon:.7f} y{lat:.7f}")
     for i, (tags, pts) in ways.items():
         lon, lat = to_wgs.transform([(X0 + x) / 10 for x, _ in pts], [(Y0 + y) / 10 for _, y in pts])
         out.append(f"w{i} T{tags} N" + ",".join(f"n{k}x{a:.7f}y{b:.7f}" for k, (a, b) in enumerate(zip(lon, lat))))
@@ -72,9 +79,9 @@ def test_calm_drops_near_major_road_and_sees_neighbour_tile(tiles):
     # colonnes d'origine intactes, manifeste à jour, version dérivée, rien d'OSM sans --osm
     for k, f in before.items():
         g = np.load(tiles / f"{k}.npz")
-        assert set(g.files) == set(f.files) | {"calm"} and all((g[x] == f[x]).all() for x in f.files)
+        assert set(g.files) == set(f.files) | {"calm", "ign_cross"} and all((g[x] == f[x]).all() for x in f.files)
     assert m["data_version"] == "bdtopo-wfs-2026-10e.1" and m["derived_from"] == "bdtopo-wfs-2026-10e"
-    assert list(m["columns"]) == ["calm"] and "IGN" in m["columns"]["calm"]["source"]
+    assert list(m["columns"]) == ["calm", "ign_cross"] and "IGN" in m["columns"]["calm"]["source"]
     assert m["totals"]["bytes"] == sum((tiles / f"{k}.npz").stat().st_size for k in (A, B))
     assert check(tiles) == []
 
@@ -122,7 +129,61 @@ def test_osm_labels(tiles, tmp_path):
     assert check(tiles) == []
     # sans --osm ensuite : les colonnes OSM disparaissent avec leur mention au manifeste
     m = enrich(tiles, log=lambda s: None)
-    assert "osm_hike" not in np.load(tiles / f"{A}.npz").files and list(m["columns"]) == ["calm"]
+    assert "osm_hike" not in np.load(tiles / f"{A}.npz").files and list(m["columns"]) == ["calm", "ign_cross"]
+
+
+def test_osm_class(tiles, tmp_path):
+    """Classe de voie : 0 chemin naturel, 1 intermédiaire, 2 route ; NOCLASS sans appariement (repli IGN)."""
+    osm = _opl(tmp_path / "c.opl", {
+        31: ("highway=footway", [(1000, 1010), (6000, 1010)]),                  # sentier 1 = allée de ville
+        32: ("highway=footway", [(1000, 1340), (6000, 1340)]),                  # longe la route 2 : pas une rue
+        33: ("highway=track,surface=gravel", [(1000, 80040), (6000, 80040)]),   # route 6 non revêtue
+        34: ("highway=pedestrian", [(1000, 90040), (6000, 90040)]),             # route 7 = rue piétonne
+        35: ("highway=path,surface=asphalt", [(1000, 60050), (6000, 60050)]),   # sentier 3 revêtu
+    }, {})
+    m = enrich(tiles, [osm], log=lambda s: None)
+    c = np.load(tiles / f"{A}.npz")["osm_class"]
+    assert c[SENTIER_PRES] == 1 and c[SENTIER_LOIN] == 1 and c[PETITE_ROUTE] == 0 and c[DESSERTE] == 1
+    assert c[ROUTE] == NOCLASS and c[CHEMIN_BORD] == NOCLASS
+    assert m["columns"]["osm_class"]["values"] == [0, 1, NOCLASS] and m["tiles"][A]["osm_mid_km"] == 1.5
+    assert check(tiles) == []
+    assert way_class({"highway": "track"}) == 0 and way_class({"highway": "track", "tracktype": "grade1"}) == 1
+    assert way_class({"highway": "steps"}) == 1 and way_class({"highway": "footway", "surface": "dirt"}) == 0
+    assert way_class({"highway": "footway", "footway": "sidewalk"}) == NOCLASS
+    assert way_class({"highway": "residential"}) == NOCLASS and way_class({"highway": "service", "surface": "gravel"}) == 0
+
+
+def test_ign_cross(tiles):
+    enrich(tiles, log=lambda s: None)
+    c = np.load(tiles / f"{A}.npz")["ign_cross"]
+    assert c[ROUTE] == 3 and c[DEPART] == 1 and c[SENTIER_PRES] == 0 and c[PETITE_ROUTE] == 0
+
+
+def test_osm_ways_points_and_forest(tiles, tmp_path):
+    from pipeline.enrich import F_DRINK, F_LIT, F_VIA, F_VIEW, HIGHWAYS, SURFACES
+    osm = _opl(tmp_path / "w.opl", {
+        41: ("highway=path,surface=rock,sac_scale=alpine_hiking,trail_visibility=bad", [(1000, 60050), (6000, 60050)]),
+        42: ("highway=via_ferrata", [(E - 5000, 100040), (E - 100, 100040)]),
+        43: ("highway=footway,lit=yes", [(1000, 1010), (6000, 1010)]),
+        44: ("highway=residential", [(1000, 90040), (6000, 90040)]),
+    }, {}, {51: ("amenity=drinking_water", (3000, 1100)), 52: ("tourism=viewpoint", (3000, 60300)),
+            53: ("amenity=drinking_water,drinking_water=no", (3000, 80000))})
+    ring = [TO_WGS.transform((X0 + x) / 10, (Y0 + y) / 10) for x, y in
+            ((1000, 59000), (3500, 59000), (3500, 61000), (1000, 61000), (1000, 59000))]
+    fo = tmp_path / "f.geojsonseq"
+    fo.write_text(json.dumps({"type": "Feature", "properties": {}, "geometry": {"type": "Polygon", "coordinates": [ring]}}) + "\n")
+    m = enrich(tiles, [osm, fo], log=lambda s: None)
+    f = np.load(tiles / f"{A}.npz")
+    assert f["osm_highway"][SENTIER_LOIN] == HIGHWAYS.index("path") and f["osm_surface"][SENTIER_LOIN] == SURFACES.index("rock")
+    assert f["osm_rough"][SENTIER_LOIN] == 3 and f["osm_sac"][SENTIER_LOIN] == 4 and f["osm_visibility"][SENTIER_LOIN] == 4
+    assert f["osm_flags"][CHEMIN_BORD] & F_VIA and f["osm_flags"][SENTIER_PRES] & F_LIT
+    assert f["osm_highway"][DESSERTE] == HIGHWAYS.index("residential") and f["osm_class"][DESSERTE] == 255
+    assert f["osm_flags"][SENTIER_PRES] & F_DRINK and f["osm_flags"][ROUTE] & F_DRINK       # à 10 et 20 m
+    assert not f["osm_flags"][PETITE_ROUTE] & F_DRINK                                       # eau non potable
+    assert f["osm_flags"][SENTIER_LOIN] & F_VIEW and not f["osm_flags"][SENTIER_PRES] & F_VIEW
+    assert f["osm_forest"][SENTIER_LOIN] in (7, 8) and f["osm_forest"][SENTIER_PRES] == 0      # moitié sous la forêt
+    assert m["columns"]["osm_highway"]["codes"][1] == "path" and m["tiles"][A]["osm_forest_km"] > 0
+    assert check(tiles) == []
 
 
 def test_derived_version():

@@ -11,14 +11,19 @@ from pathlib import Path
 
 import numpy as np
 
+from trailopt.ign import NATURES
+
 from .enrich import verify
-from .load import FORMAT, read_tile
+from .load import FORMAT, profile_counts, read_tile
 
 MAX_NODATA = 0.01          # part des points de profil sans MNT avant comblement : avertissement au-delà
-HARD_NODATA = 0.6          # ... erreur au-delà (MNT manquant sur la dalle, pas seulement la mer)
-MAX_JUMP = 0.005           # tronçons à saut > 10 m sur 5 m / n
-MIN_JUMPS = 10             # ... et au moins ce nombre de sauts (petites dalles)
+HARD_NODATA = 0.6          # ... erreur au-delà, comptée hors bacs (la mer n'a pas de MNT) ...
+MIN_NODATA_N = 200         # ... et si au moins ce nombre de tronçons-équivalents sont sans MNT (îlots)
+MAX_JUMP = 0.005           # tronçons à saut > 10 m sur 5 m / n : avertissement au-delà
+HARD_JUMP = 0.02           # ... erreur au-delà
+MIN_JUMPS = 10             # ... et toujours au moins ce nombre de sauts (petites dalles)
 MAX_FALLBACK = 0.002       # nœuds sans MNT (altitude du voisin) / n
+BAC = "Bac ou liaison maritime"
 MAX_DELTA_N = 0.05         # |n - n précédent| / max(n précédent, 1000)
 
 
@@ -58,6 +63,16 @@ def node_conflicts(d: Path, tiles) -> list[str]:
     return bad
 
 
+def land_nodata(p: Path, nodata_frac: float, bac: int) -> tuple[float, float]:
+    """(part des points sans MNT hors bacs, tronçons-équivalents sans MNT hors bacs) : les points
+    des bacs (liaisons maritimes) sont supposés tous sans MNT et retirés du compte."""
+    with np.load(p) as f:
+        pn, b = profile_counts(f["len_dm"]), f["nature"] == bac
+    P, Pb = int(pn.sum()), int(pn[b].sum())
+    land = max(0.0, (nodata_frac * P - Pb) / max(1, P - Pb))
+    return land, land * int((~b).sum())
+
+
 def check(tiles_dir, expected: list[str] | None = None, previous: dict | None = None) -> list[str]:
     """Liste des problèmes (vide = publiable)."""
     d = Path(tiles_dir)
@@ -76,12 +91,18 @@ def check(tiles_dir, expected: list[str] | None = None, previous: dict | None = 
             broken.add(k)
         n = max(1, t["n"])
         # au moins MIN_JUMPS sauts : sur une petite dalle (îlot, bord de mer) 2 sauts dépassent déjà le taux
-        if "jump_gt10" not in t or t["jump_gt10"] > max(MIN_JUMPS, MAX_JUMP * n):
-            bad.append(f"{k} : jump_gt10 = {t.get('jump_gt10')} sur {n} tronçons (> {MAX_JUMP:.1%})")
-        # Sans MNT : normal en bord de mer (liaisons maritimes, estran : dalles côtières à 1-15 %), donc
-        # simple avertissement ; erreur seulement si la dalle entière manque de relief.
-        if "node_fallback" not in t or t["nodata_frac"] > HARD_NODATA:
-            bad.append(f"{k} : nodata_frac = {t['nodata_frac']} (> {HARD_NODATA}), node_fallback = {t.get('node_fallback')}")
+        if "jump_gt10" not in t or t["jump_gt10"] > max(MIN_JUMPS, HARD_JUMP * n):
+            bad.append(f"{k} : jump_gt10 = {t.get('jump_gt10')} sur {n} tronçons (> {HARD_JUMP:.0%})")
+        elif t["jump_gt10"] > max(MIN_JUMPS, MAX_JUMP * n):
+            print(f"avertissement {k} : jump_gt10 = {t['jump_gt10']} sur {n} tronçons", file=sys.stderr)
+        # Sans MNT : normal en bord de mer (liaisons maritimes, estran, îlots), donc simple avertissement ;
+        # erreur seulement si la terre ferme de la dalle manque de relief, sur assez de tronçons.
+        if "node_fallback" not in t:
+            bad.append(f"{k} : node_fallback absent")
+        elif t["nodata_frac"] > HARD_NODATA and k not in broken and \
+                (r := land_nodata(p, t["nodata_frac"], m.get("natures", NATURES).index(BAC)))[0] > HARD_NODATA and r[1] >= MIN_NODATA_N:
+            bad.append(f"{k} : nodata hors bacs = {r[0]:.3f} (> {HARD_NODATA}) sur {r[1]:.0f} tronçons-équivalents, "
+                       f"node_fallback = {t['node_fallback']}")
         elif t["nodata_frac"] > MAX_NODATA or t["node_fallback"] / n > MAX_FALLBACK:
             print(f"avertissement {k} : nodata_frac = {t['nodata_frac']}, node_fallback = {t['node_fallback']} sur {n} tronçons",
                   file=sys.stderr)

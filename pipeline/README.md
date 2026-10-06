@@ -9,8 +9,8 @@ python -m pipeline check    --tiles tiles --list pipeline/tiles_v1.txt [--previo
 python -m pipeline clip     --tiles tiles --out engine/tests/data/tiles --disk lat,lon,rayon_m …
 python -m pipeline coverage --tiles tiles --out web/public/coverage.geojson
 python -m pipeline pois     --tiles tiles      # cols/sommets -> tiles/pois.json (après chaque build)
-python -m pipeline merge    --tiles tiles      # data.yml : fusionne manifest-<k>.json / pois-<k>.json des shards
-python -m pipeline enrich   --tiles copie [--osm france.osm.pbf …]   # étiquettes calm, osm_hike, osm_water (en place)
+python -m pipeline merge    --tiles tiles      # data.yml : fusionne manifest-<k>.json / pois-<k>.json des shards, puis harmonise l'altitude des nœuds entre dalles
+python -m pipeline enrich   --tiles copie [--osm france.osm.pbf …]   # étiquettes calm, ign_cross, osm_* (en place)
 ```
 
 Listes : `tiles_france.txt` (France métropolitaine, Corse et îles : 1 561 dalles, produite par
@@ -83,19 +83,20 @@ Post-traitement d'un dossier de dalles déjà construites, sans requête IGN (co
 
 - `calm` (0–15) : éloignement des routes importantes, depuis les dalles seules (la dalle et ses 8 voisines
   doivent être dans le dossier ; `check` recalcule et refuse sinon).
-- Avec `--osm` : `osm_hike` (0/1/2, relations `route=hiking|foot`) et `osm_water` (0–15, part de la longueur
-  à moins de 50 m d'une rivière, d'un canal, d'un plan d'eau ou de la côte). © les contributeurs
+- `ign_cross` (bits u/v) : extrémité sur un nœud de route d'importance 1–2 (traversée à niveau), dalle + 8 voisines.
+- Avec `--osm` : `osm_hike`, `osm_water`, `osm_class` (classe de voie), `osm_highway` / `osm_surface` (valeurs
+  brutes codées, tables au manifeste), `osm_rough`, `osm_sac`, `osm_visibility`, `osm_flags` (via ferrata,
+  éclairé, eau potable, sommet/col/vue) et `osm_forest` (raster 10 m des forêts). © les contributeurs
   d'OpenStreetMap, ODbL ; étiquettes seulement, absence = neutre.
 - `--osm` prend des extraits Geofabrik `.osm.pbf` (réduits par `osmium tags-filter` puis
-  `add-locations-to-ways` en un texte `.opl` gardé à côté ; paquet `osmium-tool`, `brew install osmium-tool`)
-  ou des `.opl` déjà filtrés. Le texte OPL est lu par la bibliothèque standard : pas de dépendance Python.
+  `add-locations-to-ways` en un texte `.opl`, et en `.foret.pbf` lu par `osmium export`, gardés à côté ;
+  paquet `osmium-tool`, `brew install osmium-tool`), ou ces `.opl` / `.foret.pbf` (ou `.geojsonseq`) déjà faits.
 - Version : `<base>.<n>` (`bdtopo-wfs-2026-10e` → `…-10e.1`), `derived_from`, `columns` (source et licence par
   colonne) au manifeste. Relançable (les colonnes sont remplacées, la version avance).
 
-Workflow : `gh workflow run enrich.yml --ref <branche> -f base=bdtopo-wfs-2026-10e` (défaut : extrait
-`europe/france`, publication de `tiles-<base>.<n>` ; `-f publish=false` pour un essai, `-f osm=` pour `calm`
-seul ; DOM : ajouter `europe/france/reunion europe/france/guadeloupe europe/france/martinique
-europe/france/guyane europe/france/mayotte` à `osm`). Un seul job : télécharge les zips de la release
+Workflow : `gh workflow run enrich.yml --ref <branche> -f base=bdtopo-wfs-2026-10e` (défaut : extraits
+`europe/france` + les 5 DOM, publication de `tiles-<base>.<n>` ; `-f publish=false` pour un essai, `-f osm=` pour
+`calm` et `ign_cross` seuls). Un seul job : télécharge les zips de la release
 d'entrée, étiquette, `check` (dont `--previous` = manifeste d'entrée : mêmes tronçons), refait les zips. Puis
 `scripts/tiles_to_s3.sh <base>.<n>` comme pour une version construite.
 

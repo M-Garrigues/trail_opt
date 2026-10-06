@@ -195,12 +195,22 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     node_z = graph.node_elevations(keyed, zs, node_z)          # ponts/tunnels sans aucun appui au sol
     fb = float(np.nanmean(zmem)) if np.isfinite(zmem).any() else 0.0
     no_z = sorted(set(nodes.tolist()) - node_z.keys())   # aucun MNT sur le tronçon
-    if no_z and node_z:   # altitude du nœud connu le plus proche (pas la moyenne de dalle : pics)
-        from scipy.spatial import cKDTree
-        known = np.array(list(node_z), np.int64)
+    if no_z:   # MNT à l'extrémité la plus proche (≤ 1 km) de tous les tronçons chargés : ne dépend pas
+        from scipy.spatial import cKDTree   # de la dalle (pas la moyenne de dalle : pics)
+        ends = np.unique(np.concatenate([key_u[valid], key_v[valid]]))
+        ez = np.asarray(sample((ends >> 32) / 10.0, (ends & 0xFFFFFFFF) / 10.0), float)
+        ends, ez = ends[np.isfinite(ez)], ez[np.isfinite(ez)]
+        q = np.array(no_z, np.int64)
+        if len(ends):
+            dist, j = cKDTree(np.column_stack([ends >> 32, ends & 0xFFFFFFFF])).query(
+                np.column_stack([q >> 32, q & 0xFFFFFFFF]), distance_upper_bound=10_000)
+            node_z.update({int(n): float(ez[k]) for n, k, r in zip(q, j, dist) if np.isfinite(r)})
+    rest = sorted(set(no_z) - node_z.keys())
+    known = np.array(sorted(set(node_z) - set(no_z)), np.int64)
+    if rest and len(known):   # sinon altitude du nœud connu le plus proche
         _, j = cKDTree(np.column_stack([known >> 32, known & 0xFFFFFFFF])).query(
-            np.column_stack([np.array(no_z, np.int64) >> 32, np.array(no_z, np.int64) & 0xFFFFFFFF]))
-        node_z.update({n: node_z[int(known[k])] for n, k in zip(no_z, j)})
+            np.column_stack([np.array(rest, np.int64) >> 32, np.array(rest, np.int64) & 0xFFFFFFFF]))
+        node_z.update({n: node_z[int(known[k])] for n, k in zip(rest, j)})
     cols = {c: [] for c in ("jump", "dplus_dm", "dminus_dm", "max_grade_pm", "z0", "prof_d", "par_n", "par_id")}
     for i in mem.tolist():
         zi, e = zs_of[i], edges[i]
