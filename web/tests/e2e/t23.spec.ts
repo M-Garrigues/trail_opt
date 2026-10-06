@@ -53,6 +53,7 @@ test('hors couverture : grisé, erreur avant tout appel', async ({ page }) => {
 });
 
 test('zone : le 51ᵉ sommet est refusé', async ({ page }) => {
+  test.slow(); // 51 clics vérifiés un à un : > 1 min sur le runner de CI
   await setup(page);
   await page.goto('/');
   await placeStart(page);
