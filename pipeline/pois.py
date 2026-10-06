@@ -15,9 +15,9 @@ from pathlib import Path
 import numpy as np
 import requests
 
-from trailopt import cache, elevation, ign
+from trailopt import cache, ign
 
-from .build import _TO_L93, _TO_WGS
+from .build import _TO_L93, sampler, split_key, transformers
 from .load import TILE_M
 
 FORMAT = "pois/1"
@@ -57,9 +57,9 @@ def fetch(bbox) -> list:
         start += ign.PAGE
 
 
-def pois_from_features(feats, tiles: set[str], sample) -> list[dict]:
-    """Garde Col/Pic/Sommet nommés dont le point est dans une dalle de `tiles` ; sample(X, Y) -> z (m).
-    Rangés par id, sans doublon."""
+def pois_from_features(feats, tiles: set[str], sample, to_crs=_TO_L93) -> list[dict]:
+    """Garde Col/Pic/Sommet nommés dont le point est dans une dalle de `tiles` (noms `<ix>_<iy>` d'une
+    même zone, repère `to_crs`) ; sample(X, Y) -> z (m). Rangés par id, sans doublon."""
     rows = {}
     for f in feats:
         p, g = f.get("properties") or {}, f.get("geometry") or {}
@@ -67,7 +67,7 @@ def pois_from_features(feats, tiles: set[str], sample) -> list[dict]:
         cle = str(p.get("cleabs") or "")
         if p.get("nature") not in NATURES or not name or g.get("type") != "Point" or not cle[8:].isdigit():
             continue
-        x, y = _TO_L93.transform(*g["coordinates"][:2])
+        x, y = to_crs.transform(*g["coordinates"][:2])
         x_dm, y_dm = round(x * 10), round(y * 10)
         if f"{x_dm // (TILE_M * 10)}_{y_dm // (TILE_M * 10)}" in tiles:
             rows[int(cle[8:])] = dict(id=int(cle[8:]), nature=p["nature"], name=name,
@@ -91,13 +91,21 @@ def build_pois(tiles_dir, log=print) -> dict:
     d = Path(tiles_dir)
     m = json.loads((d / "manifest.json").read_text())
     tiles = sorted(m["tiles"])
-    feats = []
-    for k in tiles:
-        ix, iy = map(int, k.split("_"))
-        lon, lat = _TO_WGS.transform([ix * TILE_M, (ix + 1) * TILE_M] * 2,
-                                     [iy * TILE_M] * 2 + [(iy + 1) * TILE_M] * 2)
-        feats += fetch((min(lat), min(lon), max(lat), max(lon)))
-    pois = pois_from_features(feats, set(tiles), elevation.sample_l93)
+    pois = []
+    for zone in sorted({split_key(k)[0] for k in tiles}):       # DOM : repère de la zone, champ `zone` en plus
+        to_wgs, to_crs = transformers(zone)
+        feats, names = [], set()
+        for k in tiles:
+            z, ix, iy = split_key(k)
+            if z != zone:
+                continue
+            names.add(f"{ix}_{iy}")
+            lon, lat = to_wgs.transform([ix * TILE_M, (ix + 1) * TILE_M] * 2,
+                                        [iy * TILE_M] * 2 + [(iy + 1) * TILE_M] * 2)
+            feats += fetch((min(lat), min(lon), max(lat), max(lon)))
+        rows = pois_from_features(feats, names, sampler(zone), to_crs)
+        pois += rows if zone == "fxx" else [dict(r, zone=zone) for r in rows]
+    pois.sort(key=lambda r: r["id"])
     doc = dict(format=FORMAT, data_version=m["data_version"], source=SOURCE, natures=list(NATURES),
                tiles=tiles, pois=pois)
     data = (json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n").encode()

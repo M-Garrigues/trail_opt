@@ -21,7 +21,7 @@ from .load import FORMAT, TILE_M, lengths, profile_counts, profile_points
 
 MARGIN_M = 2000.0          # voisins chargés pour les parallèles en bord de dalle
 INNER_MAX_DM = int(MARGIN_M * 10)  # chaîne de ponts/tunnels interpolée seulement si plus courte que la marge (dm)
-DATA_VERSION = "bdtopo-wfs-2026-10d"  # d : altitude de nœud unique (z sur tous les tronçons voisins) ; c : nœuds intérieurs des ponts/tunnels interpolés (T35, D37) ; b : falaises, portails (D27)
+DATA_VERSION = "bdtopo-wfs-2026-10e"  # e : France entière, même calcul que d (pilote IdF + Isère + Lyon, 87 dalles) ; d : altitude de nœud unique (z sur tous les tronçons voisins) ; c : nœuds intérieurs des ponts/tunnels interpolés (T35, D37) ; b : falaises, portails (D27)
 SOURCE = "BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0"
 STEEP = 0.60               # validation : pente max > 60 % (artefact probable)
 ROAD_MAX_GRADE = 0.30     # pente physique max d'une voie carrossable, par pas de 5 m (D27)
@@ -29,6 +29,44 @@ ROAD_NATURES = [ign.NATURES.index(k) for k in sorted(ign.ROADS | {"Route empierr
 JUMP_DM = 100              # validation : saut > 10 m entre deux points de 5 m (200 %, pic probable)
 _TO_WGS = Transformer.from_crs("EPSG:2154", "EPSG:4326", always_xy=True)
 _TO_L93 = Transformer.from_crs("EPSG:4326", "EPSG:2154", always_xy=True)
+
+# Zones (tiles.md § Zones) : un repère métrique par territoire, même grille de 20 km dans ce repère.
+# Métropole `fxx` : clés `<ix>_<iy>` (inchangées). DOM : clés `<zone>/<ix>_<iy>`, fichiers dans un
+# sous-dossier, et entrée `zones` au manifeste (crs + bbox WGS84 ouest, sud, est, nord pour choisir la zone).
+# MNT : RGE ALTI (couche HIGHRES, servie dans chaque repère), précédé du LiDAR HD là où il est publié.
+_RGE = elevation.LAYERS[1]
+ZONES = {
+    "fxx": dict(crs="EPSG:2154", dem=None),
+    "re": dict(crs="EPSG:2975", bbox=[55.15, -21.45, 55.90, -20.80],     # RGR92 / UTM 40S
+               dem=["IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.RGR92UTM40S", _RGE]),
+    "gp": dict(crs="EPSG:5490", bbox=[-61.90, 15.75, -60.95, 16.60], dem=[_RGE]),   # RGAF09 / UTM 20N
+    "mq": dict(crs="EPSG:5490", bbox=[-61.30, 14.30, -60.75, 14.95], dem=[_RGE]),   # RGAF09 / UTM 20N
+    "gf": dict(crs="EPSG:2972", bbox=[-54.70, 2.00, -51.50, 5.90], dem=[_RGE]),     # RGFG95 / UTM 22N
+    "yt": dict(crs="EPSG:4471", bbox=[44.95, -13.10, 45.35, -12.55], dem=[_RGE]),   # RGM04 / UTM 38S
+}
+_TR = {}
+
+
+def transformers(zone: str = "fxx"):
+    """(repère de la zone -> WGS84, WGS84 -> repère de la zone)."""
+    if zone not in _TR:
+        crs = ZONES[zone]["crs"]
+        _TR[zone] = (Transformer.from_crs(crs, "EPSG:4326", always_xy=True),
+                     Transformer.from_crs("EPSG:4326", crs, always_xy=True))
+    return _TR[zone]
+
+
+def split_key(key: str) -> tuple[str, int, int]:
+    """'32_342' -> ('fxx', 32, 342) ; 're/17_382' -> ('re', 17, 382)."""
+    zone, _, name = key.rpartition("/")
+    ix, iy = map(int, name.split("_"))
+    return zone or "fxx", ix, iy
+
+
+def sampler(zone: str = "fxx", stats: dict | None = None):
+    """sample(X, Y) -> z (m) dans le repère de la zone."""
+    z = ZONES[zone]
+    return lambda X, Y: elevation.sample_l93(X, Y, stats, layers=z["dem"], crs=z["crs"])
 
 
 def _deltas(a, n, base=0):
@@ -212,23 +250,26 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     return T, info
 
 
-def build_tile(ix: int, iy: int, out: Path) -> dict:
-    """Télécharge (ou lit en cache) les sources d'une dalle, l'écrit dans out/<ix>_<iy>.npz."""
+def build_tile(ix: int, iy: int, out: Path, zone: str = "fxx") -> dict:
+    """Télécharge (ou lit en cache) les sources d'une dalle, l'écrit dans out/[<zone>/]<ix>_<iy>.npz."""
     t0 = time.time()
+    to_wgs, to_crs = transformers(zone)
     x0, y0, x1, y1 = (ix * TILE_M - MARGIN_M, iy * TILE_M - MARGIN_M,
                       (ix + 1) * TILE_M + MARGIN_M, (iy + 1) * TILE_M + MARGIN_M)
-    lon, lat = _TO_WGS.transform([x0, x1, x0, x1], [y0, y0, y1, y1])
+    lon, lat = to_wgs.transform([x0, x1, x0, x1], [y0, y0, y1, y1])
     stats = {"ign": ign.cache.new_stats(), "dem": ign.cache.new_stats()}
     A = ign.fetch((min(lat), min(lon), max(lat), max(lon)), stats["ign"])
     t_src = time.time() - t0
-    X, Y = _TO_L93.transform(A["lon"], A["lat"])
+    X, Y = to_crs.transform(A["lon"], A["lat"])
     Xd = np.round(np.asarray(X) * 10).astype(np.int64)
     Yd = np.round(np.asarray(Y) * 10).astype(np.int64)
-    T, info = tile_columns(ix, iy, A, Xd, Yd, lambda X, Y: elevation.sample_l93(X, Y, stats["dem"]))
+    T, info = tile_columns(ix, iy, A, Xd, Yd, sampler(zone, stats["dem"]))
     buf = io.BytesIO()
     np.savez_compressed(buf, **T)
     data = buf.getvalue()
-    cache.write_atomic(out / f"{ix}_{iy}.npz", data)
+    p = out / ("" if zone == "fxx" else zone) / f"{ix}_{iy}.npz"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    cache.write_atomic(p, data)
     info.update(sha256=hashlib.sha256(data).hexdigest(), bytes=len(data),
                 o_par_troncon=round(len(data) / max(1, info["n"]), 1),
                 t_sources_s=round(t_src, 1), t_total_s=round(time.time() - t0, 1),
@@ -236,13 +277,14 @@ def build_tile(ix: int, iy: int, out: Path) -> dict:
     return info
 
 
-def tiles_for(spec: str) -> list[tuple[int, int]]:
-    """'32_342,33_342' (liste) ou 'sud,ouest,nord,est' (bbox WGS) -> dalles."""
+def tiles_for(spec: str, zone: str = "fxx") -> list[str]:
+    """'32_342,re/17_382' (liste, zone en préfixe sinon `zone`) ou 'sud,ouest,nord,est' (bbox WGS) -> clés."""
+    pre = "" if zone == "fxx" else f"{zone}/"
     if "_" in spec:
-        return [tuple(map(int, t.split("_"))) for t in spec.split(",")]
+        return [t if "/" in t else pre + t for t in spec.split(",")]
     s, w, n, e = map(float, spec.split(","))
-    X, Y = _TO_L93.transform([w, e, w, e], [s, s, n, n])
-    return [(ix, iy) for ix in range(int(min(X) // TILE_M), int(max(X) // TILE_M) + 1)
+    X, Y = transformers(zone)[1].transform([w, e, w, e], [s, s, n, n])
+    return [f"{pre}{ix}_{iy}" for ix in range(int(min(X) // TILE_M), int(max(X) // TILE_M) + 1)
             for iy in range(int(min(Y) // TILE_M), int(max(Y) // TILE_M) + 1)]
 
 
@@ -259,7 +301,18 @@ def _done(out: Path, info: dict | None, name: str) -> bool:
     return bool(info) and p.exists() and hashlib.sha256(p.read_bytes()).hexdigest() == info["sha256"]
 
 
-def build(spec: str, out, log=print, force: bool = False) -> dict:
+def totals(tiles: dict) -> dict:
+    """Somme des validations par dalle (clé `totals` du manifeste)."""
+    t = tiles.values()
+    n = sum(x["n"] for x in t)
+    return dict(tiles=len(tiles), n=n, bytes=sum(x["bytes"] for x in t),
+                steep_gt60=sum(x["steep_gt60"] for x in t),
+                jump_gt10=sum(x.get("jump_gt10", 0) for x in t),
+                node_fallback=sum(x.get("node_fallback", 0) for x in t),
+                nodata_frac=round(sum(x["nodata_frac"] * x["n"] for x in t) / max(1, n), 5))
+
+
+def build(spec: str, out, log=print, force: bool = False, zone: str = "fxx") -> dict:
     """Construit les dalles demandées et met à jour out/manifest.json (fusion avec l'existant).
     Reprise : une dalle présente et intacte est sautée (sauf force). Plusieurs processus peuvent
     écrire dans le même dossier : le manifeste est relu et réécrit sous verrou."""
@@ -267,24 +320,20 @@ def build(spec: str, out, log=print, force: bool = False) -> dict:
     out.mkdir(parents=True, exist_ok=True)
     mpath = out / "manifest.json"
     m = _read_manifest(mpath)
-    for ix, iy in tiles_for(spec):
-        name = f"{ix}_{iy}"
+    for name in tiles_for(spec, zone):
+        z, ix, iy = split_key(name)
         if not force and _done(out, m.get("tiles", {}).get(name), name):
             log(f"{name} : déjà faite")
             continue
-        info = build_tile(ix, iy, out)
+        info = build_tile(ix, iy, out, z)
         log(f"{name} : {json.dumps(info, ensure_ascii=False)}")
         with open(out / "manifest.lock", "w") as lock:
             fcntl.flock(lock, fcntl.LOCK_EX)
             m = _read_manifest(mpath)
             m.update(format=FORMAT, data_version=DATA_VERSION, source=SOURCE, natures=ign.NATURES)
             m.setdefault("tiles", {})[name] = info
-            tiles = m["tiles"].values()
-            n = sum(t["n"] for t in tiles)
-            m["totals"] = dict(tiles=len(m["tiles"]), n=n, bytes=sum(t["bytes"] for t in tiles),
-                               steep_gt60=sum(t["steep_gt60"] for t in tiles),
-                               jump_gt10=sum(t.get("jump_gt10", 0) for t in tiles),
-                               node_fallback=sum(t.get("node_fallback", 0) for t in tiles),
-                               nodata_frac=round(sum(t["nodata_frac"] * t["n"] for t in tiles) / max(1, n), 5))
+            if z != "fxx":
+                m.setdefault("zones", {})[z] = {k: ZONES[z][k] for k in ("crs", "bbox")}
+            m["totals"] = totals(m["tiles"])
             cache.write_atomic(mpath, json.dumps(m, ensure_ascii=False, indent=1).encode())
     return m

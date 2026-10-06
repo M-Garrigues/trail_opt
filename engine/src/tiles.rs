@@ -263,6 +263,15 @@ pub type Fetch = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
 /// Téléchargements simultanés au plus.
 const FETCH_THREADS: usize = 16;
 const ENOSPC: i32 = 28;
+/// Délai d'un GET S3 (s), réponse entière (mesuré : 21 Mo en 9 dalles en 1,5 s depuis un poste
+/// en France). 2 essais ≤ 10 s : une panne rend `busy` avant le plafond de calcul de 15 s
+/// (compté depuis avant le chargement), loin du timeout Lambda de 30 s. `TILES_GET_TIMEOUT_S`.
+const GET_TIMEOUT_S: u64 = 5;
+/// Taille du cache `/tmp` par défaut (Mo) : éphémère Lambda 2 048 Mo moins la marge de /tmp.
+const DEFAULT_CACHE_MB: u64 = 1_500;
+/// Préfixe des erreurs de la source distante (S3 en panne, dalle illisible) : l'API les rend en
+/// `busy` (503, réessayer) et non en erreur de calcul.
+pub const REMOTE_ERR: &str = "source distante : ";
 
 /// Dossier de dalles (manifest.json + <ix>_<iy>.npz). Source distante : `root` est le cache
 /// local (/tmp), rempli par `ensure` avant chaque `load`.
@@ -271,6 +280,8 @@ pub struct TileStore {
     pub manifest: Manifest,
     /// Repères cols/sommets (vide sans `pois.json`).
     pub pois: Vec<Poi>,
+    /// Taille maximale du cache (octets) : au-delà, éviction LRU avant téléchargement.
+    pub budget_bytes: u64,
     remote: Option<Fetch>,
 }
 
@@ -306,6 +317,7 @@ impl TileStore {
             root: root.to_path_buf(),
             manifest,
             pois,
+            budget_bytes: u64::MAX,
             remote: None,
         })
     }
@@ -314,17 +326,38 @@ impl TileStore {
     /// téléchargées à la demande dans `cache` (le dossier est créé).
     pub fn open_remote(fetch: Fetch, cache: &Path) -> Result<TileStore, String> {
         std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
-        let text =
-            |f: &str| fetch(f).and_then(|b| String::from_utf8(b).map_err(|e| format!("{f} : {e}")));
+        // reprise après coupure : fichiers partiels d'un environnement précédent
+        for e in std::fs::read_dir(cache).into_iter().flatten().flatten() {
+            if e.file_name().to_string_lossy().ends_with(".part") {
+                let _ = std::fs::remove_file(e.path());
+            }
+        }
+        // un seul retry : S3 peut hoqueter au démarrage à froid
+        let text = |f: &str| {
+            fetch(f)
+                .or_else(|_| fetch(f))
+                .and_then(|b| String::from_utf8(b).map_err(|e| format!("{f} : {e}")))
+                .map_err(|e| format!("{REMOTE_ERR}{e}"))
+        };
         let manifest = parse_manifest(&text("manifest.json")?)?;
         let pois = match manifest.pois.as_ref().and_then(|p| p["file"].as_str()) {
             None => Vec::new(),
-            Some(f) => parse_pois(f, &text(f)?)?,
+            Some(f) => {
+                let t = text(f)?;
+                if let Some(h) = manifest.pois.as_ref().and_then(|p| p["sha256"].as_str())
+                    && crate::share::hex(digest::digest(&digest::SHA256, t.as_bytes()).as_ref())
+                        != h
+                {
+                    return Err(format!("{REMOTE_ERR}{f} : sha256 ≠ manifeste"));
+                }
+                parse_pois(f, &t)?
+            }
         };
         Ok(TileStore {
             root: cache.to_path_buf(),
             manifest,
             pois,
+            budget_bytes: u64::MAX,
             remote: Some(fetch),
         })
     }
@@ -348,20 +381,36 @@ impl TileStore {
             region: std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into()),
             endpoint: std::env::var("S3_ENDPOINT").ok().filter(|e| !e.is_empty()),
         };
-        let creds = Creds::from_env()?;
+        Creds::from_env()?;
+        let timeout = std::env::var("TILES_GET_TIMEOUT_S")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(GET_TIMEOUT_S);
         let prefix = prefix.to_string();
         let fetch: Fetch = Box::new(move |name| {
             let key = format!("{prefix}/{name}");
-            match s3_call(&target, &creds, "GET", &key, &[], None, (20, 64 << 20))? {
+            // identifiants temporaires du rôle (AWS_SESSION_TOKEN compris) : Lambda les fixe pour
+            // la vie de l'environnement d'exécution, recyclé avant leur expiration
+            let creds = Creds::from_env()?;
+            match s3_call(&target, &creds, "GET", &key, &[], None, (timeout, 64 << 20))? {
                 (200, b) => Ok(b),
                 (s, _) => Err(format!("s3 GET {key} : HTTP {s}")),
             }
         });
-        TileStore::open_remote(fetch, &cache_root.join(version))
+        let mut store = TileStore::open_remote(fetch, &cache_root.join(version))?;
+        // TILES_CACHE_MB : plafond du cache (défaut 1 500 Mo pour un éphémère de 2 048 Mo)
+        let mb = std::env::var("TILES_CACHE_MB")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(DEFAULT_CACHE_MB);
+        store.budget_bytes = mb << 20;
+        Ok(store)
     }
 
     /// Source distante : télécharge dans le cache les dalles absentes (16 GET en parallèle ;
-    /// `.part` puis rename ; taille et sha256 du manifeste vérifiés ; un retry). Sans effet en local.
+    /// `.part` puis rename ; taille et sha256 du manifeste vérifiés ; un retry). Les dalles déjà
+    /// là sont « touchées » (LRU) ; si le cache dépasse `budget_bytes`, les plus anciennes hors
+    /// requête sont évincées AVANT le téléchargement. Sans effet en local.
     pub fn ensure(&self, keys: &[(i64, i64)]) -> Result<(), String> {
         let Some(fetch) = &self.remote else {
             return Ok(());
@@ -370,16 +419,30 @@ impl TileStore {
             .iter()
             .map(|(ix, iy)| format!("{ix}_{iy}.npz"))
             .collect();
-        let missing: Vec<&String> = keep
-            .iter()
-            .filter(|n| {
-                let want = self.manifest.tiles[n.trim_end_matches(".npz")]["bytes"].as_u64();
-                match std::fs::metadata(self.root.join(n)) {
-                    Ok(m) => want.is_some_and(|w| w != m.len()),
-                    Err(_) => true,
+        let (mut missing, mut need) = (Vec::new(), 0u64);
+        for n in &keep {
+            let Some(e) = self.manifest.tiles.get(n.trim_end_matches(".npz")) else {
+                return Err(format!("dalle {n} hors du manifeste"));
+            };
+            let want = e["bytes"].as_u64();
+            let path = self.root.join(n);
+            match std::fs::metadata(&path) {
+                Ok(m) if want.is_none_or(|w| w == m.len()) => {
+                    let _ = File::open(&path)
+                        .and_then(|f| f.set_modified(std::time::SystemTime::now()));
                 }
-            })
-            .collect();
+                _ => {
+                    need += want.unwrap_or(0);
+                    missing.push(n);
+                }
+            }
+        }
+        if !missing.is_empty() && self.budget_bytes != u64::MAX {
+            let used = cache_bytes(&self.root);
+            if used + need > self.budget_bytes {
+                evict(&self.root, &keep, used + need - self.budget_bytes);
+            }
+        }
         let next = std::sync::atomic::AtomicUsize::new(0);
         let failure = std::sync::Mutex::new(None);
         std::thread::scope(|sc| {
@@ -395,11 +458,14 @@ impl TileStore {
                 });
             }
         });
-        failure.into_inner().unwrap().map_or(Ok(()), Err)
+        failure
+            .into_inner()
+            .unwrap()
+            .map_or(Ok(()), |e| Err(format!("{REMOTE_ERR}{e}")))
     }
 
     fn fetch_tile(&self, fetch: &Fetch, name: &str, keep: &[String]) -> Result<(), String> {
-        let entry = &self.manifest.tiles[name.trim_end_matches(".npz")];
+        let entry = &self.manifest.tiles[name.trim_end_matches(".npz")]; // vérifié par `ensure`
         let once = || -> Result<(), String> {
             let data = fetch(name)?;
             if entry["bytes"]
@@ -467,10 +533,30 @@ impl TileStore {
         let keys = self.keys(b);
         self.ensure(&keys)?;
         for (ix, iy) in keys {
-            read_tile(&self.root.join(format!("{ix}_{iy}.npz")), ix, iy, &mut t)?;
+            let path = self.root.join(format!("{ix}_{iy}.npz"));
+            // cache /tmp corrompu : on le jette et on retélécharge une fois
+            if let Err(e) = read_tile(&path, ix, iy, &mut t) {
+                if self.remote.is_none() {
+                    return Err(e);
+                }
+                let _ = std::fs::remove_file(&path);
+                self.ensure(&[(ix, iy)])?;
+                read_tile(&path, ix, iy, &mut t).map_err(|e| format!("{REMOTE_ERR}{e}"))?;
+            }
         }
         Ok(t)
     }
+}
+
+/// Octets du cache (dalles et fichiers partiels).
+fn cache_bytes(dir: &Path) -> u64 {
+    std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter_map(|e| e.metadata().ok())
+        .map(|m| m.len())
+        .sum()
 }
 
 /// Supprime les dalles les plus anciennes (hors `keep`) jusqu'à libérer `need` octets.

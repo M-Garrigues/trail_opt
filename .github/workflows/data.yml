@@ -1,12 +1,22 @@
-# Dalles tiles/1 (pipeline/, contrat .team/contracts/tiles.md) : construction, validation,
-# publication en release GitHub `tiles-<data_version>` (zip + manifest.json). Procédure : pipeline/README.md.
+# Dalles tiles/1 (pipeline/, contrat .team/contracts/tiles.md) : construction EN MATRICE DE SHARDS,
+# fusion, validation sur l'ENSEMBLE, publication en release GitHub `tiles-<data_version>`.
+# Procédure : pipeline/README.md.
 #
 # Aucun accès AWS ici (pas d'id-token) : la copie vers s3://$ARTIFACTS_BUCKET/tiles/<data_version>/
-# et la variable DATA_VERSION de prod restent côté infra (infra/prod.env, scripts/deploy.sh).
+# se fait depuis le poste du CEO (scripts/tiles_to_s3.sh), puis infra/prod.env + scripts/deploy.sh.
 # data_version = constante DATA_VERSION de pipeline/build.py (à changer avant chaque campagne) ;
 # une release existante n'est jamais réécrite.
-# Durée : ~25 min à 3 processus en local (IdF + Isère + Lyon, 87 dalles) ; débit mesuré ~4 req/s WMS-R
-# (limite IGN 40), < 1 req/s WFS (limite 30). Un seul job, 3 processus : pas de matrice.
+#
+# Shards : la dalle numéro i (ligne i de la liste) va au shard i mod N : voisines dans des shards
+# différents, charge équilibrée. Un shard = un job (4 vCPU, 16 Go, 3 processus de build). Mesures à froid
+# du 2026-10-06 (pipeline/README.md) : 40–80 s, ~190 requêtes, ~110 Mo de cache et ≤ 2,1 Go de RAM par
+# dalle ; France = 1 561 dalles -> 32 shards de ~49 dalles (~25 min, ~5,5 Go de cache sur 14 Go de disque).
+# Débit par shard : ~10 req/s WMS-R et ~5 req/s WFS ; limites Géoplateforme PAR IP : 40 et 30 req/s,
+# dépassement = HTTP 429 pendant 5 s (repris par trailopt : 4 essais, 1-2-4-8 s). Chaque runner a son IP ;
+# `parallel` (8) borne la charge totale sur l'IGN (~120 req/s au pire, service partagé).
+# Un shard en échec se relance seul : `gh run rerun <id> --failed` (les artefacts des autres shards
+# restent, fusion et publication repartent ensuite). Pas de reprise d'une dalle déjà publiée : le
+# WFS/WMS servent l'état du jour, deux dalles voisines doivent venir de la même campagne.
 name: data
 
 on:
@@ -14,12 +24,18 @@ on:
     inputs:
       tiles_list:
         description: "Liste des dalles (une ix_iy par ligne)"
-        default: pipeline/tiles_v1.txt
+        default: pipeline/tiles_france.txt
+      shards:
+        description: "Nombre de shards (jobs de construction)"
+        default: "32"
+      parallel:
+        description: "Shards simultanés au maximum"
+        default: "8"
       previous:
-        description: "Release de comparaison (vide = dernière release tiles-*)"
+        description: "Release de comparaison (vide = dernière release tiles-* ; none = aucune, pour un essai partiel)"
         default: ""
       publish:
-        description: "Publier la release (sinon artefact seul)"
+        description: "Publier la release (sinon artefacts seuls)"
         type: boolean
         default: true
 
@@ -29,18 +45,55 @@ concurrency:
   group: data
   cancel-in-progress: false
 
+env:
+  LIST: ${{ inputs.tiles_list }}
+
 jobs:
-  build:
+  plan:
     runs-on: ubuntu-24.04
-    timeout-minutes: 240
+    timeout-minutes: 10
     permissions:
       contents: read
     outputs:
-      data_version: ${{ steps.version.outputs.data_version }}
+      data_version: ${{ steps.plan.outputs.data_version }}
+      shards: ${{ steps.plan.outputs.shards }}
     env:
-      LIST: ${{ inputs.tiles_list }}
-      PREVIOUS: ${{ inputs.previous }}
       GH_TOKEN: ${{ github.token }}
+      SHARDS: ${{ inputs.shards }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Version (refus si la release existe déjà) et shards
+        id: plan
+        run: |
+          v=$(sed -n 's/^DATA_VERSION = "\([^"]*\)".*/\1/p' pipeline/build.py)   # sans importer numpy
+          [ -n "$v" ] || { echo "::error::DATA_VERSION introuvable dans pipeline/build.py"; exit 1; }
+          if gh release view "tiles-$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "::error::tiles-$v existe déjà : changer DATA_VERSION dans pipeline/build.py"; exit 1
+          fi
+          n=$(grep -c . "$LIST")
+          [ "$n" -gt 0 ] || { echo "::error::liste vide : $LIST"; exit 1; }
+          s=$(( SHARDS < n ? SHARDS : n ))
+          [ "$s" -ge 1 ] && [ "$s" -le 256 ] || { echo "::error::shards hors de 1..256"; exit 1; }
+          echo "data_version=$v" >> "$GITHUB_OUTPUT"
+          echo "shards=$(seq 0 $(( s - 1 )) | jq -sc .)" >> "$GITHUB_OUTPUT"
+          echo "$n dalles, $s shards, version $v"
+
+  build:
+    needs: plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 345
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ fromJSON(inputs.parallel) }}
+      matrix:
+        shard: ${{ fromJSON(needs.plan.outputs.shards) }}
+    env:
+      SHARD: ${{ matrix.shard }}
+      NSHARDS: ${{ strategy.job-total }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -52,72 +105,125 @@ jobs:
           cache-dependency-path: requirements*.txt
       - run: pip install -r requirements.txt
 
-      - name: Version (refus si la release existe déjà)
-        id: version
+      - name: Construction (3 processus, 3 essais ; une dalle intacte n'est pas refaite)
         run: |
-          v=$(python -c 'from pipeline.build import DATA_VERSION; print(DATA_VERSION)')
-          if gh release view "tiles-$v" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "::error::tiles-$v existe déjà : changer DATA_VERSION dans pipeline/build.py"; exit 1
-          fi
-          echo "data_version=$v" >> "$GITHUB_OUTPUT"
-
-      - name: Construction (3 processus)
-        run: |
-          xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < "$LIST"
+          awk -v n="$NSHARDS" -v k="$SHARD" 'NR % n == k' "$LIST" > shard.txt
+          echo "shard $SHARD/$NSHARDS : $(wc -l < shard.txt) dalles"
+          for attempt in 1 2 3; do
+            xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < shard.txt && break
+            [ "$attempt" -lt 3 ] || { echo "::error::shard $SHARD : dalles en échec après 3 essais"; exit 1; }
+            sleep $(( 120 * attempt * attempt ))   # 2 puis 8 min : laisse passer un incident IGN
+          done
           python -m pipeline pois --tiles tiles
+
+      - name: Validation du shard
+        run: python -m pipeline check --tiles tiles --list shard.txt
+
+      - name: Manifeste et repères propres au shard
+        run: |
+          mv tiles/manifest.json "tiles/manifest-$SHARD.json"
+          mv tiles/pois.json "tiles/pois-$SHARD.json"
+          rm -f tiles/manifest.lock
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: shard-${{ matrix.shard }}
+          path: tiles/
+          compression-level: 0     # .npz déjà compressés
+          if-no-files-found: error
+          retention-days: 7
+
+  merge:
+    needs: [plan, build]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      GH_TOKEN: ${{ github.token }}
+      PREVIOUS: ${{ inputs.previous }}
+      V: ${{ needs.plan.outputs.data_version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: shard-*
+          merge-multiple: true
+          path: tiles
+
+      - name: Fusion des shards
+        run: python -m pipeline merge --tiles tiles
 
       - name: Manifeste de la version précédente
         run: |
           prev=${PREVIOUS:-$(gh release list -R "$GITHUB_REPOSITORY" --limit 100 --json tagName \
             -q '[.[] | select(.tagName | startswith("tiles-"))][0].tagName // ""')}
-          if [ -n "$prev" ]; then
+          if [ "$prev" = none ]; then
+            echo "::notice::pas de comparaison (previous=none)"
+          elif [ -n "$prev" ]; then
             gh release download "$prev" -R "$GITHUB_REPOSITORY" -p manifest.json -D prev
             echo "comparaison avec $prev"
           else
             echo "::notice::aucune release tiles-* : pas de comparaison du nombre de tronçons"
           fi
 
-      - name: Validation (nodata, sauts, replis de nœud, sha256, écart de tronçons < 5 %)
+      - name: Validation de l'ensemble (sha256, nodata, sauts, replis, altitude de nœud unique entre dalles, écart de tronçons)
         run: |
           args=(--tiles tiles --list "$LIST")
           [ -f prev/manifest.json ] && args+=(--previous prev/manifest.json)
           python -m pipeline check "${args[@]}"
           python -c 'import json; print(json.load(open("tiles/manifest.json"))["totals"])'
 
-      - name: Zip
-        env:
-          V: ${{ steps.version.outputs.data_version }}
+      - name: Couverture
+        run: python -m pipeline coverage --tiles tiles --out release/coverage.geojson
+
+      - name: Zips de 300 dalles (< 2 Go par asset de release), manifeste et repères à côté
         run: |
-          rm -f tiles/manifest.lock
-          cd tiles && zip -q -9 -X "../tiles-$V.zip" manifest.json pois.json ./*.npz
+          mkdir -p release
+          cd tiles
+          find . -name '*.npz' | sed 's|^\./||' | LC_ALL=C sort | split -l 300 -d -a 2 - ../part-
+          for f in ../part-*; do
+            zip -q -0 -X "../release/tiles-$V-${f##*part-}.zip" -@ < "$f"
+          done
+          cd ..
+          cp tiles/manifest.json tiles/pois.json release/
+          ls -l release; du -sh release
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tiles
-          path: |
-            tiles-${{ steps.version.outputs.data_version }}.zip
-            tiles/manifest.json
+          name: release
+          path: release/
+          compression-level: 0
           if-no-files-found: error
           retention-days: 30
 
   publish:
-    needs: build
+    needs: [plan, merge]
     if: inputs.publish
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 30
     permissions:
       contents: write
     env:
       GH_TOKEN: ${{ github.token }}
-      V: ${{ needs.build.outputs.data_version }}
+      V: ${{ needs.plan.outputs.data_version }}
     steps:
       - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          name: tiles
+          name: release
           path: out
       - name: Release tiles-<data_version>
         run: |
           gh release create "tiles-$V" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Dalles $V" \
-            --notes "Dalles tiles/1 $V (BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0). Validation : pipeline check. Copie S3 : infra/README.md." \
-            "out/tiles-$V.zip" out/tiles/manifest.json
+            --notes "Dalles tiles/1 $V (BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0) : tiles-$V-NN.zip (dalles, à décompresser dans un même dossier), manifest.json, pois.json, coverage.geojson. Validation : pipeline check. Copie S3 : scripts/tiles_to_s3.sh." \
+            out/*

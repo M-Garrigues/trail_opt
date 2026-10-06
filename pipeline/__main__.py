@@ -2,7 +2,8 @@
          python -m pipeline coverage --tiles <dossier des dalles> --out <coverage.geojson>
          python -m pipeline check --tiles <dossier> [--list tiles.txt] [--previous manifest.json]
          python -m pipeline clip --tiles <dossier> --out <dossier> --disk lat,lon,rayon_m [--disk …]
-         python -m pipeline pois --tiles <dossier>   (cols et sommets -> <dossier>/pois.json)"""
+         python -m pipeline pois --tiles <dossier>   (cols et sommets -> <dossier>/pois.json)
+         python -m pipeline merge --tiles <dossier>  (fusion des manifest-<k>.json de shards, data.yml)"""
 from __future__ import annotations
 
 import argparse
@@ -15,6 +16,7 @@ from .build import build
 from .check import check
 from .clip import clip
 from .coverage import write
+from .merge import merge
 from .pois import build_pois
 
 
@@ -26,6 +28,8 @@ def main(argv=None):
                    help="liste 'ix_iy,…' (grille L93 20 km) ou bbox WGS 'sud,ouest,nord,est'")
     b.add_argument("--out", required=True, help="dossier des dalles (créé si besoin)")
     b.add_argument("--force", action="store_true", help="refaire les dalles déjà écrites et intactes")
+    b.add_argument("--zone", default="fxx", choices=["fxx", "re", "gp", "mq", "gf", "yt"],
+                   help="zone des dalles sans préfixe (défaut fxx = métropole ; DOM : clés <zone>/<ix>_<iy>)")
     c = sub.add_parser("coverage", help="écrit le contour GeoJSON WGS84 des dalles du manifeste")
     c.add_argument("--tiles", required=True, help="dossier des dalles (manifest.json)")
     c.add_argument("--out", required=True, help="fichier GeoJSON (ex. web/public/coverage.geojson)")
@@ -40,7 +44,12 @@ def main(argv=None):
     v.add_argument("--previous", help="manifest.json de la version précédente (écart de tronçons)")
     q = sub.add_parser("pois", help="écrit <dossier>/pois.json (cols et sommets BD TOPO) et l'inscrit au manifeste")
     q.add_argument("--tiles", required=True, help="dossier des dalles (manifest.json)")
+    g = sub.add_parser("merge", help="fusionne les manifest-<k>.json / pois-<k>.json des shards d'un dossier")
+    g.add_argument("--tiles", required=True, help="dossier des dalles de tous les shards")
     a = ap.parse_args(argv)
+    if a.cmd == "merge":
+        print(json.dumps(merge(a.tiles)["totals"], ensure_ascii=False))
+        return
     if a.cmd == "pois":
         build_pois(a.tiles)
         return
@@ -55,7 +64,7 @@ def main(argv=None):
     if a.cmd == "coverage":
         print(f"{a.out} : {write(a.tiles, a.out)} octets")
         return
-    m = build(a.tiles, a.out, log=lambda s: print(s, flush=True), force=a.force)
+    m = build(a.tiles, a.out, log=lambda s: print(s, flush=True), force=a.force, zone=a.zone)
     print(json.dumps(m.get("totals", {}), ensure_ascii=False))
 
 

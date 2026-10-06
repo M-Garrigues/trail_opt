@@ -3,7 +3,9 @@
 //! cargo-lambda produit l'exécutable `bootstrap`.
 //! Environnement :
 //!   TILES_S3           s3://bucket/tiles/<DATA_VERSION>/ : dalles lues à la demande (cache /tmp/tiles/<version>,
-//!                      TILES_CACHE, S3_ENDPOINT = serveur compatible S3) ; prioritaire sur TILES_DIR
+//!                      TILES_CACHE ; plafond TILES_CACHE_MB, défaut 1 500 ; délai d'un GET
+//!                      TILES_GET_TIMEOUT_S, défaut 5 ; S3_ENDPOINT = serveur compatible S3) ;
+//!                      prioritaire sur TILES_DIR
 //!   TILES_DIR          dossier des dalles (défaut : `tiles/` à côté de l'exécutable, D10)
 //!   DATA_VERSION       version attendue des dalles (contrôle au démarrage, log seulement)
 //!   TURNSTILE_SECRET   clé secrète Cloudflare Turnstile (D8) ; clés de test refusées en release

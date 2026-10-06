@@ -112,15 +112,15 @@ def test_clip_keeps_disk_and_symmetric_parallels(tile_dir, tmp_path):
     assert T["id"].tolist() == [10] and T["par_n"].tolist() == [0] and len(T["par_id"]) == 0
 
 
-def test_versioned_test_tiles_match_current_data_version():
-    """engine/tests/data/tiles (T29) : intacte, petite, à la version de données courante."""
+def test_versioned_test_tiles_intact():
+    """engine/tests/data/tiles (T29) : intacte et petite. Elle porte sa propre `data_version` (à régénérer
+    seulement si le format ou le calcul des dalles change, pas à chaque campagne)."""
     import hashlib
     from pathlib import Path
 
-    from pipeline.build import DATA_VERSION
     d = Path(__file__).parent.parent / "engine" / "tests" / "data" / "tiles"
     m = json.loads((d / "manifest.json").read_text())
-    assert m["format"] == "tiles/1" and m["data_version"] == DATA_VERSION
+    assert m["format"] == "tiles/1" and m["data_version"].startswith("bdtopo-wfs-")
     size = 0
     for k, t in m["tiles"].items():
         b = (d / f"{k}.npz").read_bytes()

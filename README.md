@@ -1,10 +1,11 @@
 # optrail
 
-Générateur de sorties trail spécifiques : tu choisis un type d'entraînement (Max D+, Cible
-distance + D+, Le plus court pour un D+ donné), un départ et éventuellement une zone ; optrail
-trace la boucle qui y répond le mieux sur les chemins de la BD TOPO® de l'IGN. Sortie : tracé sur
-le Plan IGN, profil d'altitude coloré par pente, GPX, lien de partage (90 jours).
-Interface FR/EN, sans compte ni cookie. Couverture actuelle : Île-de-France et Isère.
+Sorties trail sur mesure : tu choisis un type d'entraînement (Max D+, Cible distance + D+, Le plus
+court pour un D+ donné), un départ et éventuellement une zone ; optrail trace la sortie qui y répond
+le mieux sur les chemins de la BD TOPO® de l'IGN. Résultat : tracé sur le Plan IGN, profil d'altitude
+coloré par pente, GPX, lien de partage (90 jours).
+Interface FR/EN, sans compte ni cookie. Couverture actuelle : Île-de-France, Isère et Lyon (France
+entière en préparation).
 Site : [optrail.eu](https://optrail.eu).
 
 ## Architecture

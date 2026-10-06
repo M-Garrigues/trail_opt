@@ -57,6 +57,8 @@ priv="$HOME/.config/optrail/private.env"
 set +a
 case "${TURNSTILE_SITEKEY:-}" in "" | [123]x0000*) die "TURNSTILE_SITEKEY absente ou clé de test (private.env)" ;; esac
 [[ ${TURNSTILE_SECRET:-} && ${ALERT_EMAIL:-} && ${DATA_VERSION:-} ]] || die "TURNSTILE_SECRET, ALERT_EMAIL ou DATA_VERSION manquant"
+TILES_SOURCE=${TILES_SOURCE:-zip}
+[[ $TILES_SOURCE == zip || $TILES_SOURCE == s3 ]] || die "TILES_SOURCE : zip ou s3 (infra/prod.env)"
 [[ $ENABLE_CUSTOM_DOMAIN != true || ${CLOUDFLARE_API_TOKEN:-} ]] || die "CLOUDFLARE_API_TOKEN requis avec le domaine"
 
 # --- Commit : poussé, CI verte (le ruleset de main l'exige déjà pour main) -----------------------
@@ -67,7 +69,7 @@ ci=$(gh api "repos/M-Garrigues/trail_opt/commits/$SHA/check-runs" \
   --jq '[.check_runs[] | select(.app.slug == "github-actions")] | if length == 0 then "absente" elif all(.conclusion == "success") then "success" else "rouge" end')
 [[ $ci == success ]] || [[ ${SKIP_CI_CHECK:-} == 1 ]] || die "CI de $SHA : $ci (SKIP_CI_CHECK=1 pour forcer)"
 [[ $SHA == "$(git -C "$repo" rev-parse origin/main)" ]] || echo "⚠ $SHA n'est pas origin/main"
-echo "déploiement de $SHA (données $DATA_VERSION) sur $acct/$REGION"
+echo "déploiement de $SHA (données $DATA_VERSION, dalles : $TILES_SOURCE) sur $acct/$REGION"
 
 work=$(mktemp -d)
 cleanup() { git -C "$repo" worktree remove --force "$work/src" 2>/dev/null || true; rm -rf "$work"; }
@@ -83,11 +85,18 @@ rustup toolchain install "$RUST_VERSION" --profile minimal -t aarch64-unknown-li
 (cd "$src/web" && env -u TURNSTILE_SECRET -u ALERT_EMAIL -u CLOUDFLARE_API_TOKEN \
   VITE_TURNSTILE_SITEKEY="$TURNSTILE_SITEKEY" sh -c 'npm ci --ignore-scripts --no-audit --no-fund && npm run build')
 
-# --- Zip (binaire + dalles, D10) vers S3 ----------------------------------------------------------
-mkdir -p "$work/pkg/tiles"
+# --- Zip vers S3 : binaire seul (TILES_SOURCE=s3, D43) ou binaire + dalles (zip, D10) -------------
+aws s3api head-object --bucket "$ARTIFACTS" --key "tiles/$DATA_VERSION/manifest.json" >/dev/null 2>&1 \
+  || die "s3://$ARTIFACTS/tiles/$DATA_VERSION/manifest.json absent (infra/README.md étape 3)"
+mkdir -p "$work/pkg"
 install -m 755 "$repo/engine/target/deploy/lambda/lambda/bootstrap" "$work/pkg/bootstrap"
-aws s3 sync --only-show-errors "s3://$ARTIFACTS/tiles/$DATA_VERSION/" "$work/pkg/tiles/"
-[[ -f $work/pkg/tiles/manifest.json ]] || die "s3://$ARTIFACTS/tiles/$DATA_VERSION/manifest.json absent (infra/README.md étape 3)"
+if [[ $TILES_SOURCE == zip ]]; then
+  aws s3 sync --only-show-errors "s3://$ARTIFACTS/tiles/$DATA_VERSION/" "$work/pkg/tiles/"
+  TF_VAR_lambda_env=$(jq -nc --arg v "$DATA_VERSION" '{DATA_VERSION: $v, TILES_DIR: "/var/task/tiles"}')
+else
+  TF_VAR_lambda_env=$(jq -nc --arg v "$DATA_VERSION" --arg b "$ARTIFACTS" \
+    '{DATA_VERSION: $v, TILES_S3: "s3://\($b)/tiles/\($v)/"}')
+fi
 (cd "$work/pkg" && zip -qr9 ../lambda.zip .)
 aws s3 cp --only-show-errors "$work/lambda.zip" "s3://$ARTIFACTS/lambda/$SHA.zip"
 
@@ -96,8 +105,7 @@ export TF_VAR_lambda_s3_key="lambda/$SHA.zip" TF_VAR_alert_email="$ALERT_EMAIL" 
   TF_VAR_turnstile_secret="$TURNSTILE_SECRET" TF_VAR_cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-}" \
   TF_VAR_reserved_concurrency="$LAMBDA_RESERVED_CONCURRENCY" TF_VAR_enable_custom_domain="$ENABLE_CUSTOM_DOMAIN" \
   TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID" TF_VAR_cloudfront_hostname="$CLOUDFRONT_HOSTNAME"
-TF_VAR_lambda_env=$(jq -nc --arg v "$DATA_VERSION" '{DATA_VERSION: $v, TILES_DIR: "/var/task/tiles"}')
-export TF_VAR_lambda_env
+export TF_VAR_lambda_env TF_VAR_tiles_source="$TILES_SOURCE"
 tf() { tofu -chdir="$src/infra" "$@"; }
 tf init -input=false -backend-config="bucket=$STATE_BUCKET" >/dev/null
 if [[ ${AUTO_APPROVE:-} == 1 ]]; then tf apply -input=false -auto-approve; else tf apply; fi
@@ -107,6 +115,9 @@ export SITE_BUCKET DISTRIBUTION
 URL=$(tf output -raw url)
 
 # --- Smoke interne de la version publiée (appel IAM direct, sans authorizer = appel interne) -----
+# Démarrage à froid : en mode s3, manifeste + repères à l'init puis la dalle de Massy téléchargée
+# (≈ 1 s en plus) ; la réussite prouve la lecture S3 (zip sans dalles). Délai client 60 s > timeout
+# Lambda 30 s.
 jq -n --arg q "$SMOKE_QUERY" '{
   version: "2.0", routeKey: "$default", rawPath: "/api/plan", rawQueryString: $q,
   headers: {}, isBase64Encoded: false,

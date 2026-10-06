@@ -19,6 +19,16 @@ variable "lambda_env" {
   default     = {}
 }
 
+variable "tiles_source" {
+  description = "Origine des dalles : \"zip\" (embarquées dans le zip Lambda, repli) ou \"s3\" (lues à la demande dans /tmp, D43 : droit GetObject sur tiles/* + éphémère 2 Go). Piloté par TILES_SOURCE dans infra/prod.env."
+  type        = string
+  default     = "zip"
+  validation {
+    condition     = contains(["zip", "s3"], var.tiles_source)
+    error_message = "tiles_source : zip ou s3."
+  }
+}
+
 variable "reserved_concurrency" {
   description = "Concurrence réservée à la création (-1 = aucune : le quota du compte, 10 sur un compte neuf, sert de plafond). Ensuite pilotée hors Tofu (coupe-circuit)."
   type        = number

@@ -1263,7 +1263,15 @@ pub fn plan_with(
         [x0, y0, x1, y1]
     };
     let t0 = Instant::now();
-    let t = load(l93_box(&region)).map_err(|e| err(Code::InvalidProblem, &e))?;
+    let t = load(l93_box(&region)).map_err(|e| {
+        // source de dalles distante en panne : transitoire (503), pas une erreur de calcul
+        let code = if e.starts_with(crate::tiles::REMOTE_ERR) {
+            Code::Busy
+        } else {
+            Code::InvalidProblem
+        };
+        err(code, &e)
+    })?;
     dbg.insert("tiles_load_s".into(), json!(t0.elapsed().as_secs_f64()));
     dbg.insert("troncons_loaded".into(), json!(t.len()));
     if t.is_empty() {

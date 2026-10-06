@@ -8,7 +8,8 @@ navigateur ─► CloudFront ─┬─ /*      ─► S3 site (OAC)            s
                           │  (fonction optrail-spa : route sans extension → /index.html)
                           ├─ /api/loops* ─┐ toutes méthodes (POST : x-amz-content-sha256 requis)
                           └─ /api/*  ─────┴► Function URL AWS_IAM (OAC) ─► Lambda optrail-api:live
-                                        GET, sans cache            arm64, 30 s, R/W shared/*
+                                        GET, sans cache            arm64, 30 s, R/W shared/*,
+                                                                   lecture tiles/* (artefacts) en mode s3
 CloudWatch (logs 14 j, alarmes) ─► SNS e-mail
 Calculs acceptés 5 min │ Budgets 1 $ / 5 $ ─► SNS ─► optrail-killswitch ─► concurrence de l'API = 0
                          (alarme : reprise auto 1 h plus tard via EventBridge Scheduler ; budget : manuelle)
@@ -53,17 +54,18 @@ vérifier la console sur le site, puis la passer en `Content-Security-Policy` (b
      `ENABLE_CUSTOM_DOMAIN` est faux. Après le premier déploiement : `CLOUDFRONT_HOSTNAME` = domaine de la
      sortie `url` (`dxxxx.cloudfront.net`) dans `infra/prod.env`, puis redéployer ; sans lui, Turnstile
      échoue sur *.cloudfront.net (`bot_check_failed`).
-3. **Dalles** (D10) : `data.yml` publie la release GitHub `tiles-<v>` (zip à plat : `manifest.json` + `*.npz`,
-   v = `data_version` du manifeste) ; copie vers S3 à la main :
+3. **Dalles** (D10) : `data.yml` publie la release GitHub `tiles-<v>` (`tiles-<v>-NN.zip` de 300 dalles,
+   `manifest.json`, `pois.json`, `coverage.geojson` ; v = `data_version` du manifeste, France ≈ 1,2 Go) ;
+   copie vers S3 depuis le poste (pas d'OIDC) :
    ```sh
-   v=bdtopo-wfs-2026-10d   # exemple
-   gh release download "tiles-$v" -p "tiles-$v.zip" -D /tmp/t && unzip -q "/tmp/t/tiles-$v.zip" -d "/tmp/t/$v"
-   jq -r .data_version "/tmp/t/$v/manifest.json"   # doit afficher $v
-   aws s3 sync --profile optrail "/tmp/t/$v/" "s3://optrail-artifacts-698766075762/tiles/$v/"
+   AWS_PROFILE=optrail scripts/tiles_to_s3.sh bdtopo-wfs-2026-10e   # exemple ; ~10 min, ≤ 0,6 Go de disque
    ```
-   Préfixe neuf, jamais réécrit ni supprimé (rollback = remettre l'ancienne `DATA_VERSION`). Puis
-   `DATA_VERSION` := `$v` dans `infra/prod.env` et redéployer ; deploy.sh échoue si `tiles/$v/manifest.json`
-   manque. Procédure complète : pipeline/README.md.
+   Le script traite un zip à la fois (télécharge, vérifie les sha256 du manifeste, `aws s3 sync`, supprime),
+   copie le manifeste en dernier, puis compare tailles et noms sur S3 au manifeste. Relançable. Préfixe neuf,
+   jamais réécrit ni supprimé (rollback = remettre l'ancienne `DATA_VERSION`). Puis `DATA_VERSION` := `$v`
+   dans `infra/prod.env` et redéployer ; deploy.sh échoue si `tiles/$v/manifest.json` manque. La France
+   entière ne tient pas dans le zip Lambda : ne basculer sur une version France qu'avec `TILES_SOURCE=s3`
+   dans `infra/prod.env` (lecture S3 à la demande). Procédure complète : pipeline/README.md.
 4. **Cloudflare** (zone optrail.eu, DNSSEC actif) : supprimer les enregistrements importés d'OVH
    à l'apex (A/AAAA, TXT de redirection) avant le premier déploiement avec domaine, sinon le CNAME
    apex échoue. Widget Turnstile pour `optrail.eu` + `localhost` (+ `dxxxx.cloudfront.net` tant que

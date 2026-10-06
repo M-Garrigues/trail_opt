@@ -35,11 +35,13 @@ def _tiles(X, Y, span=TILE_PX * RES):
         yield (ix * span, iy * span, (ix + 1) * span, (iy + 1) * span)
 
 
-def _fetch_tile(layer, core, stats, res=RES, margin_px=MARGIN_PX):
+def _fetch_tile(layer, core, stats, res=RES, margin_px=MARGIN_PX, crs="EPSG:2154"):
     """Renvoie (bbox, chemin du GeoTIFF gzip en cache) de la dalle `core` élargie de la marge."""
     m = margin_px * res
     bb = (core[0] - m, core[1] - m, core[2] + m, core[3] + m)
     tag = "" if res == RES else f"r{res:.0f}_"
+    if crs != "EPSG:2154":                      # DOM (UTM) : clé de cache distincte, métropole inchangée
+        tag += crs.replace(":", "") + "_"
     p = cache.path("dem", f"{layer[:40]}_{tag}{bb[0]:.0f}_{bb[1]:.0f}_{bb[2]:.0f}_{bb[3]:.0f}.tif.gz")
     if p.exists():
         stats["cache_hits"] += 1
@@ -47,7 +49,7 @@ def _fetch_tile(layer, core, stats, res=RES, margin_px=MARGIN_PX):
     if cache.offline():
         raise RuntimeError(f"hors ligne et dalle d'altitude absente du cache ({p})")
     params = dict(SERVICE="WMS", VERSION="1.3.0", REQUEST="GetMap", LAYERS=layer, STYLES="",
-                  CRS="EPSG:2154", BBOX=",".join(f"{v:.2f}" for v in bb),
+                  CRS=crs, BBOX=",".join(f"{v:.2f}" for v in bb),
                   WIDTH=round((bb[2] - bb[0]) / res), HEIGHT=round((bb[3] - bb[1]) / res),
                   FORMAT="image/geotiff")
     last = None
@@ -134,13 +136,16 @@ def bilinear(grid, bb, X, Y, res=RES):
 PASSES = [(LAYERS[0], True), (LAYERS[1], True), (LAYERS[0], False), (LAYERS[1], False)]
 
 
-def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
-    """Altitudes (m) aux points Lambert-93 ; NaN là où aucune couche ne couvre.
+def sample_l93(X, Y, stats: dict | None = None, layers=None, crs="EPSG:2154") -> np.ndarray:
+    """Altitudes (m) aux points Lambert-93 (ou du `crs` métrique donné, DOM : avec ses `layers`) ; NaN là
+    où aucune couche ne couvre.
     Passes : LiDAR HD, RGE ALTI (masque complet), puis les mêmes sans le test de saut (falaises)."""
     stats = stats if stats is not None else cache.new_stats()
     X, Y = np.asarray(X, float), np.asarray(Y, float)
     z = np.full(len(X), np.nan)
-    for layer, jumps in PASSES:
+    passes = PASSES if layers is None else [(l, j) for j in (True, False) for l in layers]
+    kw = {} if crs == "EPSG:2154" else {"crs": crs}
+    for layer, jumps in passes:
         todo = np.nonzero(np.isnan(z))[0]
         if len(todo) == 0:
             break
@@ -151,7 +156,7 @@ def sample_l93(X, Y, stats: dict | None = None) -> np.ndarray:
             if len(sel):
                 tiles.append((core, sel))
         with ThreadPoolExecutor(6) as ex:  # téléchargements en parallèle, lecture séquentielle (RAM)
-            files = list(ex.map(lambda t: _fetch_tile(layer, t[0], stats), tiles))
+            files = list(ex.map(lambda t: _fetch_tile(layer, t[0], stats, **kw), tiles))
         for (core, sel), (bb, p) in zip(tiles, files):
             z[sel] = bilinear(_read(p, jumps=jumps), bb, X[sel], Y[sel])
     return z

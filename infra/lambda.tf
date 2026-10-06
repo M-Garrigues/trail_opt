@@ -1,5 +1,5 @@
-# Lambda de calcul (D1, D10) : binaire Rust arm64 provided.al2023, zip (binaire + dalles pilotes)
-# déposé dans S3 par scripts/deploy.sh. Chaque changement publie une version ; l'alias `live` est
+# Lambda de calcul (D1, D10) : binaire Rust arm64 provided.al2023, zip (binaire, + dalles en mode
+# tiles_source = "zip") déposé dans S3 par scripts/deploy.sh. Chaque changement publie une version ; l'alias `live` est
 # basculé par scripts/deploy.sh après le smoke test (hors Tofu, d'où ignore_changes).
 
 locals {
@@ -51,6 +51,23 @@ resource "aws_iam_role_policy" "api_shared" {
   })
 }
 
+# Dalles lues à la demande (D43, tiles_source = "s3") : GetObject sur tiles/* du bucket d'artefacts
+# seulement. Sans ListBucket : une dalle absente rend 403, traité comme une erreur de source.
+# Exige la même autorisation dans la boundary (infra/bootstrap/main.tf), sinon l'accès est refusé.
+resource "aws_iam_role_policy" "api_tiles" {
+  count = var.tiles_source == "s3" ? 1 : 0
+  name  = "tiles-read"
+  role  = aws_iam_role.api.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["s3:GetObject"]
+      Resource = "arn:aws:s3:::${local.artifacts_bucket}/tiles/*"
+    }]
+  })
+}
+
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/lambda/${local.api_name}"
   retention_in_days = 14
@@ -87,6 +104,12 @@ resource "aws_lambda_function" "api" {
 
   reserved_concurrent_executions = var.reserved_concurrency
 
+  # /tmp : cache des dalles (plafond du moteur : TILES_CACHE_MB, 1 500 Mo par défaut) ; 512 Mo
+  # (inclus dans le prix) en mode zip.
+  ephemeral_storage {
+    size = var.tiles_source == "s3" ? 2048 : 512
+  }
+
   environment {
     variables = merge(var.lambda_env, {
       TURNSTILE_SECRET    = var.turnstile_secret
@@ -100,6 +123,9 @@ resource "aws_lambda_function" "api" {
     log_format = "Text"
     log_group  = aws_cloudwatch_log_group.api.name
   }
+
+  # Le droit de lire les dalles existe avant la version qui s'en sert (smoke interne à froid).
+  depends_on = [aws_iam_role_policy.api_tiles]
 
   lifecycle {
     # Le coupe-circuit met la concurrence à 0 : un déploiement ne doit pas la rétablir.

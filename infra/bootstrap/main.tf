@@ -184,6 +184,11 @@ data "aws_iam_policy_document" "boundary" {
     actions   = ["lambda:InvokeFunction"]
     resources = ["arn:aws:lambda:eu-north-1:${local.account}:function:optrail-killswitch"]
   }
+  # Dalles lues à la demande (D43) : lecture seule de tiles/ dans le bucket d'artefacts.
+  statement {
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/tiles/*"]
+  }
   # Boucles partagées seulement (le reste du site est écrit par scripts/deploy.sh, pas par une Lambda).
   statement {
     actions   = ["s3:GetObject", "s3:PutObject"]

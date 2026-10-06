@@ -452,6 +452,8 @@ pub fn handle(
     if let Err(m) = crate::share::sign_candidates(&mut out, key) {
         return fail(m, log);
     }
+    // surcoût des dalles (téléchargement S3 à froid compris) : suivi dans les logs
+    log["tiles_load_s"] = out["debug"]["tiles_load_s"].clone();
     if !debug && let Some(o) = out.as_object_mut() {
         o.remove("debug");
     }

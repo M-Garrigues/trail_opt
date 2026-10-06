@@ -6,8 +6,13 @@
 #
 #   AWS_PROFILE=<profil du compte optrail> scripts/lambda_bench.sh <version|alias> [répétitions]
 #
+# À froid (dalles sur S3, D43) : les deux derniers cas (Bourg-d'Oisans 20 et 100 km, `debug=1`) visent
+# des dalles que la série Massy n'a pas chargées : essai 1 = téléchargement S3 (colonne tiles_load_s),
+# essais suivants = cache /tmp du même environnement. Vraiment à froid (init_ms renseigné, manifeste
+# et repères relus) : première invocation d'une version tout juste publiée.
+#
 # Sortie (TSV) : km, n, essai, statut, compute_s (moteur), durée Lambda (ms, REPORT), mémoire max (Mo),
-# init (ms, démarrage à froid seulement), longueur, D+. Le premier essai de chaque série peut être
+# init (ms, démarrage à froid seulement), longueur, D+, chargement des dalles (s, cas debug=1). Le premier essai de chaque série peut être
 # à froid. Coût : ~18 appels × ≤ 15 s × 3 Go ≈ 800 Go-s (offre gratuite : 400 000 Go-s/mois).
 # Ensuite : recaler `estimateS` (api.md § Durée estimée) et les cibles D18 (p50 < 2 s à 10 km,
 # < 6 s à 100 km) sur ces valeurs.
@@ -22,7 +27,7 @@ command -v jq >/dev/null || { echo "jq requis" >&2; exit 1; }
 
 tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
-printf 'km\tn\trep\tstatus\tcompute_s\tduration_ms\tmax_mem_mb\tinit_ms\tlength_m\tdplus_m\tcase\n'
+printf 'km\tn\trep\tstatus\tcompute_s\tduration_ms\tmax_mem_mb\tinit_ms\tlength_m\tdplus_m\ttiles_load_s\tcase\n'
 M="lat=48.7309&lon=2.2713"
 cases=()
 for km in 10 50 100; do for n in 1 2; do cases+=("$km|$n|$M&distance_km=$km&n_candidates=$n"); done; done
@@ -31,6 +36,9 @@ cases+=("10|3|$M&goal=target&distance_km=10&dplus_m=250&n_candidates=3")
 cases+=("10|3|$M&goal=min_distance&dplus_m=200&n_candidates=3")
 cases+=("10|3|$M&distance_km=10&climbs=long&n_candidates=3")
 cases+=("10|3|$M&distance_km=10&via=48.7400,2.2900&n_candidates=3")
+B="lat=45.0553&lon=6.0304"
+cases+=("20|1|$B&distance_km=20&debug=1")
+cases+=("100|1|$B&distance_km=100&debug=1")
 for c in "${cases[@]}"; do
   {
     IFS='|' read -r km n q <<<"$c"
@@ -48,11 +56,12 @@ for c in "${cases[@]}"; do
       report=$(jq -r '.LogResult // ""' "$tmp/meta.json" | base64 --decode | grep '^REPORT' || true)
       field() { sed -nE "s/.*$1: ([0-9.]+).*/\\1/p" <<<"$report"; }
       body=$(jq -r '.body // "{}"' "$tmp/out.json")
-      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$km" "$n" "$rep" \
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$km" "$n" "$rep" \
         "$(jq -r '.statusCode // "?"' "$tmp/out.json")" \
         "$(jq -r '.compute_s // "" | tostring | .[0:5]' <<<"$body")" \
         "$(field Duration)" "$(field 'Max Memory Used')" "$(field 'Init Duration')" \
-        "$(jq -r '.candidates[0].length_m // ""' <<<"$body")" "$(jq -r '.candidates[0].dplus_m // ""' <<<"$body")" "${q#"$M&"}"
+        "$(jq -r '.candidates[0].length_m // ""' <<<"$body")" "$(jq -r '.candidates[0].dplus_m // ""' <<<"$body")" \
+        "$(jq -r '.debug.tiles_load_s // "" | tostring | .[0:5]' <<<"$body")" "${q#"$M&"}"
     done
   }
 done

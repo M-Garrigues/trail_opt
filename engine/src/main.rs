@@ -128,8 +128,16 @@ fn plan(args: &[String]) -> ! {
         .unwrap_or_else(|e| fail(Msg::error(Code::InvalidRequest, format!("{request}: {e}"))));
     let req: engine::plan::Request = serde_json::from_str(&text)
         .unwrap_or_else(|e| fail(Msg::error(Code::InvalidRequest, e.to_string())));
-    let store = engine::tiles::TileStore::open(std::path::Path::new(&tiles))
-        .unwrap_or_else(|e| fail(Msg::error(Code::InvalidProblem, e)));
+    // `--tiles s3://bucket/tiles/<version>/` : même lecture à la demande que la Lambda (cache
+    // TILES_CACHE, défaut <tmp>/optrail-tiles) ; sinon dossier local.
+    let store = if tiles.starts_with("s3://") {
+        let cache = std::env::var_os("TILES_CACHE")
+            .map_or(std::env::temp_dir().join("optrail-tiles"), Into::into);
+        engine::tiles::TileStore::open_s3(&tiles, &cache)
+    } else {
+        engine::tiles::TileStore::open(std::path::Path::new(&tiles))
+    }
+    .unwrap_or_else(|e| fail(Msg::error(Code::InvalidProblem, e)));
     let out = engine::plan::plan(&store, &req, prep_only).unwrap_or_else(|m| fail(m));
     println!("{out}");
     exit(0)
