@@ -41,6 +41,9 @@ pub const MD_CAP_PER_KM: f64 = 25.0;
 pub const MD_FLAT_RELIEF_M: f64 = 600.0;
 pub const MD_CAP_PER_KM_FLAT: f64 = 15.0;
 pub const MD_CAP_KM: (f64, f64) = (3.0, 60.0);
+/// Points de passage (T34, api.md v1.5) : au plus 5, accrochés à une voie à <= 150 m.
+pub const VIA_MAX: usize = 5;
+pub const VIA_SNAP_M: f64 = 150.0;
 
 /// Requête (champs de `pipeline.Params` utiles à la source IGN).
 #[derive(Deserialize, Clone, Debug)]
@@ -85,6 +88,9 @@ pub struct Request {
     /// sa meilleure boucle et aucune autre tentative n'est lancée. Absent : pas de plafond.
     #[serde(default)]
     pub max_compute_s: Option<f64>,
+    /// Points de passage obligatoires [[lat, lon], …] (ordre libre), au plus `VIA_MAX`.
+    #[serde(default)]
+    pub via: Vec<[f64; 2]>,
 }
 
 fn ten() -> f64 {
@@ -162,7 +168,8 @@ fn validate(r: &Request) -> Result<(), Msg> {
         && r.max_grade.is_none_or(f64::is_finite)
         && r.time_s.is_none_or(f64::is_finite)
         && r.max_distance_km.is_none_or(f64::is_finite)
-        && r.max_compute_s.is_none_or(f64::is_finite);
+        && r.max_compute_s.is_none_or(f64::is_finite)
+        && r.via.iter().flatten().all(|x| x.is_finite());
     if !finite || !(-90.0..=90.0).contains(&r.lat) || !(-180.0..=180.0).contains(&r.lon) {
         return Err(err(
             Code::InvalidRequest,
@@ -192,6 +199,9 @@ fn validate(r: &Request) -> Result<(), Msg> {
     }
     if r.max_grade.is_some_and(|g| g <= 0.0) {
         return Err(err(Code::MaxGradeInvalid, ""));
+    }
+    if r.via.len() > VIA_MAX {
+        return Err(err(Code::InvalidRequest, "at most 5 via points"));
     }
     if !(1..=4).contains(&r.n_candidates) {
         return Err(err(Code::InvalidRequest, "n_candidates must be 1..4"));
@@ -254,6 +264,51 @@ fn build_region(r: &Request, frame: &Frame, lmax: f64, l: f64) -> Result<Region,
         return Err(err(Code::StartOutsideZone, ""));
     }
     Ok(Region::new(user.intersection(&reach)))
+}
+
+/// Point de passage accroché : nœud de l'arène, position demandée (repère local), distance d'accroche.
+#[derive(Clone, Copy)]
+pub struct ViaPt {
+    pub node: usize,
+    pub q: [f64; 2],
+    pub snap: f64,
+}
+
+/// (L, Lmax) en m : distance qui dimensionne la zone et longueur max de boucle.
+fn lengths(r: &Request) -> (f64, f64) {
+    let l = r.sizing_km() * 1000.0;
+    let lmax = match r.mode.as_str() {
+        "max" => l * (1.0 + r.tol),
+        "min_distance" => l,
+        _ => 1.3 * l,
+    };
+    (l, lmax)
+}
+
+/// Points de passage hors de portée (`via_too_far`) ou hors du polygone (`via_outside_zone`) :
+/// géométrie seule, avant tout calcul (et avant Turnstile côté API).
+pub fn check_via(r: &Request) -> Result<(), Msg> {
+    if r.via.is_empty() {
+        return Ok(());
+    }
+    let frame = Frame::new(r.lat, r.lon);
+    let (l, lmax) = lengths(r);
+    let region = build_region(r, &frame, lmax, l)?;
+    for (i, &[lat, lon]) in r.via.iter().enumerate() {
+        let q = frame.to_local(lon, lat);
+        if region.contains(q) || region.boundary_dist(q) <= START_BUFFER_M {
+            continue;
+        }
+        let reach = (q[0].hypot(q[1]) > region.radius()).then_some(());
+        return Err(match (&r.polygon, reach) {
+            (Some(_), None) => Msg::new(Code::ViaOutsideZone, json!({"n": i + 1})),
+            _ => Msg::new(
+                Code::ViaTooFar,
+                json!({"n": i + 1, "max_km": round1(region.radius() / 1000.0)}),
+            ),
+        });
+    }
+    Ok(())
 }
 
 /// Codes de nature (manifeste) → tronçons gardés pour un type de voies (port de `ign.keep_mask`).
@@ -433,6 +488,7 @@ pub fn build_candidate(
     access: Option<&mut Access>,
     reduce: bool,
     x: Option<f64>,
+    via: &mut [ViaPt],
     info: &mut serde_json::Map<String, Value>,
 ) -> Option<Candidate> {
     let mut ids = sub.to_vec();
@@ -502,6 +558,24 @@ pub fn build_candidate(
             return None;
         }
     }
+    // point de passage sur une impasse ou une voie retirée (pente) : ré-accroché au réseau restant
+    for (k, v) in via.iter_mut().enumerate() {
+        let touched = |ids: &[usize], n: usize| {
+            ids.iter()
+                .any(|&e| net.edges[e].u == n || net.edges[e].v == n)
+        };
+        if touched(&ids, v.node) {
+            continue;
+        }
+        match net.insert_start(&mut ids, v.q) {
+            Some((n, snap, _)) if snap <= VIA_SNAP_M => (v.node, v.snap) = (n, snap),
+            _ => {
+                info.insert("status".into(), json!("via_unreachable"));
+                info.insert("via_n".into(), json!(k + 1));
+                return None;
+            }
+        }
+    }
     let mut lb = None;
     if let Some(x) = x {
         // Borne prouvée (promesse affichable) : APRÈS le filtre de pente (contrainte utilisateur,
@@ -523,15 +597,32 @@ pub fn build_candidate(
         lb = b;
     }
     if reduce && ids.len() > REDUCE_MIN_EDGES && net.total_len(&ids) > 1.25 * REDUCE_K * lmax {
-        let keep = prep::steep_reduction(net, &ids, s, lmax, REDUCE_K);
-        ids = prep::prune(net, keep, s, lmax);
-        info.insert("edges_reduced".into(), json!(ids.len()));
-        if net.total_len(&ids) < lmin {
-            info.insert("status".into(), json!("network_too_short_after_reduction"));
-            return None;
+        let keep = prep::steep_reduction(
+            net,
+            &ids,
+            s,
+            lmax,
+            REDUCE_K,
+            &via.iter().map(|v| v.node).collect::<Vec<_>>(),
+        );
+        // La réduction n'est qu'une heuristique de vitesse : si elle laisse un réseau plus court que
+        // la boucle demandée (départ resté sur une tige), on garde le réseau complet.
+        let reduced = prep::prune(net, keep, s, lmax);
+        info.insert("edges_reduced".into(), json!(reduced.len()));
+        if net.total_len(&reduced) >= lmax.max(lmin) {
+            ids = reduced;
         }
     }
     info.insert("edges_after_grade".into(), json!(ids.len()));
+    // point de passage sans arête restante (impasse, pente, hors réseau du départ) : infaisable
+    if let Some(k) = via.iter().position(|v| {
+        !ids.iter()
+            .any(|&e| net.edges[e].u == v.node || net.edges[e].v == v.node)
+    }) {
+        info.insert("status".into(), json!("via_unreachable"));
+        info.insert("via_n".into(), json!(k + 1));
+        return None;
+    }
     Some(Candidate {
         ids,
         s,
@@ -557,6 +648,7 @@ pub fn to_problem(
     d: Option<f64>,
     node_simple: bool,
     climbs: i8,
+    via: &[usize],
 ) -> (Problem, Vec<usize>) {
     let mut idx = vec![usize::MAX; net.xy.len()];
     let mut nodes = Vec::new();
@@ -574,6 +666,12 @@ pub fn to_problem(
         _ => (0.7, 1.3),
     };
     let c = net.xy[s];
+    // « longues » (T24) : coût par montée, mode max seulement (cible et min_distance : sens seul)
+    let (turn, inner) = if climbs > 0 && mode == "max" {
+        ids.iter().map(|&e| edge_turns(net, e)).unzip()
+    } else {
+        (Vec::new(), Vec::new())
+    };
     let p = Problem {
         version: crate::problem::VERSION,
         mode: mode.into(),
@@ -602,15 +700,56 @@ pub fn to_problem(
             .iter()
             .map(|&e| prep::edge_angle(net, e, false))
             .collect(),
-        parallel: prep::parallel_pairs(net, ids, c),
-        q: if climbs < 0 {
+        parallel: {
+            let mut par = prep::parallel_pairs(net, ids, c);
+            if node_simple {
+                // D34 : jamais deux fois au même endroit, même à deux niveaux (pont, tunnel)
+                par.extend(prep::crossing_pairs(net, ids, c));
+                par.sort_unstable();
+                par.dedup();
+            }
+            par
+        },
+        q: if climbs != 0 {
             ids.iter().map(|&e| edge_q(net, e)).collect()
         } else {
             Vec::new()
         },
         climbs,
+        turn,
+        inner,
+        node_mu: 0.0,
+        via: via.iter().map(|&n| idx[n]).collect(),
     };
     (p, nodes)
+}
+
+/// T24 (modes.md v0.3) : (signe de la pente en partant de u et de v, ½ nombre d'extrema
+/// intérieurs), même tampon que `climbs::scan`. Symétrique : l'inverse échange les signes.
+fn edge_turns(net: &Net, e: usize) -> ([i8; 2], f64) {
+    use crate::climbs::{OPEN_M, tol};
+    let (_, z) = net.edge_points(e);
+    let (mut dir, mut first, mut n) = (0i8, 0i8, 0u32);
+    let (mut lo, mut ext) = (z[0], z[0]); // dernier creux, sommet courant (ou extrême du palier)
+    for &zi in &z[1..] {
+        match dir {
+            0 => {
+                if zi - lo >= OPEN_M {
+                    (dir, first, ext) = (1, 1, zi);
+                } else if ext - zi >= OPEN_M {
+                    (dir, first, lo) = (-1, -1, zi);
+                }
+                lo = lo.min(zi);
+                ext = ext.max(zi);
+            }
+            1 if zi > ext => ext = zi,
+            1 if ext - zi >= tol(ext - lo) => (dir, lo, n) = (-1, zi, n + 1),
+            -1 if zi < lo => lo = zi,
+            -1 if zi - lo >= OPEN_M => (dir, ext, n) = (1, zi, n + 1),
+            _ => {}
+        }
+    }
+    ([first, -dir], 0.5 * n as f64)
 }
 
 /// q d'une arête (modes.md B) : ½ (Σ G² des montées dans un sens + dans l'autre).
@@ -739,12 +878,257 @@ pub fn resolve_cap(store: &TileStore, req: &Request) -> Request {
     r
 }
 
+/// I2 (modes.md v0.2) : min_distance dont la boucle dépasse X de plus de `MD_POLISH_OVER`.
+/// La plus courte boucle trouvée est sur un palier du front (D+, L) (Bourg X = 500 : 11,57 km
+/// pour 686 m alors que 11,57 km pour ~500 m existe) : le graphe réduit aux arêtes pentues n'a
+/// plus de quoi tenir X. Seconde recherche en mode cible (1,03·L*, 1,03·X) sur la même requête
+/// (le mode cible vise L au plus près : à L* exact il rend 493 m < X) ; gardée si D+ >= X et
+/// L <= L*·(1 + MD_POLISH_LEN). Sinon la boucle reste. Bourg 500 : 11,57/686 → 11,93 km/500 m.
+const MD_POLISH_OVER: f64 = 0.10;
+const MD_POLISH_LEN: f64 = 0.05;
+fn polish_min_distance(
+    run: impl FnOnce(&Request) -> Result<Value, Msg>,
+    req: &Request,
+    out: &mut Value,
+) {
+    let Some(x) = req.target_dplus.filter(|_| req.min_distance()) else {
+        return;
+    };
+    let c0 = &out["candidates"][0];
+    let (Some(l), Some(d)) = (c0["length_m"].as_f64(), c0["dplus_m"].as_f64()) else {
+        return;
+    };
+    let spent = out["compute_s"].as_f64().unwrap_or(0.0);
+    if d <= x * (1.0 + MD_POLISH_OVER) || c0["feasible"] != json!(true) {
+        return;
+    }
+    if req.max_compute_s.is_some_and(|c| c - spent < MIN_ATTEMPT_S) {
+        return;
+    }
+    let mut r = req.clone();
+    r.mode = "target".into();
+    r.distance_km = 1.03 * l / 1000.0;
+    r.target_dplus = Some(x * 1.03);
+    r.max_distance_km = None;
+    r.n_candidates = 1;
+    r.time_s = None;
+    r.max_compute_s = req.max_compute_s.map(|c| c - spent);
+    let Ok(o) = run(&r) else {
+        return;
+    };
+    let c = &o["candidates"][0];
+    let (Some(l2), Some(d2)) = (c["length_m"].as_f64(), c["dplus_m"].as_f64()) else {
+        return;
+    };
+    if d2 >= x && l2 <= l * (1.0 + MD_POLISH_LEN) {
+        let mut c = c.clone();
+        if let Some(lb) = out["lower_bound_m"].as_f64() {
+            c["target_gap"] = json!({"distance_m": round1(l2 - lb), "dplus_m": round1(d2 - x)});
+        }
+        out["candidates"][0] = c;
+    }
+    out["compute_s"] = json!(spent + o["compute_s"].as_f64().unwrap_or(0.0));
+}
+
+/// T34 : min_distance avec distance max PAR DÉFAUT et `dplus_not_reached` : la distance max
+/// X/k est trop courte quand le départ est en plaine au pied du relief (Grenoble sud, X = 300 :
+/// 12 km par défaut, boucle de 13,9 km). Un second essai avec 1,5 × la distance max (≤ 60 km),
+/// gardé s'il atteint X. La requête retenue (cap élargi) sert à la suite (polish).
+const MD_WIDEN: f64 = 1.5;
+fn widen_cap(run: impl FnOnce(&Request) -> Result<Value, Msg>, req: &mut Request, out: &mut Value) {
+    let spent = out["compute_s"].as_f64().unwrap_or(0.0);
+    let cap = req.cap_km();
+    if !req.min_distance()
+        || out["candidates"][0]["feasible"] != json!(false)
+        || cap >= MD_CAP_KM.1
+        || req.max_compute_s.is_some_and(|c| c - spent < MIN_ATTEMPT_S)
+    {
+        return;
+    }
+    let t = Instant::now();
+    let mut r = req.clone();
+    r.max_distance_km = Some((MD_WIDEN * cap).min(MD_CAP_KM.1));
+    r.max_compute_s = req.max_compute_s.map(|c| c - spent);
+    if let Ok(o) = run(&r)
+        && o["candidates"][0]["feasible"] == json!(true)
+    {
+        *out = o;
+        req.max_distance_km = r.max_distance_km;
+    }
+    out["compute_s"] = json!(spent + t.elapsed().as_secs_f64());
+}
+
+/// D40/D46 « messages importants » (api.md v1.6) : demande non atteinte (`target_not_reached`) ou
+/// moins de boucles que demandé (`fewer_loops`). `plan` ne rend que le message (`params`, sans
+/// `suggest` ni `checked`, aucun calcul en plus) ; la CONTRAINTE LIMITANTE vient de `diagnose`
+/// (`diagnose=1`) : pour chaque contrainte active (types de voies, pente max, zone, carrefours
+/// uniques, points de passage, distance max fournie) un calcul SANS elle seule (n = demandé,
+/// budget = ce qu'il reste de `DIAG_TOTAL_S`, ≤ `DIAG_MAX_S`) ; la première qui atteint la cible
+/// (ou rend assez de boucles) est proposée en `suggest` (réglages d'API à changer).
+const DIAG_TOL: f64 = 0.10;
+const DIAG_MAX_S: f64 = 6.0;
+const DIAG_TOTAL_S: f64 = 15.0;
+fn reached(req: &Request, o: &Value) -> bool {
+    let c = &o["candidates"][0];
+    let (Some(l), Some(d)) = (c["length_m"].as_f64(), c["dplus_m"].as_f64()) else {
+        return false;
+    };
+    match req.mode.as_str() {
+        "min_distance" => c["feasible"] == json!(true),
+        "target" => {
+            let (dt, lt) = (req.target_dplus.unwrap_or(d), req.distance_km * 1000.0);
+            ((d - dt) / dt).abs() <= DIAG_TOL && ((l - lt) / lt).abs() <= DIAG_TOL
+        }
+        _ => !o["warnings"].as_array().is_some_and(|w| {
+            w.iter()
+                .any(|x| x["code"] == json!(Code::DistanceOutOfTolerance))
+        }),
+    }
+}
+
+fn important(req: &Request, out: &mut Value) {
+    let asked = req.n_candidates;
+    let got = out["candidates"].as_array().map_or(0, Vec::len);
+    let c = &out["candidates"][0];
+    let (l, d) = (c["length_m"].as_f64().unwrap_or(0.0), c["dplus_m"].as_f64());
+    let has_x = req.mode != "max";
+    let mut msgs = Vec::new();
+    if !reached(req, out) {
+        msgs.push(Msg::new(
+            Code::TargetNotReached,
+            json!({"dplus_m": req.target_dplus.filter(|_| has_x).map(f64::round),
+                   "best_dplus_m": d.filter(|_| has_x).map(f64::round),
+                   "km": round1(req.sizing_km()), "best_km": round1(l / 1000.0)}),
+        ));
+    }
+    if got < asked {
+        msgs.push(Msg::new(
+            Code::FewerLoops,
+            json!({"asked": asked, "got": got}),
+        ));
+    }
+    if let Some(w) = out["warnings"].as_array_mut() {
+        w.extend(msgs.iter().map(|m| json!(m)));
+    }
+}
+
+/// `diagnose=1` (D46) : `{suggest?, fewer_suggest?, checked, params}`. `suggest` : réglage qui fait
+/// atteindre la cible (pour `target_not_reached`), `fewer_suggest` : réglage qui rend assez de
+/// boucles (pour `fewer_loops`) ; l'appelant n'utilise que celui du message affiché. `checked` :
+/// `true` si toutes les contraintes actives ont été essayées (sans `suggest` : aucune ne suffit seule),
+/// `false` si le budget est épuisé avant. `params` : `{dplus_m, km, asked}` demandés.
+/// `req` : requête brute (distance max non résolue), comme celle de `plan`.
+pub fn diagnose(store: &TileStore, req: &Request) -> Value {
+    let auto_cap = req.max_distance_km.is_none();
+    let req = resolve_cap(store, req);
+    let run = |r: &Request| plan_with(|b| store.load(b), &store.manifest.natures, r, false);
+    diagnose_with(run, &req, auto_cap)
+}
+
+fn diagnose_with(
+    run: impl Fn(&Request) -> Result<Value, Msg>,
+    req: &Request,
+    auto_cap: bool,
+) -> Value {
+    let asked = req.n_candidates;
+    let mut relax: Vec<(Request, Value)> = Vec::new();
+    let with = |f: &dyn Fn(&mut Request), s: Value| {
+        let mut r = req.clone();
+        f(&mut r);
+        (r, s)
+    };
+    // échelle des voies : sentiers → minor → all (le niveau au-dessus d'abord)
+    for lvl in ["minor", "all"] {
+        if !(req.roads == "all" || req.roads == "minor" && lvl == "minor") {
+            relax.push(with(&|r| r.roads = lvl.into(), json!({"roads": lvl})));
+        }
+    }
+    if req.max_grade.is_some() {
+        relax.push(with(&|r| r.max_grade = None, json!({"max_grade_pct": 0})));
+    }
+    if req.polygon.is_some() {
+        relax.push(with(&|r| r.polygon = None, json!({"polygon": null})));
+    }
+    if req.node_simple {
+        relax.push(with(
+            &|r| r.node_simple = false,
+            json!({"no_repeat_junction": false}),
+        ));
+    }
+    if !req.via.is_empty() {
+        relax.push(with(&|r| r.via.clear(), json!({"via": null})));
+    }
+    let cap = req.cap_km();
+    if req.min_distance() && !auto_cap && cap < MD_CAP_KM.1 {
+        let v = (2.0 * cap).min(MD_CAP_KM.1);
+        relax.push(with(
+            &|r| r.max_distance_km = Some(v),
+            json!({"max_distance_km": v}),
+        ));
+    }
+    let mut out = json!({"params": {
+        "dplus_m": req.target_dplus.filter(|_| req.mode != "max").map(f64::round),
+        "km": round1(req.sizing_km()), "asked": asked}});
+    let (mut nr, mut fl) = (None, None);
+    let (t0, mut checked) = (Instant::now(), true);
+    for (mut r, sug) in relax {
+        let left = DIAG_TOTAL_S - t0.elapsed().as_secs_f64();
+        if left < MIN_ATTEMPT_S {
+            checked = false;
+            break;
+        }
+        r.n_candidates = asked;
+        r.max_compute_s = Some(left.min(DIAG_MAX_S));
+        let Ok(o) = run(&r) else { continue };
+        if nr.is_none() && reached(&r, &o) {
+            nr = Some(sug.clone());
+        }
+        if fl.is_none() && o["candidates"].as_array().map_or(0, Vec::len) >= asked {
+            fl = Some(sug);
+        }
+        if nr.is_some() && fl.is_some() {
+            break;
+        }
+    }
+    out["checked"] = json!(checked);
+    if let Some(v) = nr {
+        out["suggest"] = v;
+    }
+    if let Some(v) = fl {
+        out["fewer_suggest"] = v;
+    }
+    out
+}
+
 /// Point d'entrée : requête + dalles → JSON de sortie (ou erreur codée D14).
 /// `prep_only` : s'arrête au premier Problem (parité de préparation, sans solveur).
 pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, Msg> {
-    let req = resolve_cap(store, req);
+    let auto_cap = req.max_distance_km.is_none();
+    let mut req = resolve_cap(store, req);
     let mut out = plan_with(|b| store.load(b), &store.manifest.natures, &req, prep_only)?;
+    if !prep_only && auto_cap {
+        widen_cap(
+            |r| plan_with(|b| store.load(b), &store.manifest.natures, r, false),
+            &mut req,
+            &mut out,
+        );
+    }
+    if !prep_only {
+        polish_min_distance(
+            |r| plan_with(|b| store.load(b), &store.manifest.natures, r, false),
+            &req,
+            &mut out,
+        );
+    }
+    if !prep_only {
+        important(&req, &mut out);
+    }
     out["data_version"] = json!(store.manifest.data_version);
+    if let Some(cands) = out["candidates"].as_array_mut() {
+        for c in cands {
+            c["landmarks"] = landmarks(&store.pois, c);
+        }
+    }
     // zone en partie hors des dalles : réseau tronqué au bord de la couverture
     let edge = out["zone"]["geometry"]["coordinates"]
         .as_array()
@@ -766,6 +1150,76 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
         w.push(json!(Msg::new(Code::CoverageEdge, json!({}))));
     }
     Ok(out)
+}
+
+/// Repères traversés (api.md v1.5, D34) : col à <= `LANDMARK_COL_M` du tracé, pic/sommet à
+/// <= `LANDMARK_SUMMIT_M` (point du toponyme imprécis) ; abscisse du point le plus proche de la
+/// boucle, ordre de passage, un repère une fois. `c` : boucle de la réponse (lat, lon, dist).
+pub const LANDMARK_COL_M: f64 = 50.0;
+pub const LANDMARK_SUMMIT_M: f64 = 100.0;
+pub fn landmarks(pois: &[crate::tiles::Poi], c: &Value) -> Value {
+    let col = |k: &str| -> Vec<f64> {
+        c[k].as_array()
+            .map_or(Vec::new(), |a| a.iter().filter_map(Value::as_f64).collect())
+    };
+    let (lat, lon, dist) = (col("lat"), col("lon"), col("dist"));
+    if lat.len() < 2 || lon.len() != lat.len() || dist.len() != lat.len() {
+        return json!([]);
+    }
+    let pts: Vec<(f64, f64)> = lat
+        .iter()
+        .zip(&lon)
+        .map(|(&la, &lo)| crate::l93::forward(lo, la))
+        .collect();
+    let m = LANDMARK_SUMMIT_M;
+    let (x0, x1) = pts
+        .iter()
+        .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.0), a.1.max(p.0)));
+    let (y0, y1) = pts
+        .iter()
+        .fold((f64::MAX, f64::MIN), |a, p| (a.0.min(p.1), a.1.max(p.1)));
+    let mut found: Vec<(f64, Value)> = pois
+        .iter()
+        .filter_map(|poi| {
+            let (px, py) = (poi.x_dm as f64 / 10.0, poi.y_dm as f64 / 10.0);
+            if px < x0 - m || px > x1 + m || py < y0 - m || py > y1 + m {
+                return None;
+            }
+            // (distance au tracé, abscisse du point le plus proche)
+            let (d, s) = pts
+                .windows(2)
+                .zip(dist.windows(2))
+                .map(|(w, ds)| {
+                    let (dx, dy) = (w[1].0 - w[0].0, w[1].1 - w[0].1);
+                    let l2 = dx * dx + dy * dy;
+                    let t = if l2 > 0.0 {
+                        (((px - w[0].0) * dx + (py - w[0].1) * dy) / l2).clamp(0.0, 1.0)
+                    } else {
+                        0.0
+                    };
+                    let d = (px - w[0].0 - t * dx).hypot(py - w[0].1 - t * dy);
+                    (d, ds[0] + t * (ds[1] - ds[0]))
+                })
+                .min_by(|a, b| a.0.total_cmp(&b.0))?;
+            let is_col = poi.nature == "Col";
+            if d > if is_col {
+                LANDMARK_COL_M
+            } else {
+                LANDMARK_SUMMIT_M
+            } {
+                return None;
+            }
+            let (lo, la) = crate::l93::inverse(px, py);
+            Some((
+                s,
+                json!({"kind": if is_col { "col" } else { "summit" }, "name": poi.name,
+                       "ele_m": poi.z_dm.map(|z| z as f64 / 10.0), "dist_m": round1(s),
+                       "lat": r6(la), "lon": r6(lo)}),
+            ))
+        })
+        .collect();
+    found.sort_by(|a, b| a.0.total_cmp(&b.0));
+    Value::Array(found.into_iter().map(|f| f.1).collect())
 }
 
 /// Comme `plan`, avec un chargeur de tronçons (boîte L93 en m) : dalles ou données d'essai.
@@ -791,13 +1245,9 @@ pub fn plan_with(
         warns.push(Msg::new(Code::LongDistance, json!({"km": LONG_KM})));
     }
     // min_distance : zone et bornes de la distance max Lcap (Lmin = 0).
-    let l = r.sizing_km() * 1000.0;
+    let (l, lmax) = lengths(&r);
     let frame = Frame::new(r.lat, r.lon);
-    let lmax = match r.mode.as_str() {
-        "max" => l * (1.0 + r.tol),
-        "min_distance" => l,
-        _ => 1.3 * l,
-    };
+    check_via(&r)?;
     let mut region = build_region(&r, &frame, lmax, l)?;
     let area_km2 = region.area() / 1e6;
     if r.enforce_limits && area_km2 > MAX_AREA_KM2 {
@@ -860,12 +1310,28 @@ pub fn plan_with(
     let t1 = Instant::now();
     let sel = keep_mask(&t, natures, &r.roads);
     let mut net = Net::new(&t, frame);
-    let edges = net.build(&sel, &region);
+    let mut edges = net.build(&sel, &region);
     dbg.insert("source_ways".into(), json!(sel.len()));
     dbg.insert("edges_simplified".into(), json!(edges.len()));
     if edges.is_empty() {
         return Err(err(Code::NoWayInZone, ""));
     }
+    // points de passage : accrochés au réseau comme le départ (nœud inséré), <= VIA_SNAP_M
+    let mut via: Vec<ViaPt> = Vec::new();
+    for (i, &[lat, lon]) in r.via.iter().enumerate() {
+        let q = frame.to_local(lon, lat);
+        match net.insert_start(&mut edges, q) {
+            Some((node, snap, _)) if snap <= VIA_SNAP_M => via.push(ViaPt { node, q, snap }),
+            _ => {
+                return Err(Msg::with_detail(
+                    Code::ViaUnreachable,
+                    json!({"n": i + 1}),
+                    "no way near the via point",
+                ));
+            }
+        }
+    }
+    let mut best_via: Vec<ViaPt> = via.clone();
     let sel_all = keep_mask(&t, natures, "all");
     let mut access_net: Option<Option<Access>> = None;
 
@@ -923,6 +1389,16 @@ pub fn plan_with(
         }
         let (kind, sub) = (sets[k].0, sets[k].1.clone());
         k += 1;
+        // D34 : départ déplacé en dernier recours seulement. Dès que le réseau du point cliqué
+        // donne une boucle (même hors tolérance ou sous X), on la garde ; en min_distance, une
+        // borne prouvée finie (« pas de boucle de ce D+ sous Y km ») est rendue telle quelle
+        // plutôt qu'un départ à plusieurs km (Grenoble, X = 500 : départ déplacé de 5,8 km).
+        // avec points de passage, déplacer le départ n'a pas de sens
+        if kind == "repli"
+            && (first.is_some() || proven_lb.is_some_and(f64::is_finite) || !via.is_empty())
+        {
+            break;
+        }
         let solved = attempts
             .iter()
             .filter(|a| a["solved"] == json!(true))
@@ -938,6 +1414,7 @@ pub fn plan_with(
         }
         let tp = Instant::now();
         let mut cand = None;
+        let mut cur_via = via.clone();
         let mut info = serde_json::Map::new();
         // Avec accès par aller-retour d'abord ; s'il rend la boucle impossible, même
         // sous-réseau avec le départ déplacé.
@@ -955,6 +1432,7 @@ pub fn plan_with(
                 None
             };
             let had_access = acc.is_some();
+            let mut vp = via.clone();
             let c = build_candidate(
                 &mut net,
                 &sub,
@@ -964,10 +1442,11 @@ pub fn plan_with(
                 acc,
                 r.mode != "target",
                 x_md,
+                &mut vp,
                 &mut info,
             );
             if c.is_some() || !had_access || !info.contains_key("access_m") {
-                cand = c;
+                (cand, cur_via) = (c, vp);
                 break;
             }
             info.insert(
@@ -1005,6 +1484,7 @@ pub fn plan_with(
             d_eff,
             r.node_simple,
             gamma,
+            &cur_via.iter().map(|v| v.node).collect::<Vec<_>>(),
         );
         if let Some(lb) = c.lb {
             p.l = p.lmax.min(2.0 * lb); // indicatif : couloirs et waypoints
@@ -1043,6 +1523,7 @@ pub fn plan_with(
             let snap = attempts.last().unwrap()["start_snap_m"]
                 .as_f64()
                 .unwrap_or(0.0);
+            best_via = cur_via.clone();
             first = Some((
                 p,
                 c.ids,
@@ -1058,12 +1539,23 @@ pub fn plan_with(
         }
     }
     let Some((p, ids, out, acc, kind, snap, lb)) = first else {
-        let detail = Value::Array(attempts).to_string();
+        let detail = Value::Array(attempts.clone()).to_string();
         if let (Some(x), Some(b)) = (x_md, proven_lb) {
             let min_km = b.is_finite().then(|| (b / 100.0).round() / 10.0);
             return Err(Msg::with_detail(
                 Code::DplusUnreachableProven,
                 json!({"dplus_m": x.round(), "min_km": min_km}),
+                detail,
+            ));
+        }
+        if let Some(n) = attempts
+            .iter()
+            .find(|a| a["status"] == json!("via_unreachable"))
+            .and_then(|a| a["via_n"].as_u64())
+        {
+            return Err(Msg::with_detail(
+                Code::ViaUnreachable,
+                json!({"n": n}),
                 detail,
             ));
         }
@@ -1096,6 +1588,12 @@ pub fn plan_with(
             .into_iter()
             .filter(|w| w.code != Code::DplusNotReached),
     );
+    let missed = p.via_missed(&out.ids);
+    for (j, x) in p.via.iter().enumerate() {
+        if missed.contains(x) {
+            warns.push(Msg::new(Code::ViaMissed, json!({"n": j + 1})));
+        }
+    }
     let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma)?;
     let prof: f64 = main.z.windows(2).map(|w| (w[1] - w[0]).max(0.0)).sum();
     if (prof - main.dplus).abs() > 1e-6 * main.dplus.max(1.0) {
@@ -1133,8 +1631,25 @@ pub fn plan_with(
                 .cmp(&a.feasible)
                 .then(a.length.total_cmp(&b.length))
         }),
-        _ => {}
+        // cible : la plus proche de la demande d'abord ; si elle la tient (à `DIAG_TOL`), celles
+        // qui ne la tiennent pas ne sont pas rendues (sinon `target_not_reached`, voir `important`)
+        _ => {
+            let d = r.target_dplus.unwrap_or(1.0);
+            let err = |t: &Track| ((t.length - l) / l).abs() + ((t.dplus - d) / d).abs();
+            let tol = |t: &Track| {
+                ((t.length - l) / l).abs() <= DIAG_TOL && ((t.dplus - d) / d).abs() <= DIAG_TOL
+            };
+            loops.sort_by(|a, b| err(a).total_cmp(&err(b)));
+            if tol(&loops[0]) {
+                loops.retain(tol);
+            }
+        }
     }
+    let via_pts: Vec<(usize, [f64; 2], f64)> = best_via
+        .iter()
+        .enumerate()
+        .map(|(i, v)| (i + 1, net.xy[v.node], v.snap))
+        .collect();
     let start_xy = loops[0].xy[0];
     let (slon, slat) = frame.to_wgs(start_xy);
     dbg.insert("problem".into(), problem_stats(&p));
@@ -1164,7 +1679,7 @@ pub fn plan_with(
     };
     let candidates: Vec<Value> = loops
         .iter()
-        .map(|tr| track_json(&frame, tr, target))
+        .map(|tr| track_json(&frame, tr, target, &via_pts))
         .collect();
     Ok(json!({
         "solver_version": crate::solver_version(),
@@ -1191,32 +1706,62 @@ fn r6(x: f64) -> f64 {
     (x * 1e6).round() / 1e6
 }
 
-/// Montées par hystérésis (5 m, contrat modes.md B) : [(gain, longueur)].
-pub fn climbs(z: &[f64], s: &[f64]) -> Vec<(f64, f64)> {
-    const H: f64 = 5.0;
-    let mut out = Vec::new();
-    let (mut lo, mut hi): (usize, Option<usize>) = (0, None);
-    for i in 1..z.len() {
-        match hi {
-            None if z[i] < z[lo] => lo = i,
-            None if z[i] - z[lo] >= H => hi = Some(i),
-            Some(h) if z[i] > z[h] => hi = Some(i),
-            Some(h) if z[h] - z[i] >= H => {
-                out.push((z[h] - z[lo], s[h] - s[lo]));
-                (lo, hi) = (i, None);
-            }
-            _ => {}
-        }
-    }
-    if let Some(h) = hi {
-        out.push((z[h] - z[lo], s[h] - s[lo]));
-    }
-    out
-}
+pub use crate::climbs::scan as climbs;
 
 pub use crate::prep::{GRADE_WINDOW_M, max_grade};
 
-fn track_json(frame: &Frame, tr: &Track, target: Option<(f64, f64)>) -> Value {
+/// Points de passage d'un tracé (api.md v1.5) : `via` (passés, ordre de passage) et `legs`
+/// (départ → points → arrivée, D+/D− du profil). `pts` : (n, position du nœud, accroche).
+fn via_legs(
+    frame: &Frame,
+    tr: &Track,
+    dist: &[f64],
+    pts: &[(usize, [f64; 2], f64)],
+) -> (Value, Value) {
+    let mut hit: Vec<(usize, usize, f64)> = pts
+        .iter()
+        .filter_map(|&(n, q, snap)| {
+            let (i, d) = tr
+                .xy
+                .iter()
+                .enumerate()
+                .map(|(i, p)| (i, (p[0] - q[0]).hypot(p[1] - q[1])))
+                .min_by(|a, b| a.1.total_cmp(&b.1))?;
+            (d < 1.0).then_some((i, n, snap))
+        })
+        .collect();
+    hit.sort_unstable_by_key(|h| h.0);
+    let via: Vec<Value> = hit
+        .iter()
+        .map(|&(i, n, snap)| {
+            let (lo, la) = frame.to_wgs(tr.xy[i]);
+            json!({"n": n, "lat": r6(la), "lon": r6(lo), "snap_m": round1(snap), "dist_m": round1(dist[i])})
+        })
+        .collect();
+    let last = tr.xy.len() - 1;
+    let cuts: Vec<(usize, usize)> = std::iter::once((0, 0))
+        .chain(hit.iter().map(|h| (h.0, h.1)))
+        .chain([(last, 0)])
+        .collect();
+    let legs: Vec<Value> = cuts
+        .windows(2)
+        .map(|w| {
+            let z = &tr.z[w[0].0..=w[1].0];
+            let up: f64 = z.windows(2).map(|d| (d[1] - d[0]).max(0.0)).sum();
+            let down: f64 = z.windows(2).map(|d| (d[0] - d[1]).max(0.0)).sum();
+            json!({"from": w[0].1, "to": w[1].1, "length_m": round1(dist[w[1].0] - dist[w[0].0]),
+                   "dplus_m": round1(up), "dminus_m": round1(down)})
+        })
+        .collect();
+    (json!(via), json!(legs))
+}
+
+fn track_json(
+    frame: &Frame,
+    tr: &Track,
+    target: Option<(f64, f64)>,
+    via_pts: &[(usize, [f64; 2], f64)],
+) -> Value {
     let (mut lat, mut lon, mut dist) = (Vec::new(), Vec::new(), Vec::new());
     let mut s = 0.0;
     for (i, &q) in tr.xy.iter().enumerate() {
@@ -1237,6 +1782,7 @@ fn track_json(frame: &Frame, tr: &Track, target: Option<(f64, f64)>) -> Value {
         .iter()
         .copied()
         .fold((0.0, 0.0), |a, x| if x.0 > a.0 { x } else { a });
+    let (via, legs) = via_legs(frame, tr, &dist, via_pts);
     let zmin = tr.z.iter().copied().fold(f64::INFINITY, f64::min);
     let zmax = tr.z.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     json!({
@@ -1254,6 +1800,9 @@ fn track_json(frame: &Frame, tr: &Track, target: Option<(f64, f64)>) -> Value {
             "gbar_m": round1(if sg > 0.0 { sg2 / sg } else { 0.0 }),
             "mean_grade_pct": round1(if sl > 0.0 { 100.0 * sg / sl } else { 0.0 }),
         },
+        "via": via,
+        "legs": legs,
+        "landmarks": [],
         "lat": lat, "lon": lon,
         "ele": tr.z.iter().map(|&z| round1(z)).collect::<Vec<_>>(),
         "dist": dist.iter().map(|&d| round1(d)).collect::<Vec<_>>(),

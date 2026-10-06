@@ -1,7 +1,8 @@
 """CLI : python -m pipeline build --tiles <32_342,33_342 | sud,ouest,nord,est> --out <dossier>
          python -m pipeline coverage --tiles <dossier des dalles> --out <coverage.geojson>
          python -m pipeline check --tiles <dossier> [--list tiles.txt] [--previous manifest.json]
-         python -m pipeline clip --tiles <dossier> --out <dossier> --disk lat,lon,rayon_m [--disk …]"""
+         python -m pipeline clip --tiles <dossier> --out <dossier> --disk lat,lon,rayon_m [--disk …]
+         python -m pipeline pois --tiles <dossier>   (cols et sommets -> <dossier>/pois.json)"""
 from __future__ import annotations
 
 import argparse
@@ -14,6 +15,7 @@ from .build import build
 from .check import check
 from .clip import clip
 from .coverage import write
+from .pois import build_pois
 
 
 def main(argv=None):
@@ -36,7 +38,12 @@ def main(argv=None):
     v.add_argument("--tiles", required=True, help="dossier des dalles (manifest.json)")
     v.add_argument("--list", help="fichier des dalles attendues (une 'ix_iy' par ligne)")
     v.add_argument("--previous", help="manifest.json de la version précédente (écart de tronçons)")
+    q = sub.add_parser("pois", help="écrit <dossier>/pois.json (cols et sommets BD TOPO) et l'inscrit au manifeste")
+    q.add_argument("--tiles", required=True, help="dossier des dalles (manifest.json)")
     a = ap.parse_args(argv)
+    if a.cmd == "pois":
+        build_pois(a.tiles)
+        return
     if a.cmd == "check":
         bad = check(a.tiles, a.list and Path(a.list).read_text().split(),
                     a.previous and json.loads(Path(a.previous).read_text()))

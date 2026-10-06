@@ -23,7 +23,7 @@ CloudFront ─► S3 (site, boucles partagées)
 | `web/` | Front Svelte 5 (PWA). Textes dans `src/i18n/fr.ts` (fait foi) et `en.ts`. |
 | `pipeline/` | Construction des dalles `tiles/1` depuis la BD TOPO et le MNT IGN (Python). |
 | `infra/` | OpenTofu (AWS, Cloudflare DNS) et déploiement : voir [`infra/README.md`](infra/README.md). |
-| `trailopt/`, `app.py`, `ui/` | Application Streamlit historique (voir plus bas). |
+| `trailopt/` | Moteur Python historique, oracle de tests (voir plus bas). |
 
 Une boucle est un sous-graphe connexe à degrés pairs contenant le départ ; son D+ est la somme
 des poids `(montée + descente) / 2` des tronçons. Les dalles stockent le profil d'altitude de
@@ -31,8 +31,8 @@ chaque tronçon tous les 5 m (LiDAR HD, repli RGE ALTI).
 
 ## Lancer en local
 
-Prérequis : Rust stable, Node LTS, `cargo-lambda` (`pip install cargo-lambda`), dalles pilotes
-dans `scripts/experiments/tiles_pilote` (non versionnées, construites par `pipeline`, voir plus bas ; ou `TILES_DIR=…`).
+Prérequis : Rust stable, Node LTS, `cargo-lambda` (`pip install cargo-lambda`), dalles
+dans `scripts/experiments/tiles_v1` (non versionnées, construites par `pipeline`, voir plus bas ; ou `TILES_DIR=…`).
 
 ```bash
 (cd web && npm ci)
@@ -54,12 +54,16 @@ python -m pytest -q             # Python + parité avec le moteur Rust (binaire 
 La CI (`.github/workflows/ci.yml`) lance le tout ; le déploiement part de `main` quand elle est
 verte (`infra/README.md`).
 
-## Application Streamlit historique
+## Moteur Python historique
 
-Le premier prototype (Streamlit + `trailopt/`, Python) reste dans le dépôt comme **oracle de
-tests** : la parité Rust/Python est vérifiée en CI. Il sera coupé au lancement d'optrail.eu et
-n'est plus déployé. Usage local : `pip install -r requirements-dev.txt && streamlit run app.py`,
-ou en CLI `python -m trailopt --start 48.7309,2.2713 --distance 10 --out boucle.gpx`.
+Le premier prototype (`trailopt/`, Python) reste dans le dépôt comme **oracle de tests** : la
+parité Rust/Python est vérifiée en CI. Usage en CLI :
+`python -m trailopt --start 48.7309,2.2713 --distance 10 --out boucle.gpx`.
+
+## Contribuer
+
+Contributions bienvenues : lis [CONTRIBUTING.md](CONTRIBUTING.md) (lancer en local, tests, conventions,
+clause de contribution). Une faille ? [SECURITY.md](SECURITY.md). Pour une idée ou un bug : une issue.
 
 ## Licence
 

@@ -1,6 +1,7 @@
-# Amorçage, appliqué UNE fois à la main par le fondateur (état local, voir infra/README.md) :
-# bucket d'état OpenTofu, bucket d'artefacts (zip Lambda, dalles), fournisseur OIDC GitHub et
-# l'unique rôle de déploiement (main + environnement prod).
+# Amorçage, appliqué UNE fois à la main (état local, voir infra/README.md) : bucket d'état OpenTofu,
+# bucket d'artefacts (zip Lambda, dalles), boundary des rôles Lambda. Fournisseur OIDC GitHub + rôle
+# optrail-deploy seulement si enable_github_oidc (D36 : refusés par les SCP du compte géré ; le
+# déploiement passe par scripts/deploy.sh avec la session `aws login`).
 
 terraform {
   required_version = ">= 1.10"
@@ -13,7 +14,7 @@ terraform {
 }
 
 provider "aws" {
-  region = "eu-west-3"
+  region = "eu-north-1"
   default_tags {
     tags = { project = "optrail", managed_by = "opentofu-bootstrap" }
   }
@@ -26,6 +27,12 @@ variable "github_sub_prefix" {
   description = "Préfixe `sub` OIDC du dépôt autorisé à déployer (sub_claim_prefix de GitHub)."
   type        = string
   default     = "repo:M-Garrigues@22774745/trail_opt@1402132975"
+}
+
+variable "enable_github_oidc" {
+  description = "Crée l'OIDC GitHub et le rôle optrail-deploy (deploy.yml). Faux tant que les SCP refusent l'OIDC (D36)."
+  type        = bool
+  default     = false
 }
 
 data "aws_caller_identity" "me" {}
@@ -113,16 +120,18 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
 # --- OIDC GitHub + rôle de déploiement ---------------------------------------
 
 resource "aws_iam_openid_connect_provider" "github" {
+  count          = var.enable_github_oidc ? 1 : 0
   url            = "https://token.actions.githubusercontent.com"
   client_id_list = ["sts.amazonaws.com"]
 }
 
 data "aws_iam_policy_document" "trust" {
+  count = var.enable_github_oidc ? 1 : 0
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.github.arn]
+      identifiers = [aws_iam_openid_connect_provider.github[0].arn]
     }
     condition {
       test     = "StringEquals"
@@ -139,8 +148,9 @@ data "aws_iam_policy_document" "trust" {
 }
 
 resource "aws_iam_role" "deploy" {
+  count                = var.enable_github_oidc ? 1 : 0
   name                 = "optrail-deploy"
-  assume_role_policy   = data.aws_iam_policy_document.trust.json
+  assume_role_policy   = data.aws_iam_policy_document.trust[0].json
   max_session_duration = 3600
 }
 
@@ -149,17 +159,17 @@ resource "aws_iam_role" "deploy" {
 data "aws_iam_policy_document" "boundary" {
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
-    resources = ["arn:aws:logs:eu-west-3:${local.account}:log-group:/aws/lambda/optrail-*"]
+    resources = ["arn:aws:logs:eu-north-1:${local.account}:log-group:/aws/lambda/optrail-*"]
   }
   # Coupe-circuit : pause / reprise de l'API.
   statement {
     actions   = ["lambda:PutFunctionConcurrency", "lambda:GetFunctionConcurrency", "lambda:DeleteFunctionConcurrency"]
-    resources = ["arn:aws:lambda:eu-west-3:${local.account}:function:optrail-*"]
+    resources = ["arn:aws:lambda:eu-north-1:${local.account}:function:optrail-*"]
   }
   # Reprise différée d'1 h : planification unique EventBridge Scheduler, rôle du Scheduler.
   statement {
     actions   = ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"]
-    resources = ["arn:aws:scheduler:eu-west-3:${local.account}:schedule/default/optrail-*"]
+    resources = ["arn:aws:scheduler:eu-north-1:${local.account}:schedule/default/optrail-*"]
   }
   statement {
     actions   = ["iam:PassRole"]
@@ -172,9 +182,9 @@ data "aws_iam_policy_document" "boundary" {
   }
   statement {
     actions   = ["lambda:InvokeFunction"]
-    resources = ["arn:aws:lambda:eu-west-3:${local.account}:function:optrail-killswitch"]
+    resources = ["arn:aws:lambda:eu-north-1:${local.account}:function:optrail-killswitch"]
   }
-  # Boucles partagées seulement (le reste du site est écrit par deploy.yml, pas par une Lambda).
+  # Boucles partagées seulement (le reste du site est écrit par scripts/deploy.sh, pas par une Lambda).
   statement {
     actions   = ["s3:GetObject", "s3:PutObject"]
     resources = ["arn:aws:s3:::optrail-site-*/shared/*"]
@@ -187,6 +197,7 @@ resource "aws_iam_policy" "boundary" {
 }
 
 data "aws_iam_policy_document" "deploy" {
+  count = var.enable_github_oidc ? 1 : 0
   # État OpenTofu (verrou natif S3 : objet .tflock).
   statement {
     actions   = ["s3:ListBucket"]
@@ -207,7 +218,7 @@ data "aws_iam_policy_document" "deploy" {
   }
   statement {
     actions   = ["lambda:*"]
-    resources = ["arn:aws:lambda:eu-west-3:${local.account}:function:optrail-*"]
+    resources = ["arn:aws:lambda:eu-north-1:${local.account}:function:optrail-*"]
   }
   statement {
     actions   = ["logs:DescribeLogGroups"]
@@ -215,7 +226,7 @@ data "aws_iam_policy_document" "deploy" {
   }
   statement {
     actions   = ["logs:*"]
-    resources = ["arn:aws:logs:eu-west-3:${local.account}:log-group:/aws/lambda/optrail-*"]
+    resources = ["arn:aws:logs:eu-north-1:${local.account}:log-group:/aws/lambda/optrail-*"]
   }
   statement {
     actions   = ["cloudwatch:DescribeAlarms"]
@@ -223,11 +234,11 @@ data "aws_iam_policy_document" "deploy" {
   }
   statement {
     actions   = ["cloudwatch:*"]
-    resources = ["arn:aws:cloudwatch:eu-west-3:${local.account}:alarm:optrail-*"]
+    resources = ["arn:aws:cloudwatch:eu-north-1:${local.account}:alarm:optrail-*"]
   }
   statement {
     actions   = ["sns:*"]
-    resources = ["arn:aws:sns:eu-west-3:${local.account}:optrail-*"]
+    resources = ["arn:aws:sns:eu-north-1:${local.account}:optrail-*"]
   }
   statement {
     actions   = ["budgets:*"]
@@ -303,7 +314,7 @@ data "aws_iam_policy_document" "deploy" {
   statement {
     effect    = "Deny"
     actions   = ["iam:*"]
-    resources = [aws_iam_role.deploy.arn]
+    resources = [aws_iam_role.deploy[0].arn]
   }
   # E1 / D23 : Function URL toujours en AWS_IAM, jamais d'invocation publique.
   statement {
@@ -339,15 +350,16 @@ data "aws_iam_policy_document" "deploy" {
 }
 
 resource "aws_iam_role_policy" "deploy" {
+  count  = var.enable_github_oidc ? 1 : 0
   name   = "optrail-deploy"
-  role   = aws_iam_role.deploy.id
-  policy = data.aws_iam_policy_document.deploy.json
+  role   = aws_iam_role.deploy[0].id
+  policy = data.aws_iam_policy_document.deploy[0].json
 }
 
-# --- Sorties à recopier dans l'environnement GitHub « prod » (variables) ------
+# --- Sorties (TF_STATE_BUCKET / ARTIFACTS_BUCKET : lues par scripts/deploy.sh) --
 
 output "AWS_DEPLOY_ROLE_ARN" {
-  value = aws_iam_role.deploy.arn
+  value = one(aws_iam_role.deploy[*].arn)
 }
 
 output "TF_STATE_BUCKET" {

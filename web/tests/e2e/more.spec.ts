@@ -1,6 +1,6 @@
 // Parcours 3 : autres boucles, historique, langue, dernier type, partage et lien /b/<id>.
 import { test, expect } from '@playwright/test';
-import { setup, mockPlan, placeStart, T, isFr, plan1, plan4 } from './helpers';
+import { setup, mockPlan, placeStart, openSheet, T, isFr, plan1, plan4 } from './helpers';
 
 test('autres boucles + historique (AC9, AC15)', async ({ page }) => {
   const t = T();
@@ -38,6 +38,7 @@ test('réglage 3 boucles → « Autres boucles (2) » sans appel (AC9)', async (
   });
   await page.goto('/');
   await page.getByRole('button', { name: t.menu }).click();
+  await expect(page.locator('a[href="https://github.com/M-Garrigues/trail_opt"]')).toHaveAttribute('target', '_blank');
   await page.locator('#m-loops').selectOption('3');
   await page.goBack();
   await expect(page.getByRole('button', { name: t.find })).toBeVisible(); // menu refermé (feuille redescendue)
@@ -53,6 +54,7 @@ test('langue et dernier type gardés (AC20, AC22)', async ({ page }) => {
   await page.goto('/');
   const other = isFr() ? 'EN' : 'FR';
   await page.locator('.topbar').getByRole('radio', { name: other }).click();
+  await openSheet(page);
   await page.getByRole('radio', { name: isFr() ? /^Target/ : /^Cible/ }).click();
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', other.toLowerCase());

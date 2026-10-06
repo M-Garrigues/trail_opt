@@ -1,4 +1,4 @@
-"""Chaîne complète hors Streamlit : zone -> OSM -> graphe -> altitude -> solveur -> GPX."""
+"""Chaîne complète : zone -> OSM -> graphe -> altitude -> solveur -> GPX."""
 from __future__ import annotations
 
 import math
@@ -18,7 +18,7 @@ from .geo import LocalFrame
 from .gpx import to_gpx
 from .solvers import EXACT_MAX_EDGES, optimize
 
-# Plafonds anti-abus (app publique, Streamlit Community Cloud : 2 cœurs, 2,7 Go).
+# Plafonds anti-abus (ancienne app publique : 2 cœurs, 2,7 Go).
 DIST_KM = (2.0, 100.0)
 MAX_AREA_KM2 = 1965.0     # disque de 25 km de rayon
 # La zone est en plus réduite (disque plus petit autour du départ) tant qu'elle contient trop

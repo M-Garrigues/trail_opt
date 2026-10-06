@@ -306,6 +306,74 @@ fn fallback_to_nearest_loopable_network() {
     check_track(&out["candidates"][0]);
 }
 
+/// D34 (Grenoble, min_distance) : le réseau du départ donne une boucle, mais sous X (le relief
+/// n'est joignable que par deux couloirs parallèles) ; un carré pentu isolé à 700 m donnerait X.
+/// Avant T34 : départ déplacé sur ce carré (`start_moved`). Désormais : départ gardé, boucle
+/// rendue avec `dplus_not_reached` ; on ne déplace qu'en dernier recours (aucune boucle).
+#[test]
+fn start_kept_when_its_network_has_a_loop() {
+    fn z(x: f64, y: f64) -> f64 {
+        100.0 + 0.3 * (x - 600.0).max(0.0) + 0.3 * (y - 650.0).max(0.0)
+    }
+    let mut w = World::new();
+    w.z = z;
+    let path = |w: &mut World, pts: &[[f64; 2]]| {
+        for p in pts.windows(2) {
+            w.trail(p);
+        }
+    };
+    // carré plat du départ (départ au milieu du bas), côté droit coupé en y = 200 et 300
+    path(
+        &mut w,
+        &[
+            [0.0, 0.0],
+            [250.0, 0.0],
+            [250.0, 200.0],
+            [250.0, 300.0],
+            [250.0, 500.0],
+            [-250.0, 500.0],
+            [-250.0, 0.0],
+            [0.0, 0.0],
+        ],
+    );
+    // carré pentu à l'est, relié par deux couloirs parallèles (jamais pris ensemble)
+    path(
+        &mut w,
+        &[
+            [800.0, 200.0],
+            [800.0, 100.0],
+            [1100.0, 100.0],
+            [1100.0, 400.0],
+            [800.0, 400.0],
+            [800.0, 300.0],
+            [800.0, 200.0],
+        ],
+    );
+    let id = w.next;
+    w.line_full(
+        &[[250.0, 200.0], [800.0, 200.0]],
+        "Sentier",
+        6,
+        OK,
+        &[id + 1],
+    );
+    w.line_full(&[[250.0, 300.0], [800.0, 300.0]], "Sentier", 6, OK, &[id]);
+    // carré pentu isolé au nord : boucle de D+ >= X à 700 m
+    w.square(-150.0, 700.0, 300.0);
+    let out = w
+        .run(
+            json!({"mode": "min_distance", "target_dplus": 50.0, "max_distance_km": 6.0,
+                   "node_simple": true}),
+            false,
+        )
+        .unwrap();
+    let c = codes(&out);
+    assert_eq!(out["effective_start"]["kind"], "clicked", "{c:?}");
+    assert!(!c.contains(&"start_moved".to_string()), "{c:?}");
+    assert!(c.contains(&"dplus_not_reached".to_string()), "{c:?}");
+    check_track(&out["candidates"][0]);
+}
+
 #[test]
 fn start_network_used_when_possible() {
     let mut w = World::new();
@@ -586,7 +654,55 @@ fn drawn_polygon_limits_the_zone() {
     assert!(r.is_err_and(|e| e.code == Code::ZoneInvalid));
 }
 
-/// Montées par hystérésis de 5 m (contrat modes.md B) : petites bosses ignorées.
+/// T33 : tampon max(10 m, 15 % du gain en cours), plafonné à 25 m : une micro-descente au
+/// milieu d'une montée ne la coupe pas ; une vraie descente la coupe.
+#[test]
+fn climbs_buffer() {
+    let s: Vec<f64> = (0..8).map(|i| 10.0 * i as f64).collect();
+    // 0 -> 40, creux de 8 m ignoré, -> 70 : une montée de 70 m ; puis -20 m : fermée
+    let z = [0.0, 40.0, 32.0, 70.0, 50.0, 80.0, 79.0, 80.0];
+    assert_eq!(
+        engine::plan::climbs(&z, &s),
+        vec![(70.0, 30.0), (30.0, 10.0)]
+    );
+    // 100 m de gain : tampon 15 m, un creux de 12 m ne coupe pas
+    let z = [0.0, 100.0, 88.0, 130.0, 100.0, 100.0, 100.0, 100.0];
+    assert_eq!(engine::plan::climbs(&z, &s), vec![(130.0, 30.0)]);
+}
+
+/// Exemple du fondateur : 1 km de montée, petit creux, 1 km de montée = UNE montée ; et la même
+/// chose en descente (une petite remontée ne coupe pas une longue descente). Un grand creux sépare.
+#[test]
+fn climbs_merge_relative_gap() {
+    use engine::climbs::{descents, scan};
+    // 1 km à 10 % (100 m), creux de 20 m sur 100 m, 1 km à 10 %
+    let s = [0.0, 1000.0, 1100.0, 2100.0];
+    let z = [0.0, 100.0, 80.0, 180.0];
+    assert_eq!(scan(&z, &s), vec![(180.0, 2100.0)]);
+    // lecture « 20 m de distance » : creux de 20 m de long : idem
+    let s = [0.0, 1000.0, 1020.0, 2020.0];
+    assert_eq!(scan(&[0.0, 100.0, 80.0, 180.0], &s), vec![(180.0, 2020.0)]);
+    // symétrique : descente de 1 km, remontée de 20 m, descente de 1 km
+    let zd: Vec<f64> = [0.0, 100.0, 80.0, 180.0]
+        .iter()
+        .map(|v| 200.0 - v)
+        .collect();
+    assert_eq!(
+        descents(&zd, &[0.0, 1000.0, 1100.0, 2100.0]),
+        vec![(180.0, 2100.0)]
+    );
+    // creux trop grand (60 m sur 100 m, > 30 % du gain) ou trop long (400 m > 25 % de 1 km) : 2 montées
+    assert_eq!(
+        scan(&[0.0, 100.0, 40.0, 140.0], &[0.0, 1000.0, 1100.0, 2100.0]).len(),
+        2
+    );
+    assert_eq!(
+        scan(&[0.0, 100.0, 80.0, 180.0], &[0.0, 1000.0, 1400.0, 2400.0]).len(),
+        2
+    );
+}
+
+/// Montées par hystérésis (contrat modes.md B) : petites bosses ignorées.
 #[test]
 fn climbs_by_hysteresis() {
     let z = [
@@ -698,10 +814,10 @@ fn climbs_choose_direction() {
     check_track(&s["candidates"][0]);
 }
 
-/// D23 (sans dalles) : « longues » ne change pas la recherche, seulement le sens : même D+ et
-/// même longueur qu'« équilibré » à graine égale, Ḡ au moins égal.
+/// T33 : « longues » paie un coût par montée mais reste proche du D+ d'« équilibré » (≤ 15 %),
+/// « équilibré » n'est pas touché (D+ pur). L'effet visible est dans tiles_pilote.rs.
 #[test]
-fn long_climbs_is_direction_only() {
+fn long_climbs_costs_little_dplus() {
     let world = || {
         let mut w = World::new();
         for i in 0..4 {
@@ -718,10 +834,5 @@ fn long_climbs_is_direction_only() {
     };
     let (b, l) = (run("balanced"), run("long"));
     let f = |o: &Value, k: &str| o["candidates"][0][k].as_f64().unwrap();
-    assert_eq!(
-        (f(&b, "dplus_m"), f(&b, "length_m")),
-        (f(&l, "dplus_m"), f(&l, "length_m"))
-    );
-    let g = |o: &Value| o["candidates"][0]["climbs"]["gbar_m"].as_f64().unwrap();
-    assert!(g(&l) >= g(&b));
+    assert!(f(&l, "dplus_m") >= 0.85 * f(&b, "dplus_m"));
 }

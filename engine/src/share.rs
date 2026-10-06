@@ -89,6 +89,13 @@ pub struct Candidate {
     #[serde(default)]
     pub target_gap: Option<Gap>,
     pub climbs: Climbs,
+    /// v1.5 (T34) : points de passage, tronçons, repères ; absents des boucles plus anciennes.
+    #[serde(default)]
+    pub via: Vec<Via>,
+    #[serde(default)]
+    pub legs: Vec<Leg>,
+    #[serde(default)]
+    pub landmarks: Vec<Landmark>,
     pub lat: Vec<f64>,
     pub lon: Vec<f64>,
     pub ele: Vec<f64>,
@@ -96,6 +103,37 @@ pub struct Candidate {
     /// HMAC-SHA256 (hex) posé par `/api/plan` (M3) ; exigé par `POST /api/loops`, pas stocké.
     #[serde(default, skip_serializing)]
     pub sig: String,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Via {
+    pub n: u32,
+    pub lat: f64,
+    pub lon: f64,
+    pub snap_m: f64,
+    pub dist_m: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Leg {
+    pub from: u32,
+    pub to: u32,
+    pub length_m: f64,
+    pub dplus_m: f64,
+    pub dminus_m: f64,
+}
+
+#[derive(Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct Landmark {
+    pub kind: String,
+    pub name: String,
+    pub ele_m: Option<f64>,
+    pub dist_m: f64,
+    pub lat: f64,
+    pub lon: f64,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -120,6 +158,11 @@ pub struct Climbs {
 pub struct Warning {
     pub code: Code,
     pub params: Map<String, Value>,
+    /// D40 : réglages proposés (objet de ≤ 4 scalaires ou null), voir `Msg::suggest`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suggest: Option<Map<String, Value>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
 }
 
 fn bad(detail: impl Into<String>) -> Msg {
@@ -217,7 +260,12 @@ pub fn validate(body: &[u8], key: &hmac::Key) -> Result<Vec<u8>, Msg> {
             .collect::<std::collections::BTreeSet<_>>(
         ));
         let values_ok = w.params.values().all(|v| v.is_number() || v.is_null());
-        if kind != Kind::Warning || !keys_ok || !values_ok {
+        let suggest_ok = w.suggest.as_ref().is_none_or(|m| {
+            m.len() <= 4
+                && m.values()
+                    .all(|v| v.is_string() || v.is_number() || v.is_null())
+        });
+        if kind != Kind::Warning || !keys_ok || !values_ok || !suggest_ok {
             return Err(bad(format!("warning {:?}: unknown code or params", w.code)));
         }
     }
@@ -324,7 +372,7 @@ impl Store {
         match std::env::var("SHARED_BUCKET") {
             Ok(bucket) if !bucket.is_empty() => Store::S3 {
                 bucket,
-                region: std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-west-3".into()),
+                region: std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into()),
             },
             _ => Store::Dir(
                 std::env::var_os("SHARE_DIR")
@@ -377,58 +425,124 @@ impl Store {
         let Store::S3 { bucket, region } = self else {
             unreachable!()
         };
-        let env = |k: &str| std::env::var(k).map_err(|_| format!("{k} missing"));
-        let (key_id, secret) = (env("AWS_ACCESS_KEY_ID")?, env("AWS_SECRET_ACCESS_KEY")?);
-        let token = std::env::var("AWS_SESSION_TOKEN").ok();
-        let host = format!("{bucket}.s3.{region}.amazonaws.com");
-        let path = format!("/shared/{id}.json");
-        let date = amz_date(std::time::SystemTime::now());
-        let hash = hex(digest::digest(&digest::SHA256, body).as_ref());
-        let mut headers = vec![
-            ("host", host.clone()),
-            ("x-amz-content-sha256", hash),
-            ("x-amz-date", date.clone()),
-        ];
-        if method == "PUT" {
-            headers.push(("content-type", "application/json".into()));
-        }
-        if let Some(t) = token {
-            headers.push(("x-amz-security-token", t));
-        }
-        headers.sort();
-        let auth = sigv4(
-            method, &path, &headers, &date, region, "s3", &key_id, &secret,
-        );
-        let agent: ureq::Agent = ureq::Agent::config_builder()
-            .timeout_global(Some(std::time::Duration::from_secs(5)))
-            .http_status_as_error(false)
-            .build()
-            .into();
-        let url = format!("https://{host}{path}");
-        let mut req = match method {
-            "PUT" => ureq::http::Request::put(&url),
-            _ => ureq::http::Request::get(&url),
+        let target = S3Target {
+            bucket: bucket.clone(),
+            region: region.clone(),
+            endpoint: None,
         };
-        for (k, v) in headers.iter().filter(|h| h.0 != "host") {
-            req = req.header(*k, v);
-        }
-        let req = req
-            .header("authorization", auth)
-            .body(body.to_vec())
-            .map_err(|e| e.to_string())?;
-        let mut resp = agent.run(req).map_err(|e| format!("s3: {e}"))?;
-        let status = resp.status().as_u16();
-        let bytes = resp
-            .body_mut()
-            .with_config()
-            .limit(MAX_BODY as u64 + 1024)
-            .read_to_vec()
-            .map_err(|e| format!("s3: {e}"))?;
-        Ok((status, bytes))
+        let key = format!("shared/{id}.json");
+        let ct = (method == "PUT").then_some("application/json");
+        s3_call(
+            &target,
+            &Creds::from_env()?,
+            method,
+            &key,
+            body,
+            ct,
+            (5, MAX_BODY as u64 + 1024),
+        )
     }
 }
 
-fn hex(b: &[u8]) -> String {
+/// Bucket S3 ; `endpoint` (http://hôte:port, adressage par chemin) : MinIO / serveur de test.
+pub struct S3Target {
+    pub bucket: String,
+    pub region: String,
+    pub endpoint: Option<String>,
+}
+
+/// Identifiants AWS (rôle Lambda : variables d'environnement).
+pub struct Creds {
+    pub key_id: String,
+    pub secret: String,
+    pub token: Option<String>,
+}
+
+impl Creds {
+    pub fn from_env() -> Result<Creds, String> {
+        let env = |k: &str| std::env::var(k).map_err(|_| format!("{k} missing"));
+        Ok(Creds {
+            key_id: env("AWS_ACCESS_KEY_ID")?,
+            secret: env("AWS_SECRET_ACCESS_KEY")?,
+            token: std::env::var("AWS_SESSION_TOKEN").ok(),
+        })
+    }
+}
+
+/// Requête S3 signée SigV4 ; `limits` = (délai en s, taille maximale de la réponse).
+pub fn s3_call(
+    t: &S3Target,
+    creds: &Creds,
+    method: &str,
+    key: &str,
+    body: &[u8],
+    content_type: Option<&str>,
+    limits: (u64, u64),
+) -> Result<(u16, Vec<u8>), String> {
+    let (url, host, path) = match &t.endpoint {
+        Some(e) => {
+            let host = e.split("://").last().unwrap_or(e).to_string();
+            let path = format!("/{}/{key}", t.bucket);
+            (format!("{e}{path}"), host, path)
+        }
+        None => {
+            let host = format!("{}.s3.{}.amazonaws.com", t.bucket, t.region);
+            let path = format!("/{key}");
+            (format!("https://{host}{path}"), host, path)
+        }
+    };
+    let date = amz_date(std::time::SystemTime::now());
+    let hash = hex(digest::digest(&digest::SHA256, body).as_ref());
+    let mut headers = vec![
+        ("host", host),
+        ("x-amz-content-sha256", hash),
+        ("x-amz-date", date.clone()),
+    ];
+    if let Some(ct) = content_type {
+        headers.push(("content-type", ct.into()));
+    }
+    if let Some(tok) = &creds.token {
+        headers.push(("x-amz-security-token", tok.clone()));
+    }
+    headers.sort();
+    let auth = sigv4(
+        method,
+        &path,
+        &headers,
+        &date,
+        &t.region,
+        "s3",
+        &creds.key_id,
+        &creds.secret,
+    );
+    let agent: ureq::Agent = ureq::Agent::config_builder()
+        .timeout_global(Some(std::time::Duration::from_secs(limits.0)))
+        .http_status_as_error(false)
+        .build()
+        .into();
+    let mut req = match method {
+        "PUT" => ureq::http::Request::put(&url),
+        _ => ureq::http::Request::get(&url),
+    };
+    for (k, v) in headers.iter().filter(|h| h.0 != "host") {
+        req = req.header(*k, v);
+    }
+    let req = req
+        .header("authorization", auth)
+        .body(body.to_vec())
+        .map_err(|e| e.to_string())?;
+    let mut resp = agent.run(req).map_err(|e| format!("s3: {e}"))?;
+    let status = resp.status().as_u16();
+    let bytes = resp
+        .body_mut()
+        .with_config()
+        .limit(limits.1)
+        .read_to_vec()
+        .map_err(|e| format!("s3: {e}"))?;
+    Ok((status, bytes))
+}
+
+pub fn hex(b: &[u8]) -> String {
     b.iter().map(|x| format!("{x:02x}")).collect()
 }
 

@@ -228,7 +228,7 @@ resource "aws_iam_role_policy" "killswitch" {
     Version = "2012-10-17"
     Statement = [
       { Effect = "Allow", Action = ["lambda:PutFunctionConcurrency", "lambda:DeleteFunctionConcurrency"], Resource = aws_lambda_function.api.arn },
-      { Effect = "Allow", Action = ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"], Resource = "arn:aws:scheduler:eu-west-3:${local.account}:schedule/default/optrail-resume" },
+      { Effect = "Allow", Action = ["scheduler:CreateSchedule", "scheduler:UpdateSchedule", "scheduler:DeleteSchedule"], Resource = "arn:aws:scheduler:eu-north-1:${local.account}:schedule/default/optrail-resume" },
       { Effect = "Allow", Action = "iam:PassRole", Resource = aws_iam_role.scheduler.arn },
       { Effect = "Allow", Action = ["logs:CreateLogStream", "logs:PutLogEvents"], Resource = "${aws_cloudwatch_log_group.killswitch.arn}:*" },
     ]

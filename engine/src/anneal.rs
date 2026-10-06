@@ -124,9 +124,17 @@ impl<'a> Annealer<'a> {
         if cands.is_empty() {
             return None;
         }
-        let k = [1, 2, 2, 3, 3, 4][self.rng.below(6)].min(cands.len());
-        let mut wps: Vec<usize> = Vec::new();
-        while wps.len() < k {
+        let mut k = [1, 2, 2, 3, 3, 4][self.rng.below(6)].min(cands.len());
+        // points de passage (T34) : tous imposés, plus 0 à 2 waypoints libres pour la distance
+        let mut wps: Vec<usize> = p.via.iter().copied().filter(|&x| x != p.s).collect();
+        wps.dedup();
+        if !p.via.is_empty() {
+            k = wps.len() + self.rng.below(3).min(cands.len());
+        }
+        for _ in 0..1000 {
+            if wps.len() >= k {
+                break;
+            }
             let c = cands[self.rng.below(cands.len())];
             if !wps.contains(&c) {
                 wps.push(c);

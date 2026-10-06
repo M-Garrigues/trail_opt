@@ -197,6 +197,27 @@ fn bout_en_bout_dalles_pilotes() {
     assert_eq!((r.status, r.log["detail"].clone()), (403, json!("down")));
     assert!(r.body["error"].get("detail").is_none(), "{}", r.body);
     assert_eq!(r.log["accepted"], json!(false));
+    // diagnose=1 (D46) : Turnstile requis, valeur validée, réponse sans géométrie
+    let dg = q(
+        "lat=48.7309&lon=2.2713&goal=target&distance_km=10&dplus_m=300&roads=unpaved&n_candidates=1&diagnose=1",
+    );
+    assert_eq!(handle(&dg, None, false, &store, &key, never).status, 403);
+    assert_eq!(
+        handle(
+            &q("lat=48.7309&lon=2.2713&diagnose=2"),
+            None,
+            true,
+            &store,
+            &key,
+            never
+        )
+        .status,
+        400
+    );
+    let r = handle(&dg, Some("t"), false, &store, &key, |_| Ok(true));
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert!(r.body.get("candidates").is_none() && r.body["params"]["asked"] == 1);
+    assert_eq!(r.body["suggest"], json!({"roads": "minor"}));
     // appel interne (smoke test deploy.yml) : pas de Turnstile
     let r = handle(&massy, None, true, &store, &key, never);
     assert_eq!(r.status, 200, "{}", r.body);
@@ -335,6 +356,10 @@ fn cand() -> Value {
     json!({"length_m": 10494.0, "dplus_m": 433.1, "feasible": true, "alt_min_m": 55.6, "alt_max_m": 159.1,
            "max_grade_pct": 48.8, "target_gap": null,
            "climbs": {"count": 8, "longest_gain_m": 67.2, "longest_len_m": 626.0, "gbar_m": 44.0, "mean_grade_pct": 8.2},
+           "via": [{"n": 1, "lat": 48.74, "lon": 2.28, "snap_m": 3.0, "dist_m": 1000.0}],
+           "legs": [{"from": 0, "to": 1, "length_m": 1000.0, "dplus_m": 20.0, "dminus_m": 0.0},
+                    {"from": 1, "to": 0, "length_m": 1000.0, "dplus_m": 0.0, "dminus_m": 20.0}],
+           "landmarks": [{"kind": "col", "name": "Col X", "ele_m": null, "dist_m": 1000.0, "lat": 48.74, "lon": 2.28}],
            "lat": [48.73, 48.74, 48.73], "lon": [2.27, 2.28, 2.27], "ele": [60.0, 80.0, 60.0], "dist": [0.0, 1000.0, 2000.0]})
 }
 

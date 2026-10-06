@@ -2,6 +2,7 @@
   // E15 menu : à propos, sécurité, légal, confidentialité, attributions, réglages.
   import { app, close, forgetPosition, eraseAll, open as openLayer, toast } from '../lib/app.svelte';
   import { i18n, t, setLang } from '../i18n/i18n.svelte';
+  import Install from './Install.svelte';
 
   function pace(sec: number) { return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
   const PACES = Array.from({ length: (720 - 240) / 15 + 1 }, (_, i) => 240 + i * 15);
@@ -13,6 +14,7 @@
 </div>
 
 <button class="btn secondary wide" onclick={async () => { await close(); openLayer('history'); }}>{t().history.title}</button>
+<Install />
 
 <section>
   <h3>{t().menu.settings}</h3>
@@ -40,8 +42,12 @@
 <details><summary>{t().menu.legal}</summary><p>{t().menu.legalText}</p></details>
 <details><summary>{t().menu.privacy}</summary><p>{t().menu.privacyText}</p></details>
 <details><summary>{t().menu.attributions}</summary><p>{t().menu.attributionsText}</p></details>
+<a class="source" href="https://github.com/M-Garrigues/trail_opt" target="_blank" rel="noopener noreferrer">
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5" /></svg>{t().menu.source}
+</a>
 
 <style>
+  .source { display: flex; align-items: center; gap: 8px; border-top: 1px solid var(--border); padding: 12px 0; font-weight: 600; color: var(--accent-text); min-height: 24px; }
   .head { display: flex; gap: 8px; align-items: center; margin-bottom: 8px; }
   h2 { font-size: 1.25rem; margin: 0; }
   h3 { font-size: 1rem; margin: 16px 0 6px; }

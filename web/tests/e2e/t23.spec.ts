@@ -1,6 +1,6 @@
 // T23 : pente max (api.md v1.2), couverture, zone (51e sommet, édition), hors ligne, ?debug=1, « Oublier ma position ».
 import { test, expect, type Page } from '@playwright/test';
-import { setup, mockPlan, placeStart, zoneClick, T, isFr } from './helpers';
+import { setup, mockPlan, placeStart, openSheet, zoneClick, T, isFr } from './helpers';
 
 const zoneBtn = (page: Page) => page.getByRole('button', { name: isFr() ? /^Zone/ : /^Area/ });
 async function frac(page: Page) {
@@ -14,6 +14,7 @@ test('pente max : défaut 60 % non envoyé, « sans limite » = 0', async ({ pag
   const calls = await mockPlan(page);
   await page.goto('/');
   await placeStart(page);
+  await openSheet(page);
   await page.getByText(isFr() ? 'Plus d’options' : 'More options').click();
   const sel = page.getByLabel(isFr() ? 'Pente max des chemins (sur 50 m)' : 'Max path grade (over 50 m)');
   await expect(sel).toHaveValue('60');
@@ -24,7 +25,8 @@ test('pente max : défaut 60 % non envoyé, « sans limite » = 0', async ({ pag
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[0].searchParams.has('max_grade_pct')).toBe(false); // absent = 60 (api.md v1.2)
-  await page.keyboard.press('Escape');
+  await page.keyboard.press('Escape'); // la feuille se replie
+  await openSheet(page);
   await page.getByText(isFr() ? 'Plus d’options' : 'More options').click();
   await sel.selectOption({ label: isFr() ? 'sans limite' : 'no limit' });
   await page.getByRole('button', { name: t.find }).click();
@@ -121,7 +123,7 @@ test('hors ligne : Partager désactivé (E14)', async ({ page, context }) => {
   await expect(share).toBeEnabled();
   await context.setOffline(true);
   await expect(share).toBeDisabled();
-  await page.getByRole('button', { name: t.details }).click();
+  await page.getByRole('button', { name: t.details }).click({ timeout: 3000 }).catch(() => {}); // bureau : détail déjà embarqué
   await expect(page.getByRole('button', { name: t.share, exact: true })).toBeDisabled();
   await context.setOffline(false);
   await expect(page.getByRole('button', { name: t.share, exact: true })).toBeEnabled();

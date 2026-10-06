@@ -1,5 +1,5 @@
 variable "lambda_s3_key" {
-  description = "Clé du zip Lambda dans le bucket d'artefacts (lambda/<sha>.zip), déposé par deploy.yml."
+  description = "Clé du zip Lambda dans le bucket d'artefacts (lambda/<sha>.zip), déposé par scripts/deploy.sh."
   type        = string
 }
 
@@ -40,6 +40,7 @@ variable "cloudfront_hostname" {
 variable "alert_email" {
   description = "Adresse qui reçoit alarmes, budgets et coupe-circuit (abonnement SNS à confirmer)."
   type        = string
+  sensitive   = true # e-mail perso : jamais dans les logs du plan (secret GitHub ALERT_EMAIL)
 }
 
 # Calage (README « Coupe-circuit ») : free tier Lambda 400 000 Go-s/mois = 132 979 s à 3,008 Go,

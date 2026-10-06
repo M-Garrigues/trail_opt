@@ -29,6 +29,11 @@ const MD_MARGIN: f64 = 0.03;
 /// λ initial : mode min_distance, autres modes.
 const LAM0_MD: f64 = 0.05;
 const LAM0: f64 = 0.02;
+/// D40 : prix du mètre au-delà de la distance demandée, en multiples de λ (mode max). Plaine : la
+/// boucle revient à la distance demandée (+0 % au lieu de +4,9 %) pour −3 à −6 % de D+.
+const LEN_PRICE: f64 = 4.0;
+/// Points de passage (T34) : pénalité de score par point manqué pendant le recuit.
+const VIA_PEN: f64 = 2000.0;
 
 /// Pas d'une face : (arête, de, vers).
 pub type Step = (usize, usize, usize);
@@ -188,14 +193,33 @@ struct Loop {
     pos: Vec<usize>,
     x: Vec<usize>,
     deg: Vec<u32>,
+    /// T24 : arêtes de la boucle à chaque nœud (hors boucles sur soi), tenu si `track`.
+    inc: Vec<Vec<usize>>,
+    track: bool,
 }
 
 impl Loop {
+    /// Tient `inc` à jour quand l'arête e (a–b) entre (`add`) ou sort de la boucle.
+    fn link(&mut self, e: usize, a: usize, b: usize, add: bool) {
+        if !self.track || a == b {
+            return;
+        }
+        for n in [a, b] {
+            let l = &mut self.inc[n];
+            if add {
+                l.push(e);
+            } else if let Some(i) = l.iter().position(|&x| x == e) {
+                l.swap_remove(i);
+            }
+        }
+    }
+
     /// Différence symétrique avec la face f (involutive).
     fn toggle(&mut self, f: &[Step]) {
         for &(e, a, b) in f {
             if self.inx[e] {
                 self.inx[e] = false;
+                self.link(e, a, b, false);
                 let p = self.pos[e];
                 let last = self.x.pop().unwrap();
                 if last != e {
@@ -206,6 +230,7 @@ impl Loop {
                 self.deg[b] -= 1;
             } else {
                 self.inx[e] = true;
+                self.link(e, a, b, true);
                 self.pos[e] = self.x.len();
                 self.x.push(e);
                 self.deg[a] += 1;
@@ -494,6 +519,23 @@ impl<'a> FaceSearch<'a> {
         wb: Option<&[f64]>,
         rng: &mut Rng,
     ) -> (Vec<usize>, f64, u64) {
+        self.run_until(init, iters, t0, t1, lam0, w, wb, rng, self.deadline)
+    }
+
+    /// `run` avec une échéance explicite (`None` : toutes les itérations, quel que soit le temps).
+    #[allow(clippy::too_many_arguments)]
+    fn run_until(
+        &self,
+        init: &[usize],
+        iters: u64,
+        t0: f64,
+        t1: f64,
+        lam0: f64,
+        w: &[f64],
+        wb: Option<&[f64]>,
+        rng: &mut Rng,
+        deadline: Option<Instant>,
+    ) -> (Vec<usize>, f64, u64) {
         // `w` : poids de recherche (le D+ réel, ou réduit sur les arêtes déjà prises par les
         // boucles précédentes pour s'en écarter, voir `alternates`).
         let p = self.p;
@@ -507,6 +549,8 @@ impl<'a> FaceSearch<'a> {
             pos: vec![0; m],
             x: Vec::new(),
             deg: vec![0; n],
+            inc: vec![Vec::new(); if p.node_mu != 0.0 { n } else { 0 }],
+            track: p.node_mu != 0.0,
         };
         let (mut cur_l, mut cur_w, mut cur_b) = (0.0, 0.0, 0.0);
         for &e in init {
@@ -516,9 +560,22 @@ impl<'a> FaceSearch<'a> {
             st.x.push(e);
             st.deg[p.u[e]] += 1;
             st.deg[p.v[e]] += 1;
+            st.link(e, p.u[e], p.v[e], true);
             cur_l += ln[e];
             cur_w += w[e];
         }
+        // T24 « longues » : coût par montée aux nœuds (extrema entre deux arêtes consécutives),
+        // compté dans B ; modes max seulement (search_problem le pose).
+        let nterm = p.node_mu != 0.0 && !md && !target;
+        if nterm {
+            cur_b -= p.node_mu * p.node_climbs(&st.x);
+        }
+        let (mut mark_t, mut stamp_t) = (vec![0u64; if nterm { m } else { 0 }], 0u64);
+        // points de passage : nœuds marqués, nombre de points que la boucle ne touche pas
+        let mut is_via = vec![false; if p.via.is_empty() { 0 } else { n }];
+        p.via.iter().for_each(|&x| is_via[x] = true);
+        let mut cur_m = p.via.iter().filter(|&&x| st.deg[x] == 0).count() as i64;
+        let pen = |k: i64| VIA_PEN * k as f64;
         let score = |l: f64, wv: f64, b: f64, lam: f64| {
             if md {
                 wv + b
@@ -538,29 +595,38 @@ impl<'a> FaceSearch<'a> {
                 } else {
                     0.0
                 };
-                -TARGET_SCALE * ((l - lt).abs() / lt + (wv - dt).abs() / dt + 3.0 * out / lt)
+                // b : seulement dans `alternates` (prix des arêtes déjà prises)
+                b - TARGET_SCALE * ((l - lt).abs() / lt + (wv - dt).abs() / dt + 3.0 * out / lt)
             } else {
-                wv - lam * l - if l > lmax { PEN * (l - lmax) } else { 0.0 }
+                wv + b - lam * l - if l > lmax { PEN * (l - lmax) } else { 0.0 }
             }
         };
         // ce qu'on cherche à maximiser parmi les boucles dans les bornes
-        let value = |l: f64, wv: f64| if target { score(l, wv, 0.0, 0.0) } else { wv };
+        // mode max (D40) : au-delà de la distance demandée, chaque mètre doit rapporter au moins
+        // le prix λ (D+ par mètre) : pas de détour sans D+ pour boucher la tolérance
+        let lmid = 0.5 * (lmin + lmax);
+        let value = |l: f64, wv: f64, b: f64, lam: f64| {
+            if target {
+                score(l, wv, b, 0.0)
+            } else {
+                wv + b - LEN_PRICE * lam * (l - lmid).max(0.0)
+            }
+        };
         let in_bounds = |l: f64| lmin <= l && l <= lmax;
 
         let mut lam = lam0;
-        let lmid = 0.5 * (lmin + lmax);
-        let mut cur = score(cur_l, cur_w, cur_b, lam);
-        let mut best = if in_bounds(cur_l) && !md {
-            value(cur_l, cur_w)
+        let mut cur = score(cur_l, cur_w, cur_b, lam) - pen(cur_m);
+        let mut best = if in_bounds(cur_l) && !md && cur_m == 0 {
+            value(cur_l, cur_w, cur_b, lam)
         } else {
             -INF
         };
         let mut best_x = st.x.clone();
         // min_distance : meilleure boucle réalisable (L, B), et repli (plus fort W sous Lmax)
-        let md_ok = |l: f64, wv: f64| wv >= x_md && l <= lmax;
+        let md_ok = |l: f64, wv: f64, k: i64| wv >= x_md && l <= lmax && k == 0;
         let (mut best_l, mut best_b) = (INF, 0.0);
         let (mut fb_w, mut fb_x) = (-INF, Vec::new());
-        if md && md_ok(cur_l, cur_w) {
+        if md && md_ok(cur_l, cur_w, cur_m) {
             (best_l, best_b) = (cur_l, cur_b);
         }
         // Marques datées (évitent de remettre des tableaux à zéro) : couloirs et connexité.
@@ -570,17 +636,17 @@ impl<'a> FaceSearch<'a> {
         let (mut it, mut temp) = (0u64, t0);
         while !st.x.is_empty() {
             if it & 255 == 0 {
-                if it >= iters || self.deadline.is_some_and(|d| Instant::now() >= d) {
+                if it >= iters || deadline.is_some_and(|d| Instant::now() >= d) {
                     break;
                 }
                 temp = t0 * (t1 / t0).powf(it as f64 / iters as f64);
                 if md {
                     // trop de D+ : la distance coûte plus cher, et inversement
                     lam *= if cur_w > wt { 1.01 } else { 0.99 };
-                    cur = score(cur_l, cur_w, cur_b, lam);
+                    cur = score(cur_l, cur_w, cur_b, lam) - pen(cur_m);
                 } else if !target {
                     lam *= if cur_l > lmid { 1.01 } else { 0.99 };
-                    cur = score(cur_l, cur_w, cur_b, lam);
+                    cur = score(cur_l, cur_w, cur_b, lam) - pen(cur_m);
                 }
             }
             it += 1;
@@ -604,7 +670,54 @@ impl<'a> FaceSearch<'a> {
                     db += bonus(x);
                 }
             }
-            let new = score(cur_l + dl, cur_w + dw, cur_b + db, lam);
+            if nterm {
+                stamp_t += 1;
+                for &(x, _, _) in f {
+                    mark_t[x] = stamp_t;
+                }
+                // extremum en a avant / après bascule (après = arêtes gardées + arêtes de la face
+                // en a qui entrent) ; ignoré si le degré n'est pas 2
+                let ext = |a: usize, fa: [usize; 2], after: bool| {
+                    let (mut es, mut k) = ([usize::MAX; 2], 0);
+                    let kept = st.inc[a]
+                        .iter()
+                        .copied()
+                        .filter(|&x| !(after && mark_t[x] == stamp_t));
+                    let added = fa.into_iter().filter(|&x| after && !st.inx[x]);
+                    for x in kept.chain(added) {
+                        if k < 2 {
+                            es[k] = x;
+                        }
+                        k += 1;
+                    }
+                    if k == 2 {
+                        p.node_ext(a, es[0], es[1])
+                    } else {
+                        0.0
+                    }
+                };
+                let nf = f.len();
+                let dk: f64 = (0..nf)
+                    .map(|i| {
+                        let fa = [f[(i + nf - 1) % nf].0, f[i].0];
+                        ext(f[i].1, fa, true) - ext(f[i].1, fa, false)
+                    })
+                    .sum();
+                db -= p.node_mu * dk;
+            }
+            let mut dm = 0i64;
+            if !is_via.is_empty() {
+                let nf = f.len();
+                let sg = |x: usize| if st.inx[x] { -1i64 } else { 1 };
+                for i in 0..nf {
+                    let a = f[i].1;
+                    if is_via[a] {
+                        let d = st.deg[a] as i64 + sg(f[(i + nf - 1) % nf].0) + sg(f[i].0);
+                        dm += i64::from(d == 0) - i64::from(st.deg[a] == 0);
+                    }
+                }
+            }
+            let new = score(cur_l + dl, cur_w + dw, cur_b + db, lam) - pen(cur_m + dm);
             if new < cur && rng.random() >= ((new - cur) / temp).exp() {
                 continue;
             }
@@ -653,9 +766,10 @@ impl<'a> FaceSearch<'a> {
             cur_l += dl;
             cur_w += dw;
             cur_b += db;
+            cur_m += dm;
             cur = new;
             if md {
-                if md_ok(cur_l, cur_w) {
+                if md_ok(cur_l, cur_w, cur_m) {
                     let better = best_l == INF
                         || if wb.is_some() {
                             cur_b - lam * cur_l > best_b - lam * best_l
@@ -670,8 +784,8 @@ impl<'a> FaceSearch<'a> {
                     fb_w = cur_w;
                     fb_x.clone_from(&st.x);
                 }
-            } else if in_bounds(cur_l) {
-                let val = value(cur_l, cur_w);
+            } else if in_bounds(cur_l) && cur_m == 0 {
+                let val = value(cur_l, cur_w, cur_b, lam);
                 if val > best {
                     best = val;
                     best_x.clone_from(&st.x);
@@ -704,6 +818,14 @@ impl<'a> FaceSearch<'a> {
         let mut inits: Vec<(String, Vec<usize>)> = Vec::new();
         if let Some(x) = warm {
             inits.push(("recuit".into(), x.to_vec()));
+        }
+        if !p.via.is_empty() {
+            // points de passage : boucle par waypoints qui les contient tous (si possible)
+            let mut a = Annealer::new(p, seed ^ 0x5A5A);
+            a.deadline = self.deadline;
+            if let Some(r) = (0..50).find_map(|_| a.construct()) {
+                inits.push(("points".into(), r.iter().map(|s| s.0).collect()));
+            }
         }
         if let Some(f0) = self.start_face() {
             inits.push(("face".into(), f0));
@@ -805,11 +927,19 @@ impl<'a> FaceSearch<'a> {
         common / la.min(lb).max(1e-9)
     }
 
-    /// Jusqu'à `n` boucles réellement différentes de `existing` et entre elles : chacune part
-    /// du secteur le moins recouvrant, avec le D+ des arêtes déjà prises compté à 0,6 (mode
-    /// min_distance : bonus −0,4·w dans B, jamais dans W, sinon la contrainte X ment). Gardée
-    /// seulement si elle est dans les bornes et partage au plus 50 % de sa longueur avec
-    /// chacune des autres. Budget total `iters`. Renvoie (boucles, itérations faites).
+    /// Jusqu'à `n` boucles différentes de `existing` et entre elles (D44 : on rend le nombre
+    /// demandé tant que le réseau le permet). Chaque tour part du secteur le moins recouvrant, le
+    /// D+ des arêtes déjà prises compté avec une remise (mode min_distance : dans B, jamais dans W,
+    /// sinon la contrainte X ment). Toute boucle produite va dans une réserve ; on y prend la
+    /// meilleure qui passe le palier courant de `LADDER` (recouvrement max avec chacune des autres,
+    /// qualité min : D+ rapporté à la meilleure, ou longueur en min_distance ; mode cible : tenir
+    /// la cible, `Problem::on_target`, ou une erreur comparable si la meilleure ne la tient pas). Un tour sans prise
+    /// monte d'un palier. S'il manque encore des boucles (départs, budget ou temps épuisés) :
+    /// paliers restants sur la réserve, puis recherches courtes HORS échéance (`FORCE_ITERS`,
+    /// le nombre de boucles ne dépend pas de la charge de la machine) où chaque mètre déjà pris
+    /// coûte le D+ moyen de la meilleure boucle. Réseau trop petit pour les bornes (la meilleure
+    /// boucle est elle-même hors bornes) : les autres doivent seulement s'en approcher.
+    /// Budget `iters` (+ au plus 6·n·`FORCE_ITERS`). Renvoie (boucles, itérations faites).
     pub fn alternates(
         &self,
         existing: &[Vec<usize>],
@@ -817,8 +947,21 @@ impl<'a> FaceSearch<'a> {
         iters: u64,
         seed: u64,
     ) -> (Vec<Vec<usize>>, u64) {
-        const MAX_OVERLAP: f64 = 0.5;
-        const DISCOUNT: f64 = 0.6;
+        /// (recouvrement max, qualité min) : on relâche d'abord le recouvrement, puis la qualité.
+        const LADDER: [(f64, f64); 6] = [
+            (0.5, 0.75),
+            (0.65, 0.75),
+            (0.8, 0.75),
+            (0.9, 0.75),
+            (0.9, 0.6),
+            (0.9, 0.5),
+        ];
+        /// Remise sur le D+ des arêtes déjà prises, par palier de la recherche.
+        const DISCOUNT: [f64; 4] = [0.6, 0.75, 0.9, 0.9];
+        const FORCE_ITERS: u64 = 100_000;
+        /// Mode cible, recherches forcées : prix d'une boucle entièrement déjà prise, en unités
+        /// de score (`TARGET_SCALE` = 100 % d'erreur) : 10 % d'erreur.
+        const TARGET_FEE: f64 = 100.0;
         let p = self.p;
         let mut inits: Vec<Vec<usize>> = Vec::new();
         inits.extend(self.start_face());
@@ -839,41 +982,117 @@ impl<'a> FaceSearch<'a> {
                     .map(|r| r.iter().map(|s| s.0).collect::<Vec<_>>()),
             );
         }
+        let all_inits = inits.clone();
         let (mut kept, mut out) = (existing.to_vec(), Vec::new());
-        let (mut left, mut round) = (iters, 0u64);
-        while out.len() < n && !inits.is_empty() {
-            let per = left / (n - out.len()) as u64;
-            if per < 10_000 || self.deadline.is_some_and(|d| Instant::now() >= d) {
-                break;
+        let (mut left, mut round, mut level) = (iters, 0u64, 0usize);
+        // référence : la plus courte longueur et le meilleur D+ des boucles déjà là
+        let (ref_l, ref_d) = existing
+            .iter()
+            .map(|k| p.stats(k))
+            .fold((INF, 0.0), |a: (f64, f64), s| (a.0.min(s.0), a.1.max(s.1)));
+        let ref_ok = existing.iter().any(|k| p.score(k).3);
+        // admise dans la réserve : boucle valide dans les bornes, ou qui s'en approche autant que
+        // la référence quand celle-ci est hors bornes
+        let ok = |ids: &[usize]| {
+            let sc = p.score(ids);
+            let near = !ref_ok && sc.1 <= p.lmax && (p.min_distance() || sc.1 >= 0.75 * ref_l);
+            (sc.3 || near) && p.check(ids).is_ok()
+        };
+        // mode cible : si la meilleure tient la cible, les autres aussi ; sinon erreur comparable
+        let ref_on = existing.iter().any(|k| p.on_target(k));
+        let ref_sc = existing.iter().map(|k| p.score(k).0).fold(-INF, f64::max);
+        let good = |ids: &[usize], q: f64| {
+            let s = p.stats(ids);
+            if p.target() {
+                p.on_target(ids) || (!ref_on && p.score(ids).0 >= ref_sc / q)
+            } else if p.min_distance() && ref_ok {
+                s.0 <= ref_l / q
+            } else {
+                s.1 >= q * ref_d
             }
+        };
+        // meilleure boucle de la réserve qui passe le palier
+        let pick = |pool: &[Vec<usize>], kept: &[Vec<usize>], (max_ov, q): (f64, f64)| {
+            (0..pool.len())
+                .filter(|&i| {
+                    good(&pool[i], q) && kept.iter().all(|k| self.overlap(&pool[i], k) <= max_ov)
+                })
+                .max_by(|&a, &b| p.score(&pool[a]).0.total_cmp(&p.score(&pool[b]).0))
+        };
+        // poids de recherche : les arêtes déjà prises perdent `cut`·w, et `fee` D+ par mètre par
+        // rapport aux autres (mode max : prime aux arêtes neuves, qui allonge aussi les boucles
+        // d'un réseau trop petit ; min_distance : dans B ; mode cible : poids inchangés, et avec
+        // `fee` > 0 un prix dans B : `TARGET_FEE`·`cut` pour une boucle entièrement déjà prise)
+        let weights = |kept: &[Vec<usize>], cut: f64, fee: f64| {
             let mut used = vec![false; p.n_edges()];
             kept.iter().flatten().for_each(|&e| used[e] = true);
             let w_eff: Vec<f64> = if p.target() || p.min_distance() {
                 p.w.clone()
             } else {
-                p.w.iter()
-                    .zip(&used)
-                    .map(|(&x, &u)| if u { x * DISCOUNT } else { x })
-                    .collect()
-            };
-            let wb_eff: Option<Vec<f64>> = p.min_distance().then(|| {
                 (0..p.n_edges())
                     .map(|e| {
-                        let d = if used[e] {
-                            (1.0 - DISCOUNT) * p.w[e]
+                        if used[e] {
+                            (1.0 - cut) * p.w[e]
                         } else {
-                            0.0
-                        };
-                        self.wb.as_ref().map_or(0.0, |b| b[e]) - d
+                            p.w[e] + fee * p.len[e]
+                        }
                     })
                     .collect()
-            });
+            };
+            let wb_eff: Option<Vec<f64>> = if p.min_distance() {
+                Some(
+                    (0..p.n_edges())
+                        .map(|e| {
+                            let pen = if used[e] {
+                                cut * p.w[e] + fee * p.len[e]
+                            } else {
+                                0.0
+                            };
+                            self.wb.as_ref().map_or(0.0, |b| b[e]) - pen
+                        })
+                        .collect(),
+                )
+            } else if p.target() && fee > 0.0 {
+                let c = TARGET_FEE * cut / p.l;
+                Some(
+                    (0..p.n_edges())
+                        .map(|e| if used[e] { -c * p.len[e] } else { 0.0 })
+                        .collect(),
+                )
+            } else {
+                None
+            };
+            (w_eff, wb_eff)
+        };
+        let mut pool: Vec<Vec<usize>> = Vec::new();
+        while out.len() < n {
+            if inits.is_empty() {
+                if level >= 3 {
+                    break;
+                }
+                level += 1;
+                // départs d'appoint : les boucles déjà là (réalisables), que la remise éloigne
+                inits = all_inits
+                    .iter()
+                    .cloned()
+                    .chain(kept.iter().cloned())
+                    .collect();
+            }
+            let per = left / (n - out.len()) as u64;
+            if per < 10_000 || self.deadline.is_some_and(|d| Instant::now() >= d) {
+                break;
+            }
+            let (w_eff, wb_eff) = weights(&kept, 1.0 - DISCOUNT[level], 0.0);
             let ov = |x: &[usize]| kept.iter().map(|k| self.overlap(x, k)).fold(0.0, f64::max);
             inits.sort_by(|x, y| ov(x).total_cmp(&ov(y)));
-            // Deux départs par boucle, on garde la meilleure : un seul donne un résultat très
-            // variable. Si aucune n'est valable, le tour suivant essaie d'autres départs.
+            // Deux départs par tour : un seul donne un résultat très variable.
             let tries: Vec<Vec<usize>> = inits.drain(..inits.len().min(2)).collect();
-            let share = if inits.is_empty() { 1.0 } else { 0.6 };
+            // on garde du budget pour les tours suivants (palier relâché) tant qu'il en reste
+            let share = if inits.is_empty() && level >= 3 {
+                1.0
+            } else {
+                0.6
+            };
             let budget = (per as f64 / tries.len() as f64 * share) as u64;
             let res: Vec<_> = tries
                 .par_iter()
@@ -896,19 +1115,65 @@ impl<'a> FaceSearch<'a> {
                 })
                 .collect();
             round += 1;
-            let mut best: Option<(f64, Vec<usize>)> = None;
             for (ids, _, it) in res {
                 left = left.saturating_sub(it);
-                let sc = p.score(&ids);
-                if sc.3 && ov(&ids) <= MAX_OVERLAP && best.as_ref().is_none_or(|b| sc.0 > b.0) {
-                    best = Some((sc.0, ids));
+                if ok(&ids) {
+                    pool.push(ids);
                 }
             }
-            if let Some((_, ids)) = best {
+            if let Some(i) = pick(&pool, &kept, LADDER[level]) {
+                let ids = pool.swap_remove(i);
                 kept.push(ids.clone());
                 out.push(ids);
+            } else {
+                level = (level + 1).min(3);
             }
         }
-        (out, iters - left)
+        // D44 : il manque des boucles. Réserve à tous les paliers, sinon recherches forcées.
+        let fee = (ref_d / ref_l.max(1.0)).max(0.01);
+        // `forced` : recherches forcées depuis la dernière prise ; `drawn` : au total (tirages)
+        let (mut forced, mut drawn, mut extra) = (0u32, 0usize, 0u64);
+        while out.len() < n {
+            if let Some(i) = LADDER.iter().find_map(|&l| pick(&pool, &kept, l)) {
+                let ids = pool.swap_remove(i);
+                kept.push(ids.clone());
+                out.push(ids);
+                forced = 0;
+                continue;
+            }
+            if forced == 3 || kept.is_empty() {
+                break;
+            }
+            // de plus en plus loin des boucles gardées : 40, 70 puis 100 % de leur D+ retiré
+            let cut = (0.4 + 0.3 * forced as f64).min(1.0);
+            let (w_eff, wb_eff) = weights(&kept, cut, cut * fee);
+            let res: Vec<_> = (0..2usize)
+                .into_par_iter()
+                .map(|i| {
+                    let k = 2 * drawn + i;
+                    let mut rng = Rng::new(seed.wrapping_mul(1000).wrapping_add(500 + k as u64));
+                    self.run_until(
+                        &kept[k % kept.len()],
+                        FORCE_ITERS,
+                        3.0,
+                        0.2,
+                        self.lam0,
+                        &w_eff,
+                        wb_eff.as_deref(),
+                        &mut rng,
+                        None,
+                    )
+                })
+                .collect();
+            forced += 1;
+            drawn += 1;
+            for (ids, _, it) in res {
+                extra += it;
+                if ok(&ids) {
+                    pool.push(ids);
+                }
+            }
+        }
+        (out, iters - left + extra)
     }
 }

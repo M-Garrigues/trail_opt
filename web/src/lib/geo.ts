@@ -77,6 +77,9 @@ export function simplify(lat: number[], lon: number[], tol: number): number[] {
   return [...keep.keys()].filter((i) => keep[i]);
 }
 
+/** Index du tracé au plus près de l'abscisse `dist_m` d'un repère (api.md v1.5). */
+export const idxAt = (c: { dist: number[] }, dist_m: number) => indexAtDist(c.dist, dist_m);
+
 /** Départ mémorisé arrondi à 0,01° (~1 km, D22) : sert seulement à cadrer la carte. */
 export const roundStart = (p: { lat: number; lon: number }) => ({
   lat: Math.round(p.lat * 100) / 100,
@@ -90,3 +93,24 @@ export function parseLatLon(s: string): { lat: number; lon: number } | null {
   const lat = parseFloat(m[1].replace(',', '.')), lon = parseFloat(m[2].replace(',', '.'));
   return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
 }
+
+/** D+ d'un tronçon [a, b] par hystérésis h (comme le moteur, api.md : 5 m). */
+export function dplusBetween(ele: number[], a: number, b: number, h = 5): number {
+  let up = 0, ref = ele[a], climbing = false;
+  for (let i = a + 1; i <= b; i++) {
+    const e = ele[i];
+    if (climbing ? e > ref : e - ref >= h) { up += e - ref; ref = e; climbing = true; }
+    else if (climbing ? ref - e >= h : e < ref) { ref = e; climbing = false; }
+  }
+  return up;
+}
+
+/** Tronçons départ → points de passage (dans l'ordre de visite) → arrivée (D34) : indices, distance, D+. */
+export function legs(dist: number[], ele: number[], idx: number[]) {
+  const cut = [0, ...[...idx].sort((x, y) => x - y), dist.length - 1];
+  return cut.slice(1).map((b, k) => ({ from: cut[k], to: b, length_m: dist[b] - dist[cut[k]], dplus_m: dplusBetween(ele, cut[k], b) }));
+}
+
+/** `via=lat,lon;lat,lon` (requête, api.md v1.5 : attention, l'inverse de `polygon`) → points. */
+export const parseVia = (v: string | undefined) =>
+  (v ?? '').split(';').map((s) => s.split(',').map(Number)).filter((p) => p.length === 2 && p.every(Number.isFinite)).map(([lat, lon]) => ({ lat, lon }));

@@ -2,6 +2,8 @@
 //! `GET /api/loops/<id>` derrière une Function URL AWS_IAM appelée par CloudFront (OAC).
 //! cargo-lambda produit l'exécutable `bootstrap`.
 //! Environnement :
+//!   TILES_S3           s3://bucket/tiles/<DATA_VERSION>/ : dalles lues à la demande (cache /tmp/tiles/<version>,
+//!                      TILES_CACHE, S3_ENDPOINT = serveur compatible S3) ; prioritaire sur TILES_DIR
 //!   TILES_DIR          dossier des dalles (défaut : `tiles/` à côté de l'exécutable, D10)
 //!   DATA_VERSION       version attendue des dalles (contrôle au démarrage, log seulement)
 //!   TURNSTILE_SECRET   clé secrète Cloudflare Turnstile (D8) ; clés de test refusées en release
@@ -224,8 +226,19 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Error> {
-    let dir = tiles_dir();
-    let store = TileStore::open(&dir)?;
+    // TILES_S3 (s3://bucket/tiles/<version>/) : dalles lues à la demande dans /tmp/tiles/<version>
+    let (dir, store) = match std::env::var("TILES_S3").ok().filter(|s| !s.is_empty()) {
+        Some(url) => {
+            let cache = std::env::var_os("TILES_CACHE").map_or("/tmp/tiles".into(), PathBuf::from);
+            let store = TileStore::open_s3(&url, &cache)?;
+            (PathBuf::from(url), store)
+        }
+        None => {
+            let dir = tiles_dir();
+            let store = TileStore::open(&dir)?;
+            (dir, store)
+        }
+    };
     let loops = Store::from_env();
     // E3, M3 : configuration de production vérifiée au démarrage (refus = pas de service)
     let turnstile = Turnstile::from_env()?;

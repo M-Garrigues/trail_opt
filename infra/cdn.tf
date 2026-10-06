@@ -101,7 +101,7 @@ resource "aws_cloudfront_origin_request_policy" "api" {
   headers_config {
     header_behavior = "whitelist"
     headers {
-      items = ["x-turnstile-token", "x-amz-content-sha256", "content-type", "CloudFront-Viewer-Address"]
+      items = ["x-turnstile-token", "content-type", "CloudFront-Viewer-Address"]
     }
   }
   query_strings_config {
@@ -223,8 +223,8 @@ resource "aws_cloudfront_distribution" "main" {
 
   # Partage (POST /api/loops, GET /api/loops/{id}). CloudFront n'accepte que des jeux de méthodes
   # complets ; la Lambda refuse le reste (405). OAC → Lambda signe le corps seulement si le
-  # navigateur envoie x-amz-content-sha256 (SHA-256 hex du corps) : transmis par la politique
-  # optrail-api, à calculer côté front.
+  # navigateur envoie x-amz-content-sha256 (SHA-256 hex du corps), calculé côté front. CloudFront
+  # le lit sans qu'il figure dans la politique d'origine (il y est refusé en liste blanche).
   ordered_cache_behavior {
     path_pattern               = "/api/loops*"
     target_origin_id           = "api"

@@ -1,3 +1,7 @@
+# ⚠ DÉSACTIVÉ (D36) : nécessite l'OIDC GitHub, refusé par les SCP du compte géré. Déploiement réel :
+#   AWS_PROFILE=optrail scripts/deploy.sh (même chaîne, session `aws login`).
+#   Réactivation : bootstrap avec enable_github_oidc = true, variables/secrets de `prod`
+#   (AWS_DEPLOY_ROLE_ARN, TF_STATE_BUCKET, ARTIFACTS_BUCKET…), puis remettre le déclencheur workflow_run.
 # Déploiement prod (un seul environnement), seulement après une CI verte sur main (B3) :
 #   gate (commit = tête de main) → build (Rust + front, SANS accès AWS, E1) → deploy (OIDC) :
 #   zip S3 → tofu apply (nouvelle version) → smoke interne de CETTE version → release (alias live +
@@ -8,10 +12,7 @@
 name: deploy
 
 on:
-  workflow_run:
-    workflows: [ci]
-    types: [completed]
-    branches: [main]
+  # workflow_run: { workflows: [ci], types: [completed], branches: [main] }  # D36 : sans OIDC
   workflow_dispatch:
 
 permissions:
@@ -22,7 +23,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  AWS_REGION: eu-west-3
+  AWS_REGION: eu-north-1
   FUNCTION: optrail-api
   LAMBDA_BIN: lambda # binaire du handler (src/bin/lambda.rs)
   RUST_VERSION: 1.99.0
@@ -155,7 +156,7 @@ jobs:
         env:
           TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
           DATA_VERSION: ${{ vars.DATA_VERSION }}
-          TF_VAR_alert_email: ${{ vars.ALERT_EMAIL }}
+          TF_VAR_alert_email: ${{ secrets.ALERT_EMAIL }}
           TF_VAR_reserved_concurrency: ${{ vars.LAMBDA_RESERVED_CONCURRENCY || '-1' }}
           TF_VAR_enable_custom_domain: ${{ vars.ENABLE_CUSTOM_DOMAIN || 'false' }}
           TF_VAR_cloudflare_zone_id: ${{ vars.CLOUDFLARE_ZONE_ID }}
@@ -241,7 +242,7 @@ jobs:
 
   # Release précédente (front + alias) ; elle devient la courante, plus de précédente ensuite.
   rollback:
-    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main' && vars.AWS_DEPLOY_ROLE_ARN != ''
     runs-on: ubuntu-24.04
     environment: prod
     permissions:

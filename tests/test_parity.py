@@ -1,6 +1,8 @@
 """Parité axe solveur (D16) : moteur Rust contre les références Python figées par
 scripts/parity_refs.py, même Problem, même budget, 10 graines, 2 fils.
-Critères : médiane Rust >= médiane Python, min Rust >= p10 Python, échecs Rust <= Python."""
+D40 : le moteur Rust ramène la boucle à la distance demandée (L), la référence Python remplit Lmax
+(+5 %) ; en mode max on compare donc le D+ ramené à la distance Lmax (D+ · Lmax / longueur), à
+distance égale (proportionnalité approchée : tolérance de 0,5 % sur la médiane). Critères : médiane Rust >= médiane Python, min Rust >= p10 Python, échecs Rust <= Python."""
 import gzip
 import json
 import os
@@ -37,7 +39,7 @@ def rust_stats(name):
             if not r["feasible"]:
                 fails += 1
             elif pb["mode"] == "max":
-                vals.append(r["dplus"])
+                vals.append(r["dplus"] * pb["Lmax"] / r["length"])
             else:
                 vals.append(-(abs(r["length"] - pb["L"]) / pb["L"] + abs(r["dplus"] - pb["D"]) / pb["D"]))
     finally:
@@ -52,5 +54,5 @@ def test_parity(name):
     assert fails <= ref["failures"], f"{name} : {fails} échecs (Python {ref['failures']})"
     if ref["median"] is None:
         return
-    assert vals and np.median(vals) >= ref["median"] - 1e-6, f"{name} : médiane {np.median(vals)} < {ref['median']}"
+    assert vals and np.median(vals) >= ref["median"] * 0.995 - 1e-6, f"{name} : médiane {np.median(vals)} < {ref['median']}"
     assert min(vals) >= ref["p10"] - 1e-6, f"{name} : min {min(vals)} < p10 {ref['p10']}"

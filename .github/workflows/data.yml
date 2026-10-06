@@ -2,10 +2,10 @@
 # publication en release GitHub `tiles-<data_version>` (zip + manifest.json). Procédure : pipeline/README.md.
 #
 # Aucun accès AWS ici (pas d'id-token) : la copie vers s3://$ARTIFACTS_BUCKET/tiles/<data_version>/
-# et la variable DATA_VERSION de prod restent côté infra (deploy.yml / infra/README.md).
+# et la variable DATA_VERSION de prod restent côté infra (infra/prod.env, scripts/deploy.sh).
 # data_version = constante DATA_VERSION de pipeline/build.py (à changer avant chaque campagne) ;
 # une release existante n'est jamais réécrite.
-# Durée : ~25 min à 3 processus en local (IdF + Isère, 82 dalles) ; débit mesuré ~4 req/s WMS-R
+# Durée : ~25 min à 3 processus en local (IdF + Isère + Lyon, 87 dalles) ; débit mesuré ~4 req/s WMS-R
 # (limite IGN 40), < 1 req/s WFS (limite 30). Un seul job, 3 processus : pas de matrice.
 name: data
 
@@ -14,7 +14,7 @@ on:
     inputs:
       tiles_list:
         description: "Liste des dalles (une ix_iy par ligne)"
-        default: pipeline/tiles_idf_isere.txt
+        default: pipeline/tiles_v1.txt
       previous:
         description: "Release de comparaison (vide = dernière release tiles-*)"
         default: ""
@@ -62,7 +62,9 @@ jobs:
           echo "data_version=$v" >> "$GITHUB_OUTPUT"
 
       - name: Construction (3 processus)
-        run: xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < "$LIST"
+        run: |
+          xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < "$LIST"
+          python -m pipeline pois --tiles tiles
 
       - name: Manifeste de la version précédente
         run: |
@@ -87,7 +89,7 @@ jobs:
           V: ${{ steps.version.outputs.data_version }}
         run: |
           rm -f tiles/manifest.lock
-          cd tiles && zip -q -9 -X "../tiles-$V.zip" manifest.json ./*.npz
+          cd tiles && zip -q -9 -X "../tiles-$V.zip" manifest.json pois.json ./*.npz
 
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:

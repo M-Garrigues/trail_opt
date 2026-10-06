@@ -1,6 +1,7 @@
 //! Moteur de calcul de boucles de trail (port Rust de `trailopt`).
 pub mod anneal;
 pub mod api;
+pub mod climbs;
 pub mod codes;
 pub mod faces;
 pub mod l93;

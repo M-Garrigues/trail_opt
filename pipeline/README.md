@@ -5,14 +5,15 @@ Format : `.team/contracts/tiles.md` (non versionné) ; version des données : `D
 
 ```sh
 python -m pipeline build    --tiles 32_342,33_342 --out tiles      # ou bbox 'sud,ouest,nord,est'
-python -m pipeline check    --tiles tiles --list pipeline/tiles_idf_isere.txt [--previous ancien/manifest.json]
+python -m pipeline check    --tiles tiles --list pipeline/tiles_v1.txt [--previous ancien/manifest.json]
 python -m pipeline clip     --tiles tiles --out engine/tests/data/tiles --disk lat,lon,rayon_m …
 python -m pipeline coverage --tiles tiles --out web/public/coverage.geojson
+python -m pipeline pois     --tiles tiles      # cols/sommets -> tiles/pois.json (après chaque build)
 ```
 
 `build` reprend où il s'est arrêté (dalle intacte = sautée) et accepte plusieurs processus sur le
-même dossier : `xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < pipeline/tiles_idf_isere.txt`
-(~25 min pour IdF + Isère, 82 dalles). `check` sort en code 1 si une dalle manque, si un sha256 est
+même dossier : `xargs -P 3 -n 1 python -m pipeline build --out tiles --tiles < pipeline/tiles_v1.txt`
+(~25 min pour IdF + Isère + Lyon, 87 dalles). `check` sort en code 1 si une dalle manque, si un sha256 est
 faux, si `nodata_frac` > 1 %, `jump_gt10` > 0,5 % ou `node_fallback` > 0,2 % des tronçons, ou si le
 nombre de tronçons d'une dalle bouge de plus de 5 % par rapport à la version précédente.
 
@@ -21,7 +22,7 @@ nombre de tronçons d'une dalle bouge de plus de 5 % par rapport à la version p
 1. **Quand** : chaque trimestre, après la nouvelle édition de la BD TOPO (le WFS sert toujours
    l'édition courante). Sur une branche : `DATA_VERSION = "bdtopo-wfs-AAAA-MM"` dans `build.py`.
 2. **Construire** : GitHub → Actions → `data` → *Run workflow* sur cette branche (liste par défaut
-   `pipeline/tiles_idf_isere.txt`). Le job refuse une version déjà publiée, construit à 3 processus,
+   `pipeline/tiles_v1.txt`). Le job refuse une version déjà publiée, construit à 3 processus,
    lance `pipeline check` contre la dernière release `tiles-*`, puis publie la release
    `tiles-<DATA_VERSION>` (zip + `manifest.json`). Pas d'accès AWS dans ce workflow.
 3. **Vérifier** à la main avant de servir : totaux du manifeste dans le log ; parité sur le zip
@@ -32,8 +33,8 @@ nombre de tronçons d'une dalle bouge de plus de 5 % par rapport à la version p
    `data_version` de la dalle de test = `DATA_VERSION`) et `cargo test` verts ; fusionner.
 5. **Publier en prod** (infra, `infra/README.md`) : copier le zip de la release vers
    `s3://<ARTIFACTS_BUCKET>/tiles/<DATA_VERSION>/` (préfixe neuf, jamais réécrit), mettre la
-   variable `DATA_VERSION` de l'environnement `prod` à la nouvelle valeur, redéployer.
-6. **Rollback** : remettre la variable `DATA_VERSION` de `prod` à la version précédente et
+   `DATA_VERSION` de `infra/prod.env` à la nouvelle valeur, redéployer (`scripts/deploy.sh`).
+6. **Rollback** : remettre `DATA_VERSION` de `infra/prod.env` à la version précédente et
    redéployer. Ne jamais supprimer une release `tiles-*` ni un préfixe S3 servi un jour.
 
 ## Reproductibilité

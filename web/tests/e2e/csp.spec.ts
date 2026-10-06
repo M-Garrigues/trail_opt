@@ -29,13 +29,11 @@ test('CSP de prod : aucune violation sur le parcours principal', async ({ page }
   await page.goto('/?design=a');
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
-  await expect(page.getByTestId('headline')).toBeVisible();
-  await page.getByRole('button', { name: t.details }).first().click();
-  const v3 = page.getByRole('button', { name: isFr() ? 'Vue 3D' : '3D view' });
-  if (await v3.count()) {
-    await v3.first().click();
-    await page.waitForTimeout(2000); // tuiles de relief
-  }
+  await expect(page.getByTestId('headline')).toBeVisible({ timeout: 20_000 }); // Turnstile réel (jusqu'à 8 s)
+  await page.getByRole('button', { name: isFr() ? 'Vue 3D' : '3D view' }).click();
+  await expect(page.getByRole('button', { name: isFr() ? 'Vue 2D' : '2D view' })).toHaveAttribute('aria-pressed', 'true');
+  await page.waitForTimeout(2000); // tuiles de relief (Mapterhorn)
+  await page.getByRole('button', { name: t.details }).first().click({ timeout: 3000 }).catch(() => {}); // bureau : détail déjà embarqué
   await page.goto('/');
   await page.getByRole('button', { name: t.menu }).click();
   await page.waitForTimeout(500);

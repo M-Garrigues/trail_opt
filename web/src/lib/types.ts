@@ -1,5 +1,5 @@
 // Types de l'API GET /api/plan (contracts/api.md v1), écrits à la main (I5 : pas d'OpenAPI).
-export type Msg = { code: string; params?: Record<string, number | string | null> };
+export type Msg = { code: string; params?: Record<string, number | string | null>; suggest?: Record<string, number | string | boolean | null>; checked?: boolean };
 
 export type Candidate = {
   length_m: number;
@@ -16,6 +16,10 @@ export type Candidate = {
   dist: number[];
   /** HMAC du serveur (api.md v1.3, M3) : recopié tel quel dans POST /api/loops ; absent des boucles relues */
   sig?: string;
+  /** api.md v1.5 : points de passage passés (ordre de passage), `dist_m` = abscisse sur la boucle */
+  via?: { n: number; lat: number; lon: number; snap_m: number; dist_m: number }[];
+  /** api.md v1.5 : cols et sommets traversés ; `ele_m` approchée (peut être null) ; `lat`/`lon` = position du repère */
+  landmarks?: { kind: 'col' | 'summit'; name: string; ele_m: number | null; dist_m: number; lat: number; lon: number }[];
 };
 
 export type PlanResponse = {

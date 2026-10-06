@@ -1,6 +1,7 @@
 # Infrastructure optrail
 
-OpenTofu ≥ 1.10, AWS eu-west-3 (+ us-east-1 pour le certificat ACM). Coût visé : 0 € (free tier).
+OpenTofu ≥ 1.10, AWS **eu-north-1** (Stockholm, UE ; seule région permise par les SCP du compte géré, D36)
++ us-east-1 pour le certificat ACM / CloudFront. Coût visé : 0 € (free tier).
 
 ```
 navigateur ─► CloudFront ─┬─ /*      ─► S3 site (OAC)            shared/ expire à 90 j
@@ -19,99 +20,85 @@ vérifier la console sur le site, puis la passer en `Content-Security-Policy` (b
 `/shared/*` n'est jamais servi par CloudFront (403) : les boucles partagées passent par `/api/loops/<id>`.
 
 - `bootstrap/` : état local, appliqué une fois à la main. Bucket d'état (TLS obligatoire), bucket
-  d'artefacts, fournisseur OIDC GitHub, rôle `optrail-deploy` (main + environnement `prod` seulement ;
-  ne peut ni se modifier, ni ouvrir une Function URL hors AWS_IAM, ni rendre une Lambda publique).
-- `./` : tout le reste, appliqué par `.github/workflows/deploy.yml`.
-- Domaine : `enable_custom_domain = false` par défaut (site sur `*.cloudfront.net`).
+  d'artefacts, boundary `optrail-lambda-boundary` des rôles Lambda. Fournisseur OIDC GitHub + rôle
+  `optrail-deploy` seulement si `enable_github_oidc = true` (faux : OIDC refusé par les SCP, D36).
+- `./` : tout le reste, appliqué par `scripts/deploy.sh` depuis le poste du fondateur (session `aws login`).
+  `.github/workflows/deploy.yml` est désactivé (nécessite l'OIDC) ; la CI GitHub (`ci.yml`) n'a aucun accès AWS.
+- Configuration non secrète de prod : `infra/prod.env`. Secrets : `~/.config/optrail/private.env` (600, hors dépôt).
+- Domaine : `ENABLE_CUSTOM_DOMAIN=false` par défaut (site sur `*.cloudfront.net`).
 
-## Mise en service (fondateur, une fois)
+## Mise en service (une fois)
 
-Détail ordonné, qui fait quoi : `.team/handoffs/2026-10-04-infra-mise-en-ligne.md` (hors dépôt).
-
-0. **Compte AWS** `Optrail` (698766075762), plan Free (passer en Paid avant le 2027-04-04),
-   membre de l'organisation du fondateur. Accès CLI : `aws login` (sessions courtes), jamais de clés
-   longues. Toutes les commandes : `export AWS_PROFILE=<profil du compte Optrail>` (le profil
-   `default` de cette machine vise un autre compte). Les SCP de l'organisation doivent autoriser
-   eu-west-3 (+ us-east-1 pour ACM/CloudFront) et `iam:*OpenIDConnectProvider*` sur ce compte.
-   Quota : `aws lambda get-account-settings --region eu-west-3 --query AccountLimit.ConcurrentExecutions`
-   (10 sur un compte neuf ; s'il dépasse 10, variable GitHub `LAMBDA_RESERVED_CONCURRENCY=10`).
+0. **Compte AWS** `Optrail` (698766075762), plan Free (passer en Paid avant le 2027-04-04). Compte
+   « géré » (rôle `managed/AccountFullAccessRole`) : SCP non modifiables (eu-north-1 seule + us-east-1
+   pour les services globaux ; OIDC refusé). Accès CLI : `aws login --profile optrail`
+   (sessions courtes), jamais de clés longues ; toujours `AWS_PROFILE=optrail` (le profil
+   `default` de cette machine vise un autre compte).
+   Quota : `aws lambda get-account-settings --region eu-north-1 --query AccountLimit.ConcurrentExecutions`
+   (10 sur un compte neuf ; s'il dépasse 10, `LAMBDA_RESERVED_CONCURRENCY=10` dans `infra/prod.env`).
 1. **Bootstrap** :
    ```bash
-   cd infra/bootstrap && tofu init && tofu plan -out=bootstrap.tfplan && tofu apply bootstrap.tfplan
+   cd infra/bootstrap && AWS_PROFILE=optrail tofu init \
+     && AWS_PROFILE=optrail tofu plan -out=bootstrap.tfplan \
+     && AWS_PROFILE=optrail tofu apply bootstrap.tfplan
    ```
    Garder `terraform.tfstate` hors du dépôt (il est ignoré par git, ne contient pas de secret).
-2. **GitHub** (dépôt `M-Garrigues/trail_opt`, avec le compte gh PERSONNEL) :
-   - `sub` OIDC avec la branche (exigé par la politique de confiance). Le dépôt est en `sub`
-     immuable (`use_immutable_subject: true`) : la confiance attend
-     `repo:M-Garrigues@22774745/trail_opt@1402132975:environment:prod:ref:refs/heads/main`
-     (variable `github_sub_prefix` du bootstrap). Personnalisation, puis vérification :
-     ```bash
-     gh api -X PUT repos/M-Garrigues/trail_opt/actions/oidc/customization/sub \
-       -F use_default=false -f 'include_claim_keys[]=repo' \
-       -f 'include_claim_keys[]=context' -f 'include_claim_keys[]=ref'
-     gh api repos/M-Garrigues/trail_opt/actions/oidc/customization/sub
-     # attendu : use_default=false, use_immutable_subject=true, même sub_claim_prefix
-     ```
-     Si `use_immutable_subject` repasse à false, remettre `github_sub_prefix = "repo:M-Garrigues/trail_opt"`.
-   - Environnement `prod` : branches de déploiement = `main` seulement.
-   - Variables de `prod` : `AWS_DEPLOY_ROLE_ARN`, `TF_STATE_BUCKET`, `ARTIFACTS_BUCKET`
-     (sorties du bootstrap), `ALERT_EMAIL`, `DATA_VERSION`.
-     Domaine : `ENABLE_CUSTOM_DOMAIN=true`, `CLOUDFLARE_ZONE_ID`.
-   - Variable du **dépôt** (pas de l'environnement : le build tourne sans environnement ni accès AWS) :
-     `TURNSTILE_SITEKEY` (publique). Absente ou clé de test (`1x0000…`) → le build échoue.
-   - Secrets de `prod` : `TURNSTILE_SECRET`, `CLOUDFLARE_API_TOKEN`
-     (jeton limité à Zone → DNS → Edit sur la seule zone optrail.eu).
-   - `LOOP_SIGNING_KEY` (signature des boucles, M3) : aucun secret à créer, générée par Tofu
+2. **Secrets** dans `~/.config/optrail/private.env` (600) : `TURNSTILE_SITEKEY` (publique mais propre à
+   la prod ; absente ou clé de test `1x0000…` → refus), `TURNSTILE_SECRET`, `ALERT_EMAIL` (e-mail perso :
+   jamais dans le dépôt), `CLOUDFLARE_API_TOKEN` (avec le domaine seulement).
+   - `LOOP_SIGNING_KEY` (signature des boucles, M3) : rien à créer, générée par Tofu
      (`random_password.loop_signing`, état chiffré). Rotation :
      `tofu apply -replace=random_password.loop_signing` (boucles calculées pas encore partagées → 400).
    - `TURNSTILE_HOSTNAMES` (siteverify) = `optrail.eu` + `CLOUDFRONT_HOSTNAME` tant que
-     `ENABLE_CUSTOM_DOMAIN` est faux. Après le premier apply : variable de `prod`
-     `CLOUDFRONT_HOSTNAME` = domaine de la sortie `url` (`dxxxx.cloudfront.net`), puis redéployer ;
-     sans elle, Turnstile échoue sur *.cloudfront.net (`bot_check_failed`).
-3. **Dalles pilotes** (D10), tant que `data.yml` n'est pas branché :
-   `aws s3 sync <dossier tiles/1> s3://<ARTIFACTS_BUCKET>/tiles/<DATA_VERSION>/`
+     `ENABLE_CUSTOM_DOMAIN` est faux. Après le premier déploiement : `CLOUDFRONT_HOSTNAME` = domaine de la
+     sortie `url` (`dxxxx.cloudfront.net`) dans `infra/prod.env`, puis redéployer ; sans lui, Turnstile
+     échoue sur *.cloudfront.net (`bot_check_failed`).
+3. **Dalles** (D10) : `data.yml` publie la release GitHub `tiles-<v>` (zip à plat : `manifest.json` + `*.npz`,
+   v = `data_version` du manifeste) ; copie vers S3 à la main :
+   ```sh
+   v=bdtopo-wfs-2026-10d   # exemple
+   gh release download "tiles-$v" -p "tiles-$v.zip" -D /tmp/t && unzip -q "/tmp/t/tiles-$v.zip" -d "/tmp/t/$v"
+   jq -r .data_version "/tmp/t/$v/manifest.json"   # doit afficher $v
+   aws s3 sync --profile optrail "/tmp/t/$v/" "s3://optrail-artifacts-698766075762/tiles/$v/"
+   ```
+   Préfixe neuf, jamais réécrit ni supprimé (rollback = remettre l'ancienne `DATA_VERSION`). Puis
+   `DATA_VERSION` := `$v` dans `infra/prod.env` et redéployer ; deploy.sh échoue si `tiles/$v/manifest.json`
+   manque. Procédure complète : pipeline/README.md.
 4. **Cloudflare** (zone optrail.eu, DNSSEC actif) : supprimer les enregistrements importés d'OVH
    à l'apex (A/AAAA, TXT de redirection) avant le premier déploiement avec domaine, sinon le CNAME
    apex échoue. Widget Turnstile pour `optrail.eu` + `localhost` (+ `dxxxx.cloudfront.net` tant que
    le domaine perso est inactif).
-5. Pousser sur `main` → `ci` → (verte) → `deploy`. Confirmer les deux e-mails d'abonnement SNS.
+5. Pousser sur `main` (ruleset : CI verte exigée) → `AWS_PROFILE=optrail scripts/deploy.sh`.
+   Confirmer les deux e-mails d'abonnement SNS.
 6. Après le premier apply : vérifier que le budget voit un coût (Billing → Budgets → `optrail-monthly`,
    coût brut, crédits exclus) et que le filtre de métriques compte (CloudWatch → Métriques → `optrail`
    → `AcceptedComputeSeconds` après un calcul réel ; exige `accepted: true` dans le log du handler).
 
 ## Actions fondateur restantes (revue sécurité 2026-10-04)
 
-- **E2** : supprimer l'utilisateur IAM `mathieu` (AdministratorAccess, sans MFA) du compte 698766075762 ;
-  accès par Identity Center seulement, root géré centralement depuis le compte de gestion.
-- **M1** : environnement GitHub `prod` (branche `main` seule, relecteur requis = soi-même si voulu) ;
-  ruleset sur `main` (pas de force-push ni suppression, CI `ci` requise) ; clé de déploiement locale
-  retirée ; travailler avec le compte gh **personnel** (`gh auth switch`), pas `MGarrigues-pasqal`.
+- **E2** : supprimer l'utilisateur IAM `mathieu` (AdministratorAccess, sans MFA) du compte 698766075762.
+- **M1** : fait le 2026-10-05 (environnement `prod` limité à `main`, ruleset `main`). Reste : passer la
+  clé de déploiement locale « mac local » en lecture seule ou la remplacer par le compte gh **personnel**.
 - **M4** : supprimer la clé longue `AKIA…` du profil `default` (compte 684578650133) au profit d'`aws login`.
-- **SCP** (D28) : ne lever le refus OIDC que pour `iam:CreateOpenIDConnectProvider`,
-  `iam:UpdateOpenIDConnectProviderThumbprint`, `iam:AddClientIDToOpenIDConnectProvider`,
-  `iam:TagOpenIDConnectProvider`, `iam:DeleteOpenIDConnectProvider` (`iam:*OpenIDConnectProvider*`)
-  et pour le seul compte 698766075762 (condition `aws:PrincipalAccount`).
 - **M5** : passer le compte en plan Paid avant ouverture large (et avant le 2027-04-04).
 
-## Déploiement (`.github/workflows/deploy.yml`)
+## Déploiement (`scripts/deploy.sh`, D36)
 
-`ci` verte sur un push de `main` → `deploy` (événement `workflow_run`) :
-1. `gate` : le commit est encore la tête de `main` (sinon rien).
-2. `build`, **sans jeton OIDC ni secret** : Lambda arm64 (Rust épinglé, cargo-lambda/zig installés
-   par hash) et front (`npm ci --ignore-scripts`), passés en artefacts.
-3. `deploy` (environnement `prod`) : zip + dalles → S3, `tofu apply` (nouvelle version Lambda),
-   smoke interne de cette version, archive du front dans `s3://<artefacts>/site/<sha>/`,
-   **release** (`infra/release.sh` : alias `live` + site, assets à empreinte `immutable` jamais
-   supprimés, `index.html` & co en `no-cache`), **smoke public** via CloudFront (`GET /` → 200,
-   `GET /api/plan` sans jeton → 403 `bot_check_failed`), puis pointeurs
-   `s3://<artefacts>/releases/{current,previous}.json`. Smoke public raté → la release précédente
-   (front + alias) est remise automatiquement.
-
-Redéployer un commit : « Re-run all jobs » sur son exécution de `deploy`.
+`AWS_PROFILE=optrail scripts/deploy.sh [<commit>]` (défaut `origin/main`) :
+1. Contrôles : compte 698766075762, commit poussé, CI GitHub verte sur ce commit (`SKIP_CI_CHECK=1` pour forcer).
+2. Build du commit **exact** dans un `git worktree` jetable (l'arbre de travail n'est pas touché),
+   **sans secret** dans l'environnement des scripts de build : Lambda arm64 (Rust épinglé, cargo-lambda/zig)
+   et front (`npm ci --ignore-scripts`, clé de site Turnstile de prod).
+3. Zip + dalles → S3, `tofu apply` (confirmation demandée ; `AUTO_APPROVE=1` sinon), smoke interne de la
+   nouvelle version, archive du front dans `s3://<artefacts>/site/<sha>/`, **release** (`infra/release.sh` :
+   alias `live` + site, assets à empreinte `immutable` jamais supprimés, `index.html` & co en `no-cache`),
+   **smoke public** via CloudFront (`GET /` → 200, `GET /api/plan` sans jeton → 403 `bot_check_failed`),
+   puis pointeurs `s3://<artefacts>/releases/{current,previous}.json`. Smoke public raté → la release
+   précédente (front + alias) est remise automatiquement.
 
 ## Exploitation
 
-- **Rollback** manuel : Actions → deploy → Run workflow (sur `main`) → remet `previous.json`
+- **Rollback** manuel : `AWS_PROFILE=optrail scripts/deploy.sh rollback` → remet `previous.json`
   (front ET alias Lambda) ; il devient la release courante (un seul niveau de retour).
 
 ### Coupe-circuit (D32 B2/E3)

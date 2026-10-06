@@ -46,8 +46,9 @@ test('parcours principal', async ({ page }) => {
   await page.locator('#f-distance_km').blur();
 
   // AC6 note « courtes » et durée ~1 h 00
+  if (await page.locator('.summary').isVisible()) await page.locator('.summary').click(); // mobile : déplier la feuille (2 états)
   await page.locator('label', { hasText: isFr() ? 'Courtes et raides' : 'Short & steep' }).click();
-  await expect(page.getByText(isFr() ? /montées courtes réduisent/ : /short climbs reduce/)).toBeVisible();
+  await expect(page.getByText(isFr() ? /moins de D\+ au total/ : /less total climb/)).toBeVisible();
   await expect(page.locator('.estimate strong')).toHaveText('~1 h 00');
   expect(await axe(page), 'axe E3').toEqual([]);
 
@@ -68,10 +69,13 @@ test('parcours principal', async ({ page }) => {
   expect(Math.abs(now - 10495 / 2)).toBeLessThan(300);
 
   // E8 détail, AC18 Retour ferme E8 puis E6
-  await page.getByRole('button', { name: t.details }).click();
-  await expect(page.getByRole('heading', { level: 2 })).toBeVisible();
-  expect(await axe(page), 'axe E8').toEqual([]);
-  await page.goBack();
+  // bureau : détail embarqué dans le panneau, pas de bouton ni d'écran E8
+  if (await page.getByRole('button', { name: t.details }).count()) {
+    await page.getByRole('button', { name: t.details }).click();
+    await expect(page.getByRole('heading', { level: 2 })).toBeVisible();
+    expect(await axe(page), 'axe E8').toEqual([]);
+    await page.goBack();
+  }
   await expect(page.getByTestId('headline')).toBeVisible();
   await page.keyboard.press('Escape');
   await expect(page.getByRole('button', { name: t.find })).toBeVisible();
@@ -109,7 +113,7 @@ test('GPX partagé quand le système sait partager un fichier (canShare)', async
   await page.goto('/');
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
-  await page.getByRole('button', { name: isFr() ? 'Partager le GPX' : 'Share GPX' }).click();
+  await page.getByRole('button', { name: isFr() ? 'Télécharger le GPX' : 'Download GPX' }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { shared: { name: string } | null }).shared?.name)).toBe('optrail-10.5km-424m.gpx');
   expect(await page.evaluate(() => (window as unknown as { shared: { text: string } }).shared.text)).toContain('<trk>');
 });

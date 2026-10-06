@@ -1,4 +1,4 @@
-//! `GET /api/plan` (contrat `.team/contracts/api.md` v1) : paramètres de requête → statut HTTP,
+//! `GET /api/plan` (contrat `.team/contracts/api.md` v1.6 ; `diagnose=1` est traité à part, hors `KNOWN`) : paramètres de requête → statut HTTP,
 //! corps JSON et ligne de log. Logique pure, sans dépendance Lambda (testée par `cargo test`) ;
 //! le binaire `lambda` ne fait que la glue (événement, Turnstile, réponse).
 use serde_json::{Map, Value, json};
@@ -24,7 +24,7 @@ pub const DEFAULT_GRADE_PCT: f64 = 60.0;
 pub const TARGET_DPLUS_M: (f64, f64) = (10.0, 5000.0);
 /// Simplification Douglas–Peucker en plan (m).
 pub const SIMPLIFY_M: f64 = 1.0;
-const KNOWN: [&str; 14] = [
+const KNOWN: [&str; 15] = [
     "lat",
     "lon",
     "goal",
@@ -39,6 +39,7 @@ const KNOWN: [&str; 14] = [
     "polygon",
     "seed",
     "debug",
+    "via",
 ];
 
 pub struct Reply {
@@ -54,7 +55,11 @@ pub fn http_status(code: Code) -> u16 {
     match code {
         BotCheckFailed => 403,
         LoopNotFound => 404,
-        OutsideCoverage | NoWayInZone | NoLoopOfDistance | DplusUnreachableProven => 422,
+        OutsideCoverage
+        | NoWayInZone
+        | NoLoopOfDistance
+        | DplusUnreachableProven
+        | ViaUnreachable => 422,
         Busy | ServicePaused => 503,
         Timeout => 504,
         NoLoopFound | InvariantViolated | InvalidProblem => 500,
@@ -147,6 +152,7 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         return Err(bad("seed must be 0..999"));
     }
     let polygon = s("polygon").map(parse_polygon).transpose()?;
+    let via = s("via").map(parse_via).transpose()?.unwrap_or_default();
     let req = json!({
         "lat": lat, "lon": lon, "mode": mode,
         "distance_km": num("distance_km")?.unwrap_or(10.0),
@@ -162,6 +168,7 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         "tol": 0.05,
         "enforce_limits": true,
         "max_compute_s": MAX_COMPUTE_S,
+        "via": via,
     });
     let req: Request = serde_json::from_value(req).map_err(|e| bad(e.to_string()))?;
     Ok((req, flag("debug", false)?))
@@ -196,6 +203,20 @@ fn parse_polygon(text: &str) -> Result<Vec<[f64; 2]>, Msg> {
         )),
         None => Err(bad("polygon: lon,lat;lon,lat;… expected")),
     }
+}
+
+/// `lat,lon;lat,lon;…`, 1 à `plan::VIA_MAX` points de passage (api.md v1.5).
+fn parse_via(text: &str) -> Result<Vec<[f64; 2]>, Msg> {
+    let pts: Option<Vec<[f64; 2]>> = text
+        .split(';')
+        .map(|p| {
+            let (a, b) = p.split_once(',')?;
+            let (la, lo) = (a.trim().parse::<f64>().ok()?, b.trim().parse::<f64>().ok()?);
+            ((-90.0..=90.0).contains(&la) && (-180.0..=180.0).contains(&lo)).then_some([la, lo])
+        })
+        .collect();
+    pts.filter(|p| (1..=plan::VIA_MAX).contains(&p.len()))
+        .ok_or_else(|| bad("via: 1..5 points lat,lon;lat,lon expected"))
 }
 
 /// Le départ tombe-t-il dans une dalle du manifeste (couverture) ?
@@ -349,7 +370,23 @@ pub fn handle(
             log,
         }
     };
-    let (req, debug) = match parse(query) {
+    // D46 : `diagnose=1` = diagnostic seul (mêmes paramètres que la requête initiale)
+    let dq: Vec<&str> = query
+        .iter()
+        .filter(|x| x.0 == "diagnose")
+        .map(|x| x.1.as_str())
+        .collect();
+    let diagnose = match dq.as_slice() {
+        [] | ["0" | "false"] => false,
+        ["1" | "true"] => true,
+        _ => return fail(bad("diagnose: boolean expected"), log),
+    };
+    let query: Vec<(String, String)> = query
+        .iter()
+        .filter(|x| x.0 != "diagnose")
+        .cloned()
+        .collect();
+    let (req, debug) = match parse(&query) {
         Ok(x) => x,
         Err(m) => return fail(m, log),
     };
@@ -361,15 +398,32 @@ pub fn handle(
             log,
         );
     }
+    // points de passage hors de portée ou de la zone : avant Turnstile (jeton non consommé)
+    if let Err(m) = plan::check_via(&plan::resolve_cap(store, &req)) {
+        return fail(m, log);
+    }
     if let Err(m) = check_bot(token, internal, verify) {
         return fail(m, log);
     }
-    let req = plan::resolve_cap(store, &req);
-    let fewer = req.sizing_km() > MANY_KM && req.n_candidates > MANY_MAX_N;
+    // cap par défaut résolu dans plan::plan (qui peut l'élargir, T34) ; ici pour compter seulement
+    let fewer =
+        plan::resolve_cap(store, &req).sizing_km() > MANY_KM && req.n_candidates > MANY_MAX_N;
     let req = plan::Request {
         n_candidates: if fewer { MANY_MAX_N } else { req.n_candidates },
         ..req
     };
+    if diagnose {
+        log["accepted"] = json!(true);
+        log["diagnose"] = json!(true);
+        let body = plan::diagnose(store, &req);
+        log["status"] = json!(200);
+        log["compute_s"] = json!(t0.elapsed().as_secs_f64());
+        return Reply {
+            status: 200,
+            body,
+            log,
+        };
+    }
     // coupe-circuit (B2, T27) : filtre `{ $.msg = "plan" && $.accepted IS TRUE }`, somme de
     // `compute_s` ; `accepted` reste vrai sur toutes les sorties qui suivent (200 comme erreurs)
     log["accepted"] = json!(true);

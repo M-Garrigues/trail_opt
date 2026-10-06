@@ -1,6 +1,6 @@
 # Lambda de calcul (D1, D10) : binaire Rust arm64 provided.al2023, zip (binaire + dalles pilotes)
-# déposé dans S3 par deploy.yml. Chaque changement publie une version ; l'alias `live` est
-# basculé par deploy.yml après le smoke test (hors Tofu, d'où ignore_changes).
+# déposé dans S3 par scripts/deploy.sh. Chaque changement publie une version ; l'alias `live` est
+# basculé par scripts/deploy.sh après le smoke test (hors Tofu, d'où ignore_changes).
 
 locals {
   artifacts_bucket = "optrail-artifacts-${local.account}" # créé par bootstrap
@@ -112,7 +112,7 @@ resource "aws_lambda_alias" "live" {
   function_name    = aws_lambda_function.api.function_name
   function_version = aws_lambda_function.api.version
   lifecycle {
-    ignore_changes = [function_version] # basculé par deploy.yml (smoke test) et rollback
+    ignore_changes = [function_version] # basculé par scripts/deploy.sh (smoke test) et rollback
   }
 }
 

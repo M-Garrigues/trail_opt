@@ -31,7 +31,7 @@ set -euo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 export API_PORT=${API_PORT:-9000}
 export WEB_PORT=${WEB_PORT:-5173}
-TILES_DIR=${TILES_DIR:-$ROOT/scripts/experiments/tiles_pilote}
+TILES_DIR=${TILES_DIR:-$ROOT/scripts/experiments/tiles_v1}
 TILES_DIR=$(cd "$TILES_DIR" && pwd) # chemin absolu (cargo lambda change de dossier)
 # Clé secrète de test Cloudflare : siteverify répond toujours « success ».
 TURNSTILE_SECRET=${TURNSTILE_SECRET:-1x0000000000000000000000000000000AA}

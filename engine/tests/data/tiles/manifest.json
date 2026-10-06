@@ -1,6 +1,6 @@
 {
  "format": "tiles/1",
- "data_version": "bdtopo-wfs-2026-10b",
+ "data_version": "bdtopo-wfs-2026-10d",
  "source": "BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0",
  "natures": [
   "Bac ou liaison maritime",
@@ -15,6 +15,14 @@
   "Sentier",
   "Type autoroutier"
  ],
+ "pois": {
+  "file": "pois.json",
+  "format": "pois/1",
+  "n": 73,
+  "bytes": 8625,
+  "sha256": "b87103e829c8ca169664bf13f5a7bc3ed627477ffda9f56ca08f4bd87f30dd84",
+  "no_z": 0
+ },
  "clip": {
   "disks": [
    [
@@ -47,11 +55,11 @@
    "par_links": 4528,
    "z_min_m": 21.7,
    "z_max_m": 191.2,
-   "sha256": "559e2af06ea4499865834a4d3cc6b805b451d6eb427f794b2c71ad53846a5fbf",
-   "bytes": 970270,
-   "o_par_troncon": 35.3,
+   "sha256": "4a00d6097ff77474212b0ca6e0a6df900b19845251468020a033a6fea3b42609",
+   "bytes": 970139,
+   "o_par_troncon": 35.2,
    "t_sources_s": 0.3,
-   "t_total_s": 22.4,
+   "t_total_s": 54.6,
    "requetes": {
     "ign": 0,
     "dem": 0
@@ -71,8 +79,8 @@
    "sha256": "10c1596208f2060cbc083c70eaa5b9937f75d462c9d5e388dd5e5e50321dd0d1",
    "bytes": 20528,
    "o_par_troncon": 135.1,
-   "t_sources_s": 0.1,
-   "t_total_s": 9.7,
+   "t_sources_s": 0.2,
+   "t_total_s": 11.4,
    "requetes": {
     "ign": 0,
     "dem": 0
@@ -82,18 +90,18 @@
    "n": 2977,
    "km": 540.9,
    "nodata_frac": 0.0,
-   "steep_gt60": 72,
-   "steep_frac": 0.02419,
+   "steep_gt60": 71,
+   "steep_frac": 0.02385,
    "jump_gt10": 0,
    "node_fallback": 0,
    "par_links": 228,
    "z_min_m": 214.7,
    "z_max_m": 2857.2,
-   "sha256": "9ebb7d481e2b045248fd74d7303f4110aa6b2ad95fd639220f5c52982f9f9c2d",
-   "bytes": 235082,
+   "sha256": "70b78fc4dfdf30466a474ff43ed366daad0738a4800636b602c788a58433dab2",
+   "bytes": 235072,
    "o_par_troncon": 79.0,
-   "t_sources_s": 0.2,
-   "t_total_s": 7.8,
+   "t_sources_s": 0.1,
+   "t_total_s": 11.4,
    "requetes": {
     "ign": 0,
     "dem": 0
@@ -113,8 +121,8 @@
    "sha256": "f34637c954302ddfec0e2e714684a3dcfa863b2086dcf4cd2c07846e09a868c9",
    "bytes": 14172,
    "o_par_troncon": 155.7,
-   "t_sources_s": 0.1,
-   "t_total_s": 7.1,
+   "t_sources_s": 0.2,
+   "t_total_s": 9.4,
    "requetes": {
     "ign": 0,
     "dem": 0
@@ -131,11 +139,11 @@
    "par_links": 333,
    "z_min_m": 718.8,
    "z_max_m": 3316.0,
-   "sha256": "8b2fdca050da0032cd82c8772a938dca0f52590f7a29423a7e8512f5377369f9",
-   "bytes": 289080,
-   "o_par_troncon": 85.5,
-   "t_sources_s": 0.2,
-   "t_total_s": 9.1,
+   "sha256": "cb71bf06ad0e5b295bd2ea418051e07f1221259425ddc95e5edb04a14af2b7ae",
+   "bytes": 289057,
+   "o_par_troncon": 85.4,
+   "t_sources_s": 0.1,
+   "t_total_s": 7.3,
    "requetes": {
     "ign": 0,
     "dem": 0
@@ -145,8 +153,8 @@
  "totals": {
   "tiles": 5,
   "n": 34125,
-  "bytes": 1529132,
-  "steep_gt60": 106,
+  "bytes": 1528968,
+  "steep_gt60": 105,
   "jump_gt10": 1,
   "node_fallback": 0,
   "nodata_frac": 0.0

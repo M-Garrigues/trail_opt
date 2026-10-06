@@ -10,11 +10,11 @@ export const en: Dict = {
     langLabel: 'Language',
   },
   intro: {
-    text: 'Pick a training type and a start, and optrail draws a loop on the paths of the IGN map.',
+    text: 'Pick a workout and a start: optrail plans the loop on the paths of the IGN map.',
     coverage: 'Current coverage: Île-de-France and Isère.',
     go: 'Let’s go',
   },
-  safety: 'optrail plans loops automatically. Check the terrain, weather and your fitness: a path may be closed, private or dangerous.',
+  safety: 'Loops are planned automatically: a path may be closed, private or dangerous.',
   start: {
     tapMap: 'Tap the map to set your start',
     myLocation: 'My location',
@@ -43,7 +43,12 @@ export const en: Dict = {
     short: 'Short & steep',
     balanced: 'Balanced',
     long: 'Long',
-    shortNote: 'In the mountains, short climbs reduce total climb (up to −25%).',
+    help: {
+      short: 'Short, steep climbs. In the mountains, less total climb (up to −25%).',
+      balanced: 'The most climbing, whatever the shape of the climbs.',
+      long: 'Long, sustained climbs (in the mountains, about −8% climb). No effect on flat land: hills there are too short.',
+    },
+    helpTarget: 'In Target mode, this setting only changes the direction of travel.',
   },
   more: {
     title: 'More options',
@@ -59,6 +64,19 @@ export const en: Dict = {
     loops: 'Default loops',
   },
   estimate: 'Estimated time',
+  summary: {
+    open: 'Open settings',
+    settings: 'Settings',
+    climbs: { short: 'short climbs', balanced: 'balanced climbs', long: 'long climbs' },
+  },
+  via: {
+    button: 'Waypoint',
+    hint: (p: P) => `Tap the map to add a waypoint (up to ${p.max}, any order).`,
+    list: 'Waypoints',
+    point: (p: P) => `Point ${p.n}`,
+    remove: (p: P) => `Remove point ${p.n}`,
+    marker: (p: P) => `Waypoint ${p.n} (draggable)`,
+  },
   compute: {
     find: 'Find my loop',
     computing: 'Finding your loop…',
@@ -102,18 +120,27 @@ export const en: Dict = {
     kmEffort: 'effort-km',
     duration: 'Time',
     climbs: 'Climbs',
-    climbsCount: (p: P) => `${p.n} climb${p.plural} ≥ 20 m`,
-    longest: (p: P) => `biggest: +${p.gain} m over ${p.len}`,
+    climbsLine: (p: P) => `${p.n} climb${p.plural} · longest ${p.gain} m over ${p.len}`,
+    noClimb: 'No climb of 20 m or more',
+    climbsDef: 'Climb: at least 20 m of gain; a short dip in the middle does not split it.',
     typical: (p: P) => `typical climb: ${p.g} m`,
     data: 'Data',
     gpx: 'Download GPX',
-    gpxShare: 'Share GPX',
+    gpxShare: 'Download GPX',
     view3d: '3D view',
     view2d: '2D view',
+    centerOn: 'Center the map here',
     centerHint: 'Tap the profile to center the map on that point.',
     replan: 'Plan again from here',
     profile: (p: P) => `Elevation profile: ${p.km} km, from ${p.min} to ${p.max} m. Use left and right arrows to explore.`,
     legend: 'Grade',
+    legs: 'By leg',
+    start: 'Start',
+    finish: 'Finish',
+    leg: (p: P) => `${p.a} → ${p.b}`,
+    landmarks: 'Passes and summits on the way',
+    col: 'Pass',
+    summit: 'Summit',
   },
   share: {
     notice: 'The link shows your start to anyone who gets it. It is kept for 90 days.',
@@ -139,6 +166,7 @@ export const en: Dict = {
     about: 'About',
     safety: 'Safety',
     legal: 'Legal notice',
+    source: 'Source code — contributions welcome',
     privacy: 'Privacy',
     attributions: 'Credits',
     settings: 'Settings',
@@ -146,10 +174,9 @@ export const en: Dict = {
     forgotten: 'Position forgotten.',
     eraseAll: 'Erase my data',
     confirmErase: 'Erase all optrail data on this device (settings, history, position)?',
-    aboutText: 'optrail generates specific trail runs: pick a training type and optrail finds the loop that fits it best on the path network of IGN’s BD TOPO®. Open source project (PolyForm Noncommercial 1.0.0).',
+    aboutText: 'optrail generates specific trail runs: pick a training type and optrail finds the loop that fits it best on the path network of IGN’s BD TOPO®. © Mathieu Garrigues. PolyForm Noncommercial 1.0.0 licence (github.com/M-Garrigues/trail_opt).',
     legalText: 'Publisher: Mathieu Garrigues, private individual; free, non-professional personal project. Contact: contact@optrail.eu.\n\n' +
       'Host: Amazon Web Services EMEA SARL, 38 avenue John F. Kennedy, L-1855 Luxembourg, phone +352 2789 0000. Servers in the European Union; pages delivered by the global Amazon CloudFront network.\n\n' +
-      'Domain name, e-mail and bot check: Cloudflare, Inc., 101 Townsend St, San Francisco, CA 94107, USA.\n\n' +
       'Code licensed under PolyForm Noncommercial 1.0.0; data: see Credits.\n\n' +
       'Loops are computed automatically and come with no warranty: you alone judge the terrain, weather, access and your safety. The French version prevails.',
     privacyText: 'Controller: the publisher (see Legal notice), contact@optrail.eu. No account, no cookie, no analytics, no ads.\n\n' +
@@ -158,9 +185,9 @@ export const en: Dict = {
       'On your device: language, settings, loop history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
       'IP address: optrail does not record it, but it is seen by Amazon Web Services (hosting), Cloudflare (Turnstile bot check when planning and sharing; legitimate interest: security), IGN (base map; place search, which also receives what you type) and Mapterhorn (3D relief). Amazon and Cloudflare are US companies: transfers covered by the EU–US Data Privacy Framework and standard contractual clauses.\n\n' +
       'Your rights: access, rectification, erasure, objection and restriction, by e-mail to contact@optrail.eu; you may complain to the CNIL (cnil.fr). Without accounts, optrail cannot link logs to a person.',
-    attributionsText: 'Base map: Plan IGN © IGN – Géoplateforme. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
-      '3D relief: © Mapterhorn (mapterhorn.com/attribution), DEM © IGN.\n\n' +
-      'Software: MapLibre GL JS (BSD-3-Clause), terra-draw (MIT). Bot check: Cloudflare Turnstile.',
+    attributionsText: 'Base map: Plan IGN © IGN – Géoplateforme. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
+      '3D relief and contour-line backdrop (Chartreuse): © Mapterhorn (mapterhorn.com/attribution), DEM © IGN.\n\n' +
+      'Software: MapLibre GL JS (BSD-3-Clause), terra-draw (MIT).',
   },
   offline: 'Offline: check your connection.',
   geo: {
@@ -177,7 +204,19 @@ export const en: Dict = {
     reload: 'Reload',
     close: 'Close',
   },
+  important: {
+    title: 'Request not met',
+    suggest: {
+      roads_minor: 'Include minor roads?', roads_all: 'Include all roads?', max_grade_pct: 'Remove the grade limit?', polygon: 'Remove the area?',
+      no_repeat_junction: 'Allow revisiting junctions?', via: 'Remove waypoints?', max_distance_km: 'Double the max distance?',
+    },
+    keep: 'Keep this loop',
+    ok: 'OK',
+  },
   err: {
+    via_too_far: (p: P) => `Point ${p.n} is too far from the start for a loop of this length (max ${p.max_km} km as the crow flies).`,
+    via_outside_zone: (p: P) => `Point ${p.n} is outside the drawn area.`,
+    via_unreachable: (p: P) => `Point ${p.n} is not on any usable path (or on a dead end).`,
     outside_coverage: () => 'No data here yet (Île-de-France and Isère only).',
     no_way_in_zone: () => 'No paths of this kind here.',
     no_loop_of_distance: () => 'No loop of this length from this start.',
@@ -199,7 +238,7 @@ export const en: Dict = {
     loop_not_found: () => 'This link has expired or does not exist.',
   },
   warn: {
-    long_distance: (p: P) => `Long run (${p.km} km): bring water.`,
+    long_distance: () => '',
     zone_reduced: (p: P) => `Area reduced to ${p.radius_km} km around the start.`,
     access_round_trip: (p: P) => `Includes a ${p.access_m} m access out-and-back.`,
     start_moved: (p: P) => `Start moved ${p.distance_m} m.`,
@@ -210,6 +249,17 @@ export const en: Dict = {
     dplus_not_reached: (p: P) => `+${p.dplus_m} m not found under ${p.max_km} km: best +${p.best_dplus_m} m.`,
     profile_mismatch: () => '',
     candidates_reduced: (p: P) => `Over ${p.km} km: at most ${p.max_n} loops.`,
+    target_not_reached: (p: P) => [p.dplus_m && `Elevation: +${p.best_dplus_m} m found for +${p.dplus_m} m requested.`, p.km && `Distance: ${p.best_km} km found (requested: ${p.km} km).`].filter(Boolean).join(' '),
+    fewer_loops: (p: P) => `${p.got} loop${Number(p.got) === 1 ? '' : 's'} found out of ${p.asked} requested.`,
+    via_missed: (p: P) => `The loop does not pass through point ${p.n}.`,
     coverage_edge: () => 'Area at the edge of coverage: paths beyond are ignored.',
+  },
+  install: {
+    title: 'Install the app',
+    hint: 'optrail on your home screen, full screen.',
+    action: 'Install',
+    later: 'Not now',
+    ios: 'Tap Share (under ⋯ if it isn’t visible), then “Add to Home Screen”.',
+    manual: 'In the browser menu (⋮): “Add to Home screen” or “Install app”.',
   },
 };

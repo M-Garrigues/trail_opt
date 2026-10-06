@@ -3,8 +3,9 @@
 Extrait de quelques disques des dalles IdF + Isère, au format et à la `data_version` de
 `manifest.json` : Massy (plaine, 6 km), Bourg-d'Oisans (7,5 km) et Alpes (6 km). Utilisé par les
 tests bout en bout du moteur (`tests/common/mod.rs`) et vérifié par `tests/test_tiles.py`.
+`pois.json` (T35) : cols et sommets BD TOPO des mêmes disques (format `pois/1`, `.team/contracts/tiles.md`).
 
-Régénérer (après un changement de `DATA_VERSION`, depuis un dossier complet à jour) :
+Régénérer (après un changement de `DATA_VERSION`, depuis un dossier complet à jour, `pois.json` compris) :
 
     python -m pipeline clip --tiles <dossier tiles/1> --out engine/tests/data/tiles \
       --disk 48.7309,2.2713,6000 --disk 45.0555,6.0310,7500 --disk 45.0920,6.0700,6000

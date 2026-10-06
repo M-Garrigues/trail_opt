@@ -8,10 +8,22 @@ pub const VERSION: u32 = 2;
 /// Préférence de montées (modes.md B) : w de recherche = w + γ·β·q / H_SCALE.
 pub const CLIMBS_BETA: f64 = 0.5;
 pub const CLIMBS_H_SCALE: f64 = 100.0;
+/// T33 (modes.md v0.3) : « longues », coût par montée dans la recherche = REL · Σq/Σw (m de D+),
+/// plafonné à MAX : ville (Σq/Σw ≈ 10) 30 m, Monts d'Or 60 m, montagne (≈ 100) 60 m.
+pub const CLIMBS_LONG_REL: f64 = 3.0;
+pub const CLIMBS_LONG_MAX: f64 = 60.0;
 /// Mode min_distance : pénalité par mètre de D+ manquant dans le score des boucles hors
 /// contrainte (1 m de D+ manquant « coûte » 100 m de distance, prototype `minlen.py`).
 const MD_MISS: f64 = 100.0;
 const MD_OVER: f64 = 10.0;
+/// D40 : voir `score_free`.
+const LEN_DENSITY: f64 = 3.0;
+/// Points de passage (T34) : pénalité par point manqué dans `score`, au-dessus de tout écart
+/// réaliste (la réalisabilité l'exige de toute façon).
+pub const VIA_MISS: f64 = 1e6;
+/// Mode cible : écart relatif admis sur la distance et sur le D+ pour une autre boucle (un peu
+/// sous les 10 % du message `target_not_reached`, l'aller-retour d'accès s'ajoutant ensuite).
+pub const TARGET_TOL: f64 = 0.08;
 
 #[derive(Deserialize, Clone)]
 pub struct Problem {
@@ -52,6 +64,19 @@ pub struct Problem {
     /// v2 : préférence de montées γ : −1 courtes, 0 équilibré, +1 longues.
     #[serde(default)]
     pub climbs: i8,
+    /// v2.1 (T24) : par arête, signe de la pente en partant de u et de v (+1 monte, −1 descend,
+    /// 0 plat), hystérésis 5 m. Vide : pas de terme « longues » (choix du sens seul).
+    #[serde(default)]
+    pub turn: Vec<[i8; 2]>,
+    /// v2.1 (T24) : par arête, ½ nombre d'extrema intérieurs (hystérésis 5 m), symétrique.
+    #[serde(default)]
+    pub inner: Vec<f64>,
+    /// Coût par montée (m de D+) du problème de RECHERCHE (posé par `search_problem`), 0 sinon.
+    #[serde(skip)]
+    pub node_mu: f64,
+    /// Points de passage obligatoires (T34, api.md v1.5) : nœuds que la boucle doit toucher.
+    #[serde(default)]
+    pub via: Vec<usize>,
 }
 
 impl Problem {
@@ -84,14 +109,73 @@ impl Problem {
         (self.climbs < 0).then(|| self.q.iter().map(|&q| g * q).collect())
     }
 
-    /// Modes max et cible avec préférence de montées : copie dont `w` est le poids de
-    /// recherche w + γβq/H (le D+ rapporté se recalcule sur le vrai w).
+    /// Mode max avec préférence de montées : copie dont `w` est le poids de recherche (le D+
+    /// rapporté se recalcule sur le vrai w). « Courtes » : w + γβq/H ; « longues » (si
+    /// `turn`/`inner`) : w − μ·inner et coût μ par extremum aux nœuds. Pas en mode cible : la
+    /// cible de D+ se tient sur le D+ RÉEL (avec un poids modifié, « courtes » rendait 995 m pour
+    /// 600 demandés à Bourg) ; la préférence n'y choisit que le sens de parcours (`assemble`).
     pub fn search_problem(&self) -> Option<Problem> {
-        let b = self.climb_bonus().filter(|_| !self.min_distance())?;
+        if self.min_distance() || self.target() {
+            return None;
+        }
+        let (b, mu) = (self.climb_bonus(), self.long_mu());
+        if b.is_none() && mu == 0.0 {
+            return None;
+        }
         let mut p = self.clone();
-        p.w.iter_mut().zip(b).for_each(|(w, b)| *w += b);
+        if let Some(b) = b {
+            p.w.iter_mut().zip(b).for_each(|(w, b)| *w += b);
+        }
+        if mu != 0.0 {
+            // montées intérieures aux arêtes : coût additif ; aux nœuds : `node_climbs`
+            p.w.iter_mut()
+                .zip(&self.inner)
+                .for_each(|(w, c)| *w -= mu * c);
+            p.node_mu = mu;
+        }
         p.climbs = 0;
         Some(p)
+    }
+
+    /// T33 : coût par montée (m de D+, « longues » seulement), proportionnel
+    /// à l'échelle des montées du terrain Σq/Σw, plafonné ; 0 sans `turn`/`inner`/`q`.
+    pub fn long_mu(&self) -> f64 {
+        let m = self.n_edges();
+        if self.climbs <= 0 || self.turn.len() != m || self.inner.len() != m || self.q.len() != m {
+            return 0.0;
+        }
+        (CLIMBS_LONG_REL * self.q.iter().sum::<f64>() / self.w.iter().sum::<f64>().max(1.0))
+            .min(CLIMBS_LONG_MAX)
+    }
+
+    /// T24 : ½ si le nœud a est un extremum (pic ou creux) entre les arêtes e1, e2 de la boucle.
+    pub fn node_ext(&self, a: usize, e1: usize, e2: usize) -> f64 {
+        let sg = |e: usize| self.turn[e][usize::from(self.u[e] != a)];
+        let (s1, s2) = (sg(e1), sg(e2));
+        if s1 != 0 && s1 == s2 { 0.5 } else { 0.0 }
+    }
+
+    /// T24 : Σ `node_ext` sur les nœuds de degré 2 de la boucle (≈ montées qui changent aux nœuds).
+    pub fn node_climbs(&self, ids: &[usize]) -> f64 {
+        let mut inc = vec![(0u8, usize::MAX, usize::MAX); self.n_nodes()];
+        for &e in ids {
+            if self.u[e] != self.v[e] {
+                for a in [self.u[e], self.v[e]] {
+                    let t = &mut inc[a];
+                    match t.0 {
+                        0 => t.1 = e,
+                        1 => t.2 = e,
+                        _ => {}
+                    }
+                    t.0 = t.0.saturating_add(1);
+                }
+            }
+        }
+        inc.iter()
+            .enumerate()
+            .filter(|(_, t)| t.0 == 2)
+            .map(|(a, t)| self.node_ext(a, t.1, t.2))
+            .sum()
     }
 
     /// reach[e] = d(s,u) + len[e] + d(v,s) : longueur minimale d'une boucle qui prend e.
@@ -133,9 +217,11 @@ impl Problem {
         }
         if !(-1..=1).contains(&self.climbs)
             || (self.climbs < 0 && self.q.len() != m)
+            || (!self.turn.is_empty() && self.turn.len() != m)
+            || (!self.inner.is_empty() && self.inner.len() != m)
             || self.q.iter().any(|x| !x.is_finite() || *x < 0.0)
         {
-            return Err("climbs hors de -1..1, ou q absent ou invalide".into());
+            return Err("climbs hors de -1..1, ou q, turn, inner absents ou invalides".into());
         }
         let bad = |x: usize| x >= n;
         if bad(self.s)
@@ -144,6 +230,7 @@ impl Problem {
                 .iter()
                 .chain(&self.v)
                 .chain(&self.far)
+                .chain(&self.via)
                 .any(|&x| bad(x))
         {
             return Err("indice de nœud hors bornes".into());
@@ -179,14 +266,42 @@ impl Problem {
         !self.parallel.iter().any(|&[a, b]| inx[a] && inx[b])
     }
 
+    /// Mode cible : la boucle tient la distance ET le D+ demandés à `TARGET_TOL` près.
+    pub fn on_target(&self, ids: &[usize]) -> bool {
+        let (l, d) = self.stats(ids);
+        let dt = self.d.unwrap_or(1.0);
+        ((l - self.l) / self.l).abs() <= TARGET_TOL && ((d - dt) / dt).abs() <= TARGET_TOL
+    }
+
     /// (longueur, D+) d'un ensemble d'arêtes.
     pub fn stats(&self, ids: &[usize]) -> (f64, f64) {
         ids.iter()
             .fold((0.0, 0.0), |(l, d), &e| (l + self.len[e], d + self.w[e]))
     }
 
+    /// Points de passage que la boucle `ids` ne touche pas.
+    pub fn via_missed(&self, ids: &[usize]) -> Vec<usize> {
+        self.via
+            .iter()
+            .copied()
+            .filter(|&x| !ids.iter().any(|&e| self.u[e] == x || self.v[e] == x))
+            .collect()
+    }
+
     /// (score à maximiser, longueur, D+, réalisable), comme `Problem.score` en Python.
+    /// Points de passage manqués : −VIA_MISS chacun, et non réalisable.
     pub fn score(&self, ids: &[usize]) -> (f64, f64, f64, bool) {
+        let (sc, length, dplus, feas) = self.score_free(ids);
+        let miss = self.via_missed(ids).len();
+        (
+            sc - VIA_MISS * miss as f64,
+            length,
+            dplus,
+            feas && miss == 0,
+        )
+    }
+
+    fn score_free(&self, ids: &[usize]) -> (f64, f64, f64, bool) {
         let (length, dplus) = self.stats(ids);
         if self.min_distance() {
             let x = self.d.unwrap();
@@ -201,7 +316,15 @@ impl Problem {
             return (-err, length, dplus, feas);
         }
         let viol = (self.lmin - length).max(length - self.lmax).max(0.0);
-        (dplus - 0.5 * viol, length, dplus, feas)
+        let nc = if self.node_mu != 0.0 {
+            self.node_mu * self.node_climbs(ids)
+        } else {
+            0.0
+        };
+        // D40 : au-delà de la distance demandée, un mètre doit rapporter LEN_DENSITY × la densité
+        // moyenne de D+ de la boucle (sinon c'est un détour)
+        let over = LEN_DENSITY * dplus / length.max(1.0) * (length - self.l).max(0.0);
+        (dplus - nc - over - 0.5 * viol, length, dplus, feas)
     }
 
     /// Sac à dos fractionnaire (w/l décroissant, capacité Lmax) : borne sur le D+.

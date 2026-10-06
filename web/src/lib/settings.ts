@@ -51,7 +51,7 @@ export function mergeSettings(saved: unknown): Settings {
 export type Start = { lat: number; lon: number };
 
 /** Paramètres de GET /api/plan (api.md v1), rien d'autre. */
-export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: number; polygon?: [number, number][] | null }) {
+export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: number; polygon?: [number, number][] | null; via?: Start[] }) {
   const t = byId(s.typeId);
   const v = s.values[t.id];
   const q = new URLSearchParams();
@@ -67,6 +67,7 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   q.set('no_repeat_junction', String(s.noRepeat));
   q.set('n_candidates', String(opts.n));
   if (opts.polygon?.length) q.set('polygon', opts.polygon.map(([lo, la]) => `${lo.toFixed(5)},${la.toFixed(5)}`).join(';'));
+  if (opts.via?.length) q.set('via', opts.via.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(';'));
   q.set('seed', String(opts.seed));
   return q;
 }
@@ -95,8 +96,10 @@ export function expectedKm(s: Settings): number {
 /** Durée (min) = (km + D+/100) × allure. */
 export const durationMin = (km: number, dplus: number, paceS: number) => ((km + dplus / 100) * paceS) / 60;
 
-/** Estimation du temps de calcul (s), formule du CTO (api.md v1.3 § Durée estimée : n ≤ 2 au-delà de 40 km). */
-export const computeEstimateS = (D: number, goal: string, n: number) => {
+/** Estimation du temps de calcul (s), formule du CTO (api.md v1.6 § Durée estimée : n ≤ 2 au-delà de 40 km ;
+ *  « longues » ×1,3 sauf en cible, où la préférence de montées n'agit plus sur la recherche). */
+export const computeEstimateS = (D: number, goal: string, n: number, climbs: string = 'balanced') => {
   const k = D > 40 ? Math.min(n, 2) : n;
-  return Math.min(15, (1.5 + 0.04 * D) * (1 + 0.25 * (k - 1)) * (goal === 'target' ? 1.5 : 1)) + 0.5;
+  const target = goal === 'target';
+  return Math.min(15, (2 + 0.04 * D) * (1 + 0.25 * (k - 1)) * (target ? 1.5 : 1) * (climbs === 'long' && !target ? 1.3 : 1)) + 0.5;
 };

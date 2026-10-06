@@ -14,7 +14,7 @@ output "function_name" {
   value = aws_lambda_function.api.function_name
 }
 
-# Version publiée par cet apply : smoke-testée puis promue sur `live` par deploy.yml.
+# Version publiée par cet apply : smoke-testée puis promue sur `live` par scripts/deploy.sh.
 output "lambda_version" {
   value = aws_lambda_function.api.version
 }

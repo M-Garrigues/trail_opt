@@ -54,6 +54,14 @@ pub enum Code {
     // Revues T25/T26 (api.md v1.3)
     CandidatesReduced,
     CoverageEdge,
+    // Points de passage (api.md v1.5, T34)
+    ViaTooFar,
+    ViaOutsideZone,
+    ViaUnreachable,
+    ViaMissed,
+    // Messages importants (api.md v1.5, D40)
+    TargetNotReached,
+    FewerLoops,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -64,7 +72,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 37] = {
+    pub const ALL: [Code; 43] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -104,6 +112,12 @@ impl Code {
             LoopNotFound,
             CandidatesReduced,
             CoverageEdge,
+            ViaTooFar,
+            ViaOutsideZone,
+            ViaUnreachable,
+            ViaMissed,
+            TargetNotReached,
+            FewerLoops,
         ]
     };
 
@@ -133,6 +147,12 @@ impl Code {
             TargetDplusAboveBound => (Warning, &["max_dplus_m", "max_km"]),
             CandidatesReduced => (Warning, &["max_n", "km"]),
             CoverageEdge => (Warning, &[]),
+            ViaTooFar => (Error, &["n", "max_km"]),
+            ViaOutsideZone | ViaUnreachable => (Error, &["n"]),
+            ViaMissed => (Warning, &["n"]),
+            // null : sans objet (mode max : pas de D+ demandé)
+            TargetNotReached => (Warning, &["dplus_m", "best_dplus_m", "km", "best_km"]),
+            FewerLoops => (Warning, &["asked", "got"]),
         }
     }
 }
@@ -146,13 +166,19 @@ pub const RETIRED: [&str; 5] = [
     "target_proven_unreachable",
 ];
 
-/// Message transmis au client : {"code", "params", "detail"?}.
+/// Message transmis au client : {"code", "params", "detail"?, "suggest"?, "checked"?}.
+/// `suggest` (D40) : réglages de la requête à changer pour lever la contrainte limitante
+/// (noms de paramètres de l'API, `null` = retirer) ; `checked` : confirmé par un calcul.
 #[derive(Serialize, Debug)]
 pub struct Msg {
     pub code: Code,
     pub params: Map<String, Value>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub detail: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub suggest: Option<Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub checked: Option<bool>,
 }
 
 impl Msg {
@@ -175,6 +201,8 @@ impl Msg {
             code,
             params,
             detail: None,
+            suggest: None,
+            checked: None,
         }
     }
 

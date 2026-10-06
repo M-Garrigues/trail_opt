@@ -9,6 +9,7 @@ use std::fs::File;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 
+use ring::digest;
 use serde::Deserialize;
 
 pub const FORMAT: &str = "tiles/1";
@@ -36,6 +37,25 @@ pub struct Manifest {
     #[serde(default)]
     pub natures: Vec<String>,
     pub tiles: HashMap<String, serde_json::Value>,
+    /// `pois.json` (format pois/1, tiles.md § Repères) ; absent : pas de repères.
+    #[serde(default)]
+    pub pois: Option<serde_json::Value>,
+}
+
+/// Repère col/pic/sommet (pois/1) : position L93 au dm, altitude approchée en dm.
+#[derive(Deserialize, Clone, Debug)]
+pub struct Poi {
+    pub nature: String,
+    pub name: String,
+    pub x_dm: i64,
+    pub y_dm: i64,
+    pub z_dm: Option<i64>,
+}
+
+#[derive(Deserialize)]
+struct PoiFile {
+    format: String,
+    pois: Vec<Poi>,
 }
 
 /// Tronçons concaténés de plusieurs dalles.
@@ -236,28 +256,189 @@ impl Troncons {
     }
 }
 
-/// Dossier de dalles (manifest.json + <ix>_<iy>.npz).
+/// Lecture d'un objet de la source distante (chemin relatif au préfixe : `manifest.json`,
+/// `<ix>_<iy>.npz`) : octets, ou erreur (absent compris).
+pub type Fetch = Box<dyn Fn(&str) -> Result<Vec<u8>, String> + Send + Sync>;
+
+/// Téléchargements simultanés au plus.
+const FETCH_THREADS: usize = 16;
+const ENOSPC: i32 = 28;
+
+/// Dossier de dalles (manifest.json + <ix>_<iy>.npz). Source distante : `root` est le cache
+/// local (/tmp), rempli par `ensure` avant chaque `load`.
 pub struct TileStore {
     pub root: PathBuf,
     pub manifest: Manifest,
+    /// Repères cols/sommets (vide sans `pois.json`).
+    pub pois: Vec<Poi>,
+    remote: Option<Fetch>,
+}
+
+fn parse_manifest(text: &str) -> Result<Manifest, String> {
+    let manifest: Manifest =
+        serde_json::from_str(text).map_err(|e| format!("manifest.json : {e}"))?;
+    if manifest.format != FORMAT {
+        return Err(format!(
+            "format de dalles inconnu : {} (attendu {FORMAT})",
+            manifest.format
+        ));
+    }
+    Ok(manifest)
+}
+
+fn parse_pois(f: &str, text: &str) -> Result<Vec<Poi>, String> {
+    let pf: PoiFile = serde_json::from_str(text).map_err(|e| format!("{f} : {e}"))?;
+    if pf.format != "pois/1" {
+        return Err(format!("{f} : format {} (attendu pois/1)", pf.format));
+    }
+    Ok(pf.pois)
 }
 
 impl TileStore {
     pub fn open(root: &Path) -> Result<TileStore, String> {
-        let text = std::fs::read_to_string(root.join("manifest.json"))
-            .map_err(|e| format!("{}: {e}", root.display()))?;
-        let manifest: Manifest =
-            serde_json::from_str(&text).map_err(|e| format!("manifest.json : {e}"))?;
-        if manifest.format != FORMAT {
-            return Err(format!(
-                "format de dalles inconnu : {} (attendu {FORMAT})",
-                manifest.format
-            ));
-        }
+        let read = |f: &str| std::fs::read_to_string(root.join(f)).map_err(|e| format!("{f}: {e}"));
+        let manifest = parse_manifest(&read("manifest.json")?)?;
+        let pois = match manifest.pois.as_ref().and_then(|p| p["file"].as_str()) {
+            None => Vec::new(),
+            Some(f) => parse_pois(f, &read(f)?)?,
+        };
         Ok(TileStore {
             root: root.to_path_buf(),
             manifest,
+            pois,
+            remote: None,
         })
+    }
+
+    /// Source distante (D10 : `TILES_S3`) : manifeste et repères lus au démarrage, dalles
+    /// téléchargées à la demande dans `cache` (le dossier est créé).
+    pub fn open_remote(fetch: Fetch, cache: &Path) -> Result<TileStore, String> {
+        std::fs::create_dir_all(cache).map_err(|e| format!("{}: {e}", cache.display()))?;
+        let text =
+            |f: &str| fetch(f).and_then(|b| String::from_utf8(b).map_err(|e| format!("{f} : {e}")));
+        let manifest = parse_manifest(&text("manifest.json")?)?;
+        let pois = match manifest.pois.as_ref().and_then(|p| p["file"].as_str()) {
+            None => Vec::new(),
+            Some(f) => parse_pois(f, &text(f)?)?,
+        };
+        Ok(TileStore {
+            root: cache.to_path_buf(),
+            manifest,
+            pois,
+            remote: Some(fetch),
+        })
+    }
+
+    /// `s3://bucket/tiles/<version>/` : cache `<cache_root>/<version>` (défaut /tmp/tiles).
+    /// Région `AWS_REGION` (défaut eu-north-1), identifiants du rôle ; `S3_ENDPOINT` =
+    /// serveur compatible S3 (MinIO, tests locaux).
+    pub fn open_s3(url: &str, cache_root: &Path) -> Result<TileStore, String> {
+        use crate::share::{Creds, S3Target, s3_call};
+        let rest = url
+            .strip_prefix("s3://")
+            .ok_or("TILES_S3 : s3://bucket/préfixe/")?;
+        let (bucket, prefix) = rest.split_once('/').unwrap_or((rest, ""));
+        let prefix = prefix.trim_matches('/');
+        let version = prefix.rsplit('/').next().unwrap_or_default();
+        if bucket.is_empty() || version.is_empty() {
+            return Err("TILES_S3 : s3://bucket/tiles/<version>/ attendu".into());
+        }
+        let target = S3Target {
+            bucket: bucket.into(),
+            region: std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into()),
+            endpoint: std::env::var("S3_ENDPOINT").ok().filter(|e| !e.is_empty()),
+        };
+        let creds = Creds::from_env()?;
+        let prefix = prefix.to_string();
+        let fetch: Fetch = Box::new(move |name| {
+            let key = format!("{prefix}/{name}");
+            match s3_call(&target, &creds, "GET", &key, &[], None, (20, 64 << 20))? {
+                (200, b) => Ok(b),
+                (s, _) => Err(format!("s3 GET {key} : HTTP {s}")),
+            }
+        });
+        TileStore::open_remote(fetch, &cache_root.join(version))
+    }
+
+    /// Source distante : télécharge dans le cache les dalles absentes (16 GET en parallèle ;
+    /// `.part` puis rename ; taille et sha256 du manifeste vérifiés ; un retry). Sans effet en local.
+    pub fn ensure(&self, keys: &[(i64, i64)]) -> Result<(), String> {
+        let Some(fetch) = &self.remote else {
+            return Ok(());
+        };
+        let keep: Vec<String> = keys
+            .iter()
+            .map(|(ix, iy)| format!("{ix}_{iy}.npz"))
+            .collect();
+        let missing: Vec<&String> = keep
+            .iter()
+            .filter(|n| {
+                let want = self.manifest.tiles[n.trim_end_matches(".npz")]["bytes"].as_u64();
+                match std::fs::metadata(self.root.join(n)) {
+                    Ok(m) => want.is_some_and(|w| w != m.len()),
+                    Err(_) => true,
+                }
+            })
+            .collect();
+        let next = std::sync::atomic::AtomicUsize::new(0);
+        let failure = std::sync::Mutex::new(None);
+        std::thread::scope(|sc| {
+            for _ in 0..FETCH_THREADS.min(missing.len()) {
+                sc.spawn(|| {
+                    while failure.lock().unwrap().is_none() {
+                        let i = next.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        let Some(n) = missing.get(i) else { break };
+                        if let Err(e) = self.fetch_tile(fetch, n, &keep) {
+                            failure.lock().unwrap().get_or_insert(e);
+                        }
+                    }
+                });
+            }
+        });
+        failure.into_inner().unwrap().map_or(Ok(()), Err)
+    }
+
+    fn fetch_tile(&self, fetch: &Fetch, name: &str, keep: &[String]) -> Result<(), String> {
+        let entry = &self.manifest.tiles[name.trim_end_matches(".npz")];
+        let once = || -> Result<(), String> {
+            let data = fetch(name)?;
+            if entry["bytes"]
+                .as_u64()
+                .is_some_and(|b| b != data.len() as u64)
+            {
+                return Err(format!("taille {} ≠ manifeste", data.len()));
+            }
+            if let Some(h) = entry["sha256"].as_str()
+                && crate::share::hex(digest::digest(&digest::SHA256, &data).as_ref()) != h
+            {
+                return Err("sha256 ≠ manifeste".into());
+            }
+            self.write_atomic(name, &data, keep)
+        };
+        once()
+            .or_else(|_| once())
+            .map_err(|e| format!("dalle {name} : {e}"))
+    }
+
+    /// `.part` puis rename ; disque plein : éviction des plus anciennes dalles hors `keep`.
+    fn write_atomic(&self, name: &str, data: &[u8], keep: &[String]) -> Result<(), String> {
+        let (part, dest) = (self.root.join(format!("{name}.part")), self.root.join(name));
+        if let Some(dir) = dest.parent() {
+            std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+        }
+        let mut res = std::fs::write(&part, data);
+        if res
+            .as_ref()
+            .is_err_and(|e| e.raw_os_error() == Some(ENOSPC))
+        {
+            evict(&self.root, keep, data.len() as u64);
+            res = std::fs::write(&part, data);
+        }
+        res.and_then(|_| std::fs::rename(&part, &dest))
+            .map_err(|e| {
+                let _ = std::fs::remove_file(&part);
+                e.to_string()
+            })
     }
 
     /// Entrée du manifeste de la dalle qui contient le point L93 (m), si elle existe.
@@ -283,11 +464,42 @@ impl TileStore {
     /// Charge les dalles qui touchent la boîte L93 (m).
     pub fn load(&self, b: [f64; 4]) -> Result<Troncons, String> {
         let mut t = Troncons::new();
-        for (ix, iy) in self.keys(b) {
+        let keys = self.keys(b);
+        self.ensure(&keys)?;
+        for (ix, iy) in keys {
             read_tile(&self.root.join(format!("{ix}_{iy}.npz")), ix, iy, &mut t)?;
         }
         Ok(t)
     }
+}
+
+/// Supprime les dalles les plus anciennes (hors `keep`) jusqu'à libérer `need` octets.
+fn evict(dir: &Path, keep: &[String], need: u64) -> u64 {
+    let mut files: Vec<_> = std::fs::read_dir(dir)
+        .into_iter()
+        .flatten()
+        .flatten()
+        .filter(|e| {
+            let n = e.file_name().to_string_lossy().into_owned();
+            n.ends_with(".npz") && !keep.contains(&n)
+        })
+        .filter_map(|e| {
+            e.metadata()
+                .ok()
+                .map(|m| (m.modified().ok(), m.len(), e.path()))
+        })
+        .collect();
+    files.sort();
+    let mut freed = 0;
+    for (_, len, p) in files {
+        if freed >= need {
+            break;
+        }
+        if std::fs::remove_file(p).is_ok() {
+            freed += len;
+        }
+    }
+    freed
 }
 
 /// Tableau `.npy` d'entiers, converti en i64.
@@ -459,5 +671,28 @@ mod tests {
         assert_eq!(p[4], (12.3, 7.7));
         // montée - descente = z(v) - z(u)
         assert_eq!(t.dplus_dm[0] - t.dminus_dm[0], t.z_dm[4] - t.z_dm[0]);
+    }
+}
+
+#[cfg(test)]
+mod evict_tests {
+    use super::evict;
+
+    #[test]
+    fn evicts_oldest_first_and_spares_kept_tiles() {
+        let d = std::env::temp_dir().join(format!("optrail-evict-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).unwrap();
+        let t0 = std::time::SystemTime::now();
+        for (i, n) in ["a", "b", "c", "keep"].iter().enumerate() {
+            let f = std::fs::File::create(d.join(format!("{n}.npz"))).unwrap();
+            f.set_len(100).unwrap();
+            let age = std::time::Duration::from_secs(100 - 10 * i as u64);
+            f.set_modified(t0 - age).unwrap();
+        }
+        let freed = evict(&d, &["keep.npz".to_string()], 150);
+        assert_eq!(freed, 200);
+        assert!(!d.join("a.npz").exists() && !d.join("b.npz").exists());
+        assert!(d.join("c.npz").exists() && d.join("keep.npz").exists());
     }
 }

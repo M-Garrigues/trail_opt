@@ -222,5 +222,52 @@
     "code": "coverage_edge",
     "kind": "warning",
     "params": []
+  },
+  {
+    "code": "via_too_far",
+    "kind": "error",
+    "params": [
+      "n",
+      "max_km"
+    ]
+  },
+  {
+    "code": "via_outside_zone",
+    "kind": "error",
+    "params": [
+      "n"
+    ]
+  },
+  {
+    "code": "via_unreachable",
+    "kind": "error",
+    "params": [
+      "n"
+    ]
+  },
+  {
+    "code": "via_missed",
+    "kind": "warning",
+    "params": [
+      "n"
+    ]
+  },
+  {
+    "code": "target_not_reached",
+    "kind": "warning",
+    "params": [
+      "dplus_m",
+      "best_dplus_m",
+      "km",
+      "best_km"
+    ]
+  },
+  {
+    "code": "fewer_loops",
+    "kind": "warning",
+    "params": [
+      "asked",
+      "got"
+    ]
   }
 ]

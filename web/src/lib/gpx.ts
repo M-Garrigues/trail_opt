@@ -43,7 +43,7 @@ export function downloadGpx(c: Candidate, dataVersion = ''): void {
 export const canShareGpx = (c: Candidate) =>
   typeof navigator.canShare === 'function' && navigator.canShare({ files: [gpxFile(c)] });
 export async function saveGpx(c: Candidate, dataVersion = ''): Promise<void> {
-  if (!canShareGpx(c)) return downloadGpx(c, dataVersion);
+  if (!canShareGpx(c)) { downloadGpx(c, dataVersion); return; }
   const f = gpxFile(c, dataVersion);
   try { await navigator.share({ files: [f], title: f.name }); } catch { /* annulé */ }
 }

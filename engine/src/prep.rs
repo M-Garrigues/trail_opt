@@ -906,7 +906,15 @@ pub fn loop_components(net: &Net, ids: &[usize]) -> Vec<Vec<usize>> {
 /// décroissant) jusqu'à k × Lmax de longueur, plus leurs chemins vers `s` dans deux arbres de
 /// plus courts chemins (le 2e pénalise les arêtes du 1er), plus les copies du rayon libre et
 /// leurs originaux. `w` exact (profils des dalles) : pas de criblage grossier.
-pub fn steep_reduction(net: &Net, ids: &[usize], s: usize, lmax: f64, k: f64) -> Vec<usize> {
+/// `via` : nœuds à garder (points de passage, T34) : leurs arêtes et leurs chemins vers `s`.
+pub fn steep_reduction(
+    net: &Net,
+    ids: &[usize],
+    s: usize,
+    lmax: f64,
+    k: f64,
+    via: &[usize],
+) -> Vec<usize> {
     let e = |i: usize| &net.edges[ids[i]];
     let mut order: Vec<usize> = (0..ids.len()).collect();
     order.sort_by(|&a, &b| {
@@ -926,6 +934,9 @@ pub fn steep_reduction(net: &Net, ids: &[usize], s: usize, lmax: f64, k: f64) ->
     }
     for &i in &order[..cut] {
         keep[i] = true;
+    }
+    for (i, k) in keep.iter_mut().enumerate() {
+        *k |= via.contains(&e(i).u) || via.contains(&e(i).v);
     }
     let pos: HashMap<usize, usize> = ids.iter().enumerate().map(|(i, &x)| (x, i)).collect();
     let adj = Adj::new(net, ids);
@@ -953,6 +964,27 @@ pub fn steep_reduction(net: &Net, ids: &[usize], s: usize, lmax: f64, k: f64) ->
         for i in tree {
             keep[i] = true;
             cost[i] *= 3.0;
+            // le 2e arbre doit quitter `s` par un autre côté : sinon le départ reste sur une tige
+            // (un pont), retirée par l'élagage, et le réseau réduit est vide
+            if e(i).u == s || e(i).v == s {
+                cost[i] += 1e9;
+            }
+        }
+    }
+    // points de passage : deux chemins sans arête commune s -> via (sinon la tige serait un pont,
+    // retiré par l'élagage et le point perdu)
+    for &v in via {
+        let mut cost: Vec<f64> = (0..ids.len()).map(|i| e(i).len).collect();
+        for _ in 0..2 {
+            let (_, prev) = shortest(&adj, |x| cost[pos[&x]].max(1e-9), s, None);
+            let mut n = v;
+            let mut seen = HashSet::new();
+            while n != s && seen.insert(n) {
+                let Some((x, p)) = prev[n] else { break };
+                keep[pos[&x]] = true;
+                cost[pos[&x]] += 1e9;
+                n = p;
+            }
         }
     }
     for i in 0..ids.len() {
@@ -1027,6 +1059,63 @@ pub fn parallel_pairs(net: &Net, ids: &[usize], c: [f64; 2]) -> Vec<[usize; 2]> 
                     if a != b {
                         out.insert([a.min(b), a.max(b)]);
                     }
+                }
+            }
+        }
+    }
+    let mut v: Vec<[usize; 2]> = out.into_iter().collect();
+    v.sort_unstable();
+    v
+}
+
+/// D34 (Croix-Rousse) : paires d'arêtes qui se croisent en plan SANS nœud commun (pont, tunnel,
+/// passage dessous : Grande-Côte sous la rue Burdeau). Une boucle qui prend les deux passe deux
+/// fois au même endroit : en carrefours uniques, on les traite comme des couloirs parallèles
+/// (jamais ensemble). Croisement à moins de FREE_RADIUS de `c` ignoré (comme les carrefours).
+pub fn crossing_pairs(net: &Net, ids: &[usize], c: [f64; 2]) -> Vec<[usize; 2]> {
+    const CELL: f64 = 25.0;
+    let segs: Vec<(usize, [f64; 2], [f64; 2])> = ids
+        .iter()
+        .enumerate()
+        .filter(|&(_, &e)| net.edges[e].twin.is_none())
+        .flat_map(|(i, &e)| {
+            let (xy, _) = net.edge_points(e);
+            xy.windows(2).map(|w| (i, w[0], w[1])).collect::<Vec<_>>()
+        })
+        .collect();
+    let mut grid: HashMap<(i64, i64), Vec<usize>> = HashMap::new();
+    for (k, &(_, a, b)) in segs.iter().enumerate() {
+        let cell = |x: f64| (x / CELL).floor() as i64;
+        for gx in cell(a[0].min(b[0]))..=cell(a[0].max(b[0])) {
+            for gy in cell(a[1].min(b[1]))..=cell(a[1].max(b[1])) {
+                grid.entry((gx, gy)).or_default().push(k);
+            }
+        }
+    }
+    // intersection propre (hors extrémités) de [p, q] et [r, s]
+    let cross = |p: [f64; 2], q: [f64; 2], r: [f64; 2], s: [f64; 2]| {
+        let d = (q[0] - p[0]) * (s[1] - r[1]) - (q[1] - p[1]) * (s[0] - r[0]);
+        if d.abs() < 1e-9 {
+            return None;
+        }
+        let t = ((r[0] - p[0]) * (s[1] - r[1]) - (r[1] - p[1]) * (s[0] - r[0])) / d;
+        let u = ((r[0] - p[0]) * (q[1] - p[1]) - (r[1] - p[1]) * (q[0] - p[0])) / d;
+        const E: f64 = 1e-6;
+        (E < t && t < 1.0 - E && E < u && u < 1.0 - E)
+            .then(|| [p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])])
+    };
+    let mut out = HashSet::new();
+    for cell in grid.values() {
+        for (x, &k1) in cell.iter().enumerate() {
+            for &k2 in &cell[x + 1..] {
+                let ((i, p, q), (j, r, s)) = (segs[k1], segs[k2]);
+                if i == j || out.contains(&[i.min(j), i.max(j)]) {
+                    continue;
+                }
+                if let Some(m) = cross(p, q, r, s)
+                    && (m[0] - c[0]).hypot(m[1] - c[1]) > FREE_RADIUS
+                {
+                    out.insert([i.min(j), i.max(j)]);
                 }
             }
         }

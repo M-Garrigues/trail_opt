@@ -1,4 +1,4 @@
-// Carte MapLibre appelée directement (I5) : Plan IGN vectoriel + ombrage LiDAR HD (port de trailopt/maplayers.py).
+// Carte MapLibre appelée directement (I5) : Plan IGN vectoriel + ombrage LiDAR HD.
 import * as maplibregl from 'maplibre-gl';
 import type { GeoJSONSource, LngLatBoundsLike } from 'maplibre-gl';
 import 'maplibre-gl/dist/maplibre-gl.css';
@@ -7,6 +7,9 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 
 maplibregl.setWorkerUrl(workerUrl);
 import type { Candidate } from './types';
+import { Trail3D } from './trail3d';
+import { idxAt } from './geo';
+import { LM_PATH } from './icons';
 
 export const PLAN_IGN_STYLE = 'https://data.geopf.fr/annexes/ressources/vectorTiles/styles/PLAN.IGN/standard.json';
 const SHADOW =
@@ -17,11 +20,14 @@ const SHADOW =
 // Spike 3D (D27) : MNT Terrarium de Mapterhorn (IGN RGE ALTI 1 m / LiDAR HD en France, Licence Ouverte 2.0), z ≤ 17, CORS *.
 const DEM = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const DEM_ATTR = '<a href="https://mapterhorn.com/attribution/">© Mapterhorn</a> · MNT © IGN';
+const EXAG = 1.25;
 
 /** Couverture v1 (IdF + Isère) : cadrage initial avant chargement de coverage.geojson. */
 export const COVERAGE_BOUNDS: LngLatBoundsLike = [[1.4, 44.65], [6.4, 49.25]];
 const WORLD: GeoJSON.Position[] = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
-export const LOOP_COLORS = ['#C2185B', '#1565C0', '#E65100', '#6A1B9A'];
+// n°1 = accent de l'interface (D34) ; carte toujours claire → valeur claire fixe. Ni vert ni brun clair (forêts, courbes IGN).
+export const ACCENT = '#a8441c';
+export const LOOP_COLORS = [ACCENT, '#1565C0', '#6A1B9A', '#AD1457'];
 
 type Handlers = {
   onClick: (p: { lat: number; lon: number }) => void;
@@ -37,6 +43,9 @@ export class TrailMap {
   private marker: maplibregl.Marker | null = null;
   private ready: Promise<void>;
   private loops: Candidate[] = [];
+  private trail3d = new Trail3D(LOOP_COLORS[0], EXAG);
+  private viaMarkers: maplibregl.Marker[] = [];
+  private marks: maplibregl.Marker[] = [];
   private coverageBounds: LngLatBoundsLike = COVERAGE_BOUNDS;
   /** Clics carte ignorés (zone en cours : terra-draw les prend). */
   drawing = false;
@@ -53,7 +62,8 @@ export class TrailMap {
       pitchWithRotate: false,
     });
     this.map.touchZoomRotate.disableRotation();
-    this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+    // pointeur grossier (mobile) : pincement seulement, pas de boutons zoom
+    if (!matchMedia('(pointer: coarse)').matches) this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
     this.map.addControl(new maplibregl.ScaleControl({ unit: 'metric' }), 'bottom-right');
     this.ready = new Promise((ok) => this.map.once('style.load', () => { this.setup(); ok(); }));
     this.map.on('click', (e) => {
@@ -68,7 +78,15 @@ export class TrailMap {
   private setup() {
     const m = this.map;
     const firstSymbol = m.getStyle().layers.find((l) => l.type === 'symbol')?.id;
-    m.addSource('shadow', { type: 'raster', tiles: [SHADOW], tileSize: 256, maxzoom: 18, attribution: '© IGN' });
+    // toponymes orographiques du Plan IGN (cols, sommets, lieux-dits de relief) : plus contrastés, halo large
+    for (const l of m.getStyle().layers) {
+      if (l.type === 'symbol' && l.id.startsWith('toponyme - oro ')) {
+        m.setPaintProperty(l.id, 'text-color', '#5a1a14');
+        m.setPaintProperty(l.id, 'text-halo-color', 'rgba(255,255,255,0.95)');
+        m.setPaintProperty(l.id, 'text-halo-width', 2.5);
+      }
+    }
+    m.addSource('shadow', { type: 'raster', tiles: [SHADOW], tileSize: 256, minzoom: 9, maxzoom: 18, attribution: '© IGN' }); // minzoom : le LiDAR répond 400 aux petits zooms
     m.addLayer({ id: 'shadow', type: 'raster', source: 'shadow', paint: { 'raster-opacity': 0.28 } }, firstSymbol);
     // hors couverture grisé (sous le tracé et les libellés)
     m.addSource('outside', { type: 'geojson', data: empty() });
@@ -124,6 +142,8 @@ export class TrailMap {
   async setLoops(cands: Candidate[], sel: number) {
     await this.ready;
     this.loops = cands;
+    this.trail3d.setColor(LOOP_COLORS[sel % LOOP_COLORS.length]);
+    this.trail3d.setLine(cands[sel] ?? null);
     const features: GeoJSON.Feature[] = cands.map((c, i) => ({
       type: 'Feature',
       properties: { idx: i, sel: i === sel, color: LOOP_COLORS[i % LOOP_COLORS.length] },
@@ -174,7 +194,11 @@ export class TrailMap {
       m.addSource('dem', { type: 'raster-dem', tiles: [DEM], tileSize: 512, maxzoom: 17, encoding: 'terrarium', attribution: DEM_ATTR });
       m.setSky({ 'sky-color': '#bcd7ec', 'horizon-color': '#eef2f0', 'fog-color': '#f2efe9', 'sky-horizon-blend': 0.5, 'horizon-fog-blend': 0.6, 'fog-ground-blend': 0.7 });
     }
-    m.setTerrain(on ? { source: 'dem', exaggeration: 1.25 } : null);
+    m.setTerrain(on ? { source: 'dem', exaggeration: EXAG } : null);
+    // tracé choisi : ruban surélevé (trail3d.ts) en 3D, ligne drapée classique en 2D
+    if (on && !m.getLayer(this.trail3d.id)) m.addLayer(this.trail3d, 'cursor');
+    if (!on && m.getLayer(this.trail3d.id)) m.removeLayer(this.trail3d.id);
+    for (const l of ['loops-casing', 'loops-sel']) m.setLayoutProperty(l, 'visibility', on ? 'none' : 'visible');
     if (on) { m.dragRotate.enable(); m.touchZoomRotate.enableRotation(); m.touchPitch.enable(); }
     else { m.dragRotate.disable(); m.touchZoomRotate.disableRotation(); m.touchPitch.disable(); }
     const duration = still ? 0 : 1200;
@@ -186,6 +210,40 @@ export class TrailMap {
     const cam = m.cameraForBounds(b, { padding, bearing });
     // même zoom qu'en 2D : en perspective l'avant grossit, le fond rapetisse, la boucle reste dans le cadre
     if (cam) m.easeTo({ center: cam.center, zoom: cam.zoom ?? 13, bearing, pitch: 60, padding, duration });
+  }
+
+  /** Points de passage : repères numérotés déplaçables (D34). */
+  setVia(pts: { lat: number; lon: number }[], label: (n: number) => string, onDrag: (i: number, p: { lat: number; lon: number }) => void) {
+    this.viaMarkers.forEach((mk) => mk.remove());
+    this.viaMarkers = pts.map((p, i) => {
+      const el = document.createElement('div');
+      el.className = 'via-marker';
+      el.textContent = String(i + 1);
+      el.setAttribute('aria-label', label(i + 1));
+      el.addEventListener('click', () => this.map.easeTo({ center: [p.lon, p.lat], duration: 400 }));
+      const mk = new maplibregl.Marker({ element: el, draggable: true }).setLngLat([p.lon, p.lat]).addTo(this.map);
+      mk.on('dragend', () => { const ll = mk.getLngLat(); onDrag(i, { lat: ll.lat, lon: ll.lng }); });
+      return mk;
+    });
+  }
+
+  /** Cols et sommets traversés (repères, D34). */
+  setLandmarks(c: Candidate | null) {
+    this.marks.forEach((mk) => mk.remove());
+    this.marks = (c?.landmarks ?? []).map((l) => {
+      const el = document.createElement('div');
+      const i = idxAt(c!, l.dist_m);
+      el.className = `landmark ${l.kind}`;
+      el.innerHTML = `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${LM_PATH[l.kind]}" /></svg>`;
+      el.title = l.name + (l.ele_m != null ? ` · ≈ ${Math.round(l.ele_m / 10) * 10} m` : '');
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-label', el.title);
+      el.tabIndex = 0;
+      const go = () => this.map.easeTo({ center: [c!.lon[i], c!.lat[i]], duration: 400 });
+      el.addEventListener('click', (ev) => { ev.stopPropagation(); go(); });
+      el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
+      return new maplibregl.Marker({ element: el }).setLngLat([c!.lon[i], c!.lat[i]]).addTo(this.map);
+    });
   }
 
   fitCoverage() {

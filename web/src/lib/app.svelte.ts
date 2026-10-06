@@ -1,18 +1,23 @@
 // État de l'application et actions (une seule source, partagée par les composants).
 import { load, save, remove, clearAll } from './store';
-import { mergeSettings, buildQuery, expectedKm, computeEstimateS, settingsFromRequest, type Start } from './settings';
+import { type Settings, mergeSettings, buildQuery, expectedKm, computeEstimateS, settingsFromRequest, type Start } from './settings';
 import { byId } from './catalog';
 import { postLoop, getLoop, shareUrl, sharedId, type Shared } from './share';
-import { fetchPlan, PlanError } from './api';
+import { fetchPlan, fetchDiagnose, PlanError } from './api';
 import { getToken } from './turnstile';
+import { routeGenerated } from './install.svelte';
 import * as hist from './history';
-import { roundStart, inGeometry } from './geo';
+import { roundStart, inGeometry, nearestIndex, parseVia, idxAt } from './geo';
 import type { Candidate, Msg, PlanResponse } from './types';
 import { dicts } from '../i18n/format';
 import { i18n } from '../i18n/i18n.svelte';
 
 /** ?debug=1 (ui-spec §4) : versions, durées et codes affichés. */
 export const debug = new URLSearchParams(location.search).get('debug') === '1';
+
+/** Points de passage (D34, T34, api.md v1.5) : `via=lat,lon;lat,lon`, 1 à 5 points, ordre libre. */
+export const VIA = true;
+export const VIA_MAX = 5;
 
 export type Layer = 'computing' | 'result' | 'detail' | 'share' | 'history' | 'menu' | 'zone';
 
@@ -21,6 +26,10 @@ export const app = $state({
   intro: !load('intro', false),
   start: null as Start | null,
   zone: null as [number, number][] | null, // anneau (lon, lat) validé
+  /** points de passage (ordre de pose ; le serveur choisit l'ordre de visite) */
+  via: [] as Start[],
+  /** pose de points de passage en cours (les touchers de carte ajoutent un point) */
+  placing: false,
   layers: [] as Layer[],
   result: null as PlanResponse | null,
   cands: [] as Candidate[],
@@ -40,18 +49,77 @@ export const app = $state({
   /** durée du dernier calcul vue du client (s), pour ?debug=1 */
   clientS: 0,
   cursor: -1,
-  snap: 1 as 0 | 1 | 2,
+  snap: 0 as 0 | 2,
   noMore: false,
   geoError: false,
   /** profil affiché dans la bande du bas (bureau, directions nature) */
   dock: false,
+  /** mise en page bureau (panneau latéral) */
+  wide: false,
+  /** « Messages importants » (D40) : demande non atteinte, popup modale */
+  notice: null as null | { warnings: Msg[] },
 });
+
+/** Avertissements « demande non atteinte » (api.md v1.5 § Messages importants). Les anciens codes ne comptent que sans `target_not_reached`. */
+const LEGACY = ['distance_out_of_tolerance', 'target_dplus_above_bound', 'target_dplus_probably_unreachable', 'dplus_not_reached'];
+const NOT_MET = ['target_not_reached', 'fewer_loops', 'via_missed', 'start_moved', ...LEGACY];
+export const isImportant = (code: string) => NOT_MET.includes(code);
+
+function setNotice(res: PlanResponse, q: URLSearchParams) {
+  const modern = res.warnings.some((w) => w.code === 'target_not_reached');
+  const warnings = res.warnings.filter((w) => isImportant(w.code) && !(modern && LEGACY.includes(w.code)));
+  app.notice = warnings.length ? { warnings } : null;
+  // le diagnostic ne sert qu'à `target_not_reached` (un appel Lambda de jusqu'à 15 s + un jeton Turnstile)
+  if (app.notice && modern) void diagnose(q, app.notice); // le proxy $state, pour la comparaison d'identité plus bas
+}
+/** D46 : résultat et message tout de suite ; le diagnostic arrive après et complète la popup (bouton d'action). */
+async function diagnose(q: URLSearchParams, notice: NonNullable<typeof app.notice>) {
+  const d = await fetchDiagnose(q, await getToken(), new AbortController().signal);
+  if (!d || app.notice !== notice) return; // échec silencieux, ou popup fermée / remplacée
+  app.notice = { warnings: notice.warnings.map((w) => {
+    const suggest = w.code === 'target_not_reached' ? d.suggest : undefined // fewer_loops : un seul OK, pas de choix;
+    return suggest ? { ...w, suggest } : w;
+  }) };
+}
+export function dismissNotice() { app.notice = null; }
+/** Libellé du bouton d'une suggestion (`roads` : selon le niveau proposé). */
+export function suggestLabel(sg: NonNullable<Msg['suggest']> | null | undefined) {
+  if (!sg) return '';
+  const k = Object.keys(sg)[0], L = dicts[i18n.lang].important.suggest as Record<string, string>;
+  return L[k === 'roads' ? `roads_${sg.roads}` : k] ?? '';
+}
+/** Applique `suggest` (noms de paramètres de l'API ; null = retirer) puis relance. */
+export function applySuggest(sg: NonNullable<Msg['suggest']>) {
+  app.notice = null;
+  const s = app.settings;
+  for (const [k, v] of Object.entries(sg)) {
+    if (k === 'roads') s.roads = v as Settings['roads'];
+    else if (k === 'max_grade_pct') s.maxGrade = Number(v);
+    else if (k === 'polygon') app.zone = null;
+    else if (k === 'no_repeat_junction') s.noRepeat = Boolean(v);
+    else if (k === 'via') app.via = [];
+    else if (k === 'max_distance_km') s.values.shortest.max_distance_km = Number(v);
+  }
+  void compute('new');
+}
+
+export function addVia(p: Start) {
+  if (app.via.length >= VIA_MAX) return;
+  app.via.push(p);
+  if (app.via.length >= VIA_MAX) app.placing = false;
+}
+export function removeVia(i: number) { app.via.splice(i, 1); }
+export function moveVia(i: number, p: Start) { app.via[i] = p; }
 
 /** Niveau d'élévation de l'interface (D27) : mobile = cran 1–3 ; bureau = profondeur des couches 1–3. */
 export const level = (desktop: boolean) =>
   desktop ? Math.min(3, 1 + app.layers.filter((l) => l !== 'computing').length) : app.snap + 1;
 /** Actions carte exposées aux composants (branchées par App). */
 export const mapUi = { center: (_i: number) => {} };
+
+/** Indices des points de passage sur le tracé (serveur si fourni, sinon point le plus proche de chaque point demandé). */
+export const viaIdx = (c: Candidate) =>
+  c.via?.map((v) => idxAt(c, v.dist_m)) ?? parseVia(app.request.via).map((p) => nearestIndex(c.lat, c.lon, { lat: p.lat, lng: p.lon }));
 
 export const top = () => app.layers[app.layers.length - 1] ?? null;
 export const has = (l: Layer) => app.layers.includes(l);
@@ -68,8 +136,7 @@ export function onLayerClose(l: Layer, f: () => void) { onClose[l] = f; }
 export function open(l: Layer) {
   app.layers.push(l);
   history.pushState({ depth: app.layers.length }, '');
-  if (l === 'detail' || l === 'history' || l === 'menu') app.snap = 2;
-  else if (l === 'result' || l === 'share') app.snap = Math.max(app.snap, 1) as 1 | 2;
+  if (l === 'detail' || l === 'history' || l === 'menu' || l === 'share') app.snap = 2;
 }
 /** Remplace la couche du dessus sans nouvelle entrée history. */
 function replaceTop(l: Layer) { app.layers[app.layers.length - 1] = l; }
@@ -91,8 +158,8 @@ function popTo(depth: number) {
     if (l === 'computing') abort();
     if (l === 'result') clearResult();
   }
-  if (!app.layers.length) app.snap = 1;
-  else if (top() === 'result') app.snap = 1;
+  if (!app.layers.length) app.snap = 0;
+  else if (top() === 'result') app.snap = 2;
 }
 addEventListener('popstate', (e) => popTo((e.state as { depth?: number } | null)?.depth ?? 0));
 
@@ -154,12 +221,13 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
   if (mode === 'new') app.seed = 0;
   if (mode === 'seed') app.seed = (app.seed + 1) % 1000;
   const n = mode === 'more' ? 4 : app.settings.nLoops;
-  const q = buildQuery(app.settings, app.start, { n, seed: app.seed, polygon: app.zone });
+  app.placing = false;
+  const q = buildQuery(app.settings, app.start, { n, seed: app.seed, polygon: app.zone, via: VIA ? app.via : [] });
   const keep = mode === 'more' ? current() : null;
   if (mode !== 'more') await closeAll();
   ctrl = new AbortController();
   const my = ctrl;
-  app.progress = { t0: performance.now(), estS: computeEstimateS(expectedKm(app.settings), byId(app.settings.typeId).goal, n) };
+  app.progress = { t0: performance.now(), estS: computeEstimateS(expectedKm(app.settings), byId(app.settings.typeId).goal, n, app.settings.climbs) };
   open('computing');
   try {
     const token = await getToken();
@@ -185,8 +253,10 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
     }
     app.request = Object.fromEntries(q);
     app.clientS = (performance.now() - app.progress.t0) / 1000;
-    app.snap = 1;
+    app.snap = 2;
     ctrl = null;
+    app.notice = null;
+    if (mode !== 'more') { setNotice(res, q); routeGenerated(); }
     save('lastStart', roundStart(app.start!));
     const d = dicts[i18n.lang];
     for (const c of keep ? cands.slice(1) : cands) {
@@ -203,8 +273,16 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
     if (pe.code === 'cancelled') return;
     if (has('computing')) await closeTo('computing');
     app.error = { code: pe.code, params: pe.params ?? {}, status: pe.status };
+    // D46 : échec « aucune boucle » → l'écran d'erreur reste, puis la suggestion arrive (échec silencieux)
+    if (NO_LOOP.includes(pe.code)) {
+      const err = app.error;
+      void fetchDiagnose(q, await getToken(), new AbortController().signal).then((d) => {
+        if (d?.suggest && app.error === err) app.error = { ...err, suggest: d.suggest };
+      });
+    }
   }
 }
+const NO_LOOP = ['no_loop_of_distance', 'no_loop_found', 'dplus_unreachable_proven'];
 let warnedStorage = false;
 
 export function select(i: number) {
@@ -223,7 +301,7 @@ export async function openEntry(e: hist.Entry) {
   open('result');
   app.result = res; app.cands = [e.candidate]; app.sel = 0; app.fromHistory = true; app.noMore = false;
   app.request = e.request ?? {};
-  app.snap = 1;
+  app.snap = 2;
 }
 
 export function dismissIntro() { app.intro = false; save('intro', true); }
@@ -272,7 +350,7 @@ export async function openShared(id: string) {
     app.result = { solver_version: s.solver_version, data_version: s.data_version, compute_s: 0, lower_bound_m: null,
       effective_start: s.effective_start, zone: s.zone ?? null, candidates: [s.candidate], warnings: s.warnings };
     app.cands = [s.candidate]; app.sel = 0; app.fromHistory = true; app.shared = true; app.request = s.request;
-    app.snap = 1;
+    app.snap = 2;
   } catch (e) {
     const pe = e instanceof PlanError ? e : new PlanError('network');
     app.error = { code: pe.code, params: pe.params ?? {}, status: pe.status };

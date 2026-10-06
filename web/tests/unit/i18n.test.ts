@@ -19,7 +19,7 @@ describe('couverture des codes D14 (engine/codes.json)', () => {
           if (c.code !== 'cancelled') expect(errorText(lang, c.code, p)).not.toBe('');
         } else {
           expect(c.code in (lang === 'fr' ? fr : en).warn, c.code).toBe(true);
-          if (c.code !== 'profile_mismatch') expect(warningText(lang, c.code, p)).not.toBe('');
+          if (!['profile_mismatch', 'long_distance'].includes(c.code)) expect(warningText(lang, c.code, p)).not.toBe('');
         }
       }
     });

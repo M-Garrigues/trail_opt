@@ -1,5 +1,5 @@
 # optrail, infrastructure de production (un seul environnement, D1/D4/D8/D10/D15).
-# Appliquée par .github/workflows/deploy.yml ; état S3 créé par infra/bootstrap.
+# Appliquée par scripts/deploy.sh (D36) ; état S3 créé par infra/bootstrap.
 
 terraform {
   required_version = ">= 1.10"
@@ -24,14 +24,14 @@ terraform {
   # bucket passé à l'init : tofu init -backend-config=bucket=optrail-tfstate-<compte>
   backend "s3" {
     key          = "optrail/prod.tfstate"
-    region       = "eu-west-3"
+    region       = "eu-north-1"
     encrypt      = true
     use_lockfile = true
   }
 }
 
 provider "aws" {
-  region = "eu-west-3"
+  region = "eu-north-1"
   default_tags {
     tags = { project = "optrail", managed_by = "opentofu" }
   }

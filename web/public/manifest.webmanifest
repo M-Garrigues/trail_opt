@@ -1,10 +1,20 @@
 {
-  "name": "optrail",
-  "short_name": "optrail",
-  "description": "Boucles trail sur mesure · Custom trail loops",
+  "id": "/",
+  "name": "Optrail",
+  "short_name": "Optrail",
+  "description": "Générateur de boucles trail sur mesure, sur les chemins de la carte IGN.",
+  "lang": "fr",
+  "dir": "ltr",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#ffffff",
-  "theme_color": "#c2185b",
-  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+  "background_color": "#fbf8f1",
+  "theme_color": "#fbf8f1",
+  "categories": ["sports", "navigation"],
+  "icons": [
+    { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" },
+    { "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
 }

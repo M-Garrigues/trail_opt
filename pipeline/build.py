@@ -20,7 +20,8 @@ from trailopt import cache, elevation, graph, ign
 from .load import FORMAT, TILE_M, lengths, profile_counts, profile_points
 
 MARGIN_M = 2000.0          # voisins chargés pour les parallèles en bord de dalle
-DATA_VERSION = "bdtopo-wfs-2026-10b"  # b : altitudes corrigées (falaises, portails de tunnel, D27)
+INNER_MAX_DM = int(MARGIN_M * 10)  # chaîne de ponts/tunnels interpolée seulement si plus courte que la marge (dm)
+DATA_VERSION = "bdtopo-wfs-2026-10d"  # d : altitude de nœud unique (z sur tous les tronçons voisins) ; c : nœuds intérieurs des ponts/tunnels interpolés (T35, D37) ; b : falaises, portails (D27)
 SOURCE = "BD TOPO® IGN, RGE ALTI®, LiDAR HD — Etalab 2.0"
 STEEP = 0.60               # validation : pente max > 60 % (artefact probable)
 ROAD_MAX_GRADE = 0.30     # pente physique max d'une voie carrossable, par pas de 5 m (D27)
@@ -37,6 +38,53 @@ def _deltas(a, n, base=0):
     first = np.cumsum(n) - n
     d[first] = a[first] - base
     return d
+
+
+def _inner_nodes(keyed, len_dm, node_z, box=None) -> dict:
+    """Nœuds touchés seulement par des ponts/tunnels (intérieur d'un ouvrage) : altitude interpolée
+    le long des ouvrages entre les nœuds au sol (solution harmonique pondérée 1/longueur, linéaire
+    sur une chaîne), au lieu du MNT au nœud (rivière sous un pont, colline au-dessus d'un tunnel).
+    Un ouvrage sans aucun nœud au sol est laissé au MNT (appelant)."""
+    from scipy.sparse import coo_matrix
+    from scipy.sparse.csgraph import connected_components
+    from scipy.sparse.linalg import spsolve
+    flat = [(e.u, e.v, max(int(L), 1)) for e, L in zip(keyed, len_dm) if e.flat and e.u != e.v]
+    free = sorted({n for u, v, _ in flat for n in (u, v)} - node_z.keys())
+    if not free:
+        return {}
+    ix = {n: i for i, n in enumerate(free)}
+    r, c, w, b = [], [], [], np.zeros(len(free))
+    for u, v, L in flat:
+        for a, o in ((u, v), (v, u)):
+            if a in ix:
+                r.append(ix[a]); c.append(ix[a]); w.append(1.0 / L)
+                if o in ix:
+                    r.append(ix[a]); c.append(ix[o]); w.append(-1.0 / L)
+                else:
+                    b[ix[a]] += node_z[o] / L
+    A = coo_matrix((w, (r, c)), shape=(len(free),) * 2).tocsr()
+    _, comp = connected_components(A, directed=False)
+    ok = np.isin(comp, np.unique(comp[b != 0]))       # composantes reliées au sol
+    # Chaîne interpolée seulement si elle est vue en entier par toute dalle qui en contient un nœud :
+    # plus courte que la marge de chargement (INNER_MAX_DM) et tous ses nœuds dans la zone chargée
+    # `box` (xmin, ymin, xmax, ymax en dm). Sinon altitude MNT (déterministe d'une dalle à l'autre).
+    tot = np.zeros(comp.max() + 1)
+    cut = np.zeros(comp.max() + 1, bool)
+    for u, v, L in flat:
+        if u not in ix and v not in ix:
+            continue                                  # ouvrage entre deux nœuds au sol
+        c = comp[ix[u] if u in ix else ix[v]]
+        tot[c] += L
+        if box is not None:
+            for k in (u, v):
+                x, y = k >> 32, k & 0xFFFFFFFF
+                cut[c] |= not (box[0] < x < box[2] and box[1] < y < box[3])
+    ok &= (tot[comp] < INNER_MAX_DM) & ~cut[comp]
+    if not ok.any():
+        return {}
+    sel = np.flatnonzero(ok)
+    z = np.atleast_1d(spsolve(A[sel][:, sel].tocsc(), b[sel]))
+    return {free[i]: float(v) for i, v in zip(sel, z)}
 
 
 def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
@@ -70,20 +118,45 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     # altitude unique par nœud (tronçons au sol d'abord), comme graph.assign_elevation.
     mem = np.flatnonzero(inside)
     mem = mem[np.argsort(ident[mem], kind="stable")]
-    P = np.vstack([edges[i].xy for i in mem]) if len(mem) else np.zeros((0, 2))
-    z = np.asarray(sample(P[:, 0] + x0 / 10.0, P[:, 1] + y0 / 10.0), float)
-    nodata = float(np.isnan(z).mean()) if len(z) else 0.0
     key_u = (Xd[first] << 32) | Yd[first]
     key_v = (Xd[off[1:] - 1] << 32) | Yd[off[1:] - 1]
-    k, zs = 0, []
-    for i in mem.tolist():
+    # Altitude de nœud unique d'une dalle à l'autre : elle est calculée sur TOUS les tronçons qui
+    # touchent un nœud de la dalle (ceux des dalles voisines compris), rangés par id : deux dalles
+    # qui partagent un nœud voient le même ensemble et prennent la même valeur (10c bis).
+    nodes = np.unique(np.concatenate([key_u[mem], key_v[mem]]))
+    # ... et sur les chaînes de ponts/tunnels qui touchent ces nœuds, avec les tronçons au sol de
+    # leurs extrémités : l'interpolation d'une chaîne (_inner_nodes) voit la même chose partout.
+    fl = np.flatnonzero(valid & A["flat"].astype(bool))
+    reach = nodes
+    if len(fl):
+        from scipy.sparse import coo_matrix
+        from scipy.sparse.csgraph import connected_components
+        allk, inv = np.unique(np.concatenate([key_u[fl], key_v[fl]]), return_inverse=True)
+        _, lab = connected_components(coo_matrix((np.ones(len(fl)), (inv[:len(fl)], inv[len(fl):])),
+                                                 shape=(len(allk),) * 2), directed=False)
+        reach = np.union1d(nodes, allk[np.isin(lab, np.unique(lab[np.isin(allk, nodes)]))])
+    ext = np.flatnonzero(valid & (np.isin(key_u, reach) | np.isin(key_v, reach)))
+    ext = ext[np.argsort(ident[ext], kind="stable")]
+    P = np.vstack([edges[i].xy for i in ext]) if len(ext) else np.zeros((0, 2))
+    z = np.asarray(sample(P[:, 0] + x0 / 10.0, P[:, 1] + y0 / 10.0), float)
+    k, zs, in_mem = 0, [], []
+    for i in ext.tolist():
         m = len(edges[i].xy)
         zs.append(graph.fill_nan(edges[i], graph.despike(edges[i], z[k:k + m])))
+        in_mem.append(np.full(m, bool(inside[i])))
         k += m
-    keyed = [graph.Edge(int(key_u[i]), int(key_v[i]), None, None, edges[i].flat) for i in mem.tolist()]
-    node_z = graph.node_elevations(keyed, zs, {})
-    fb = float(np.nanmean(z)) if np.isfinite(z).any() else 0.0
-    no_z = sorted({n for e in keyed for n in (e.u, e.v)} - node_z.keys())   # aucun MNT sur le tronçon
+    in_mem = np.concatenate(in_mem) if in_mem else np.zeros(0, bool)
+    zmem = z[in_mem]
+    nodata = float(np.isnan(zmem).mean()) if len(zmem) else 0.0
+    zs_of = dict(zip(ext.tolist(), zs))
+    keyed = [graph.Edge(int(key_u[i]), int(key_v[i]), None, None, edges[i].flat) for i in ext.tolist()]
+    node_z = graph.node_elevations([e for e in keyed if not e.flat], [zk for e, zk in zip(keyed, zs) if not e.flat], {})
+    m = int(MARGIN_M * 10)
+    box = (x0 - m, y0 - m, x0 + TILE_M * 10 + m, y0 + TILE_M * 10 + m)
+    node_z.update(_inner_nodes(keyed, len_dm[ext], node_z, box))   # intérieur des ponts et tunnels
+    node_z = graph.node_elevations(keyed, zs, node_z)          # ponts/tunnels sans aucun appui au sol
+    fb = float(np.nanmean(zmem)) if np.isfinite(zmem).any() else 0.0
+    no_z = sorted(set(nodes.tolist()) - node_z.keys())   # aucun MNT sur le tronçon
     if no_z and node_z:   # altitude du nœud connu le plus proche (pas la moyenne de dalle : pics)
         from scipy.spatial import cKDTree
         known = np.array(list(node_z), np.int64)
@@ -91,8 +164,8 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
             np.column_stack([np.array(no_z, np.int64) >> 32, np.array(no_z, np.int64) & 0xFFFFFFFF]))
         node_z.update({n: node_z[int(known[k])] for n, k in zip(no_z, j)})
     cols = {c: [] for c in ("jump", "dplus_dm", "dminus_dm", "max_grade_pm", "z0", "prof_d", "par_n", "par_id")}
-    for i, zi in zip(mem.tolist(), zs):
-        e = edges[i]
+    for i in mem.tolist():
+        zi, e = zs_of[i], edges[i]
         zi = zi.copy()
         zi[0], zi[-1] = node_z.get(int(key_u[i]), fb), node_z.get(int(key_v[i]), fb)
         zi = graph.fill_nan(e, zi)
@@ -134,8 +207,8 @@ def tile_columns(ix: int, iy: int, A: dict, Xd, Yd, sample):
     info = dict(n=len(mem), km=round(int(T["len_dm"].sum()) / 1e4, 1), nodata_frac=round(nodata, 5),
                 steep_gt60=steep, steep_frac=round(steep / max(1, len(mem)), 5),
                 jump_gt10=int(sum(cols["jump"])), node_fallback=len(no_z),
-                par_links=len(cols["par_id"]), z_min_m=round(float(np.nanmin(z)), 1) if len(z) else None,
-                z_max_m=round(float(np.nanmax(z)), 1) if len(z) else None)
+                par_links=len(cols["par_id"]), z_min_m=round(float(np.nanmin(zmem)), 1) if len(zmem) else None,
+                z_max_m=round(float(np.nanmax(zmem)), 1) if len(zmem) else None)
     return T, info
 
 

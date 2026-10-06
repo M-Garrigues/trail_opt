@@ -96,9 +96,17 @@ fn search(p: &Problem, b: &Budget, seed: u64, use_anneal: bool) -> Found {
             (route, method, depart) = (Some(sol.ids), "faces", Some(sol.depart));
         }
     }
-    if route.is_none() && !use_anneal {
-        // aucune face exploitable : recuit classique
-        route = ann.run(b.anneal_iters).map(ids);
+    if !use_anneal && route.as_ref().is_none_or(|r| !key(p, r).0) {
+        // aucune face exploitable, ou boucle hors bornes (faces coincées : aucun couloir
+        // depuis un départ relié au relief par un passage étroit, Grenoble T34) : recuit
+        // classique (waypoints), gardé s'il est meilleur
+        if let Some(r) = ann.run(b.anneal_iters).map(ids)
+            && route
+                .as_ref()
+                .is_none_or(|x| key_cmp(key(p, &r), key(p, x)).is_gt())
+        {
+            (route, method, depart) = (Some(r), "recuit", None);
+        }
     }
     (route, method, depart, face_iterations, ann.iterations)
 }
@@ -190,9 +198,12 @@ fn optimize_on(p: &Problem, b: &Budget) -> Result<Output, Msg> {
                 .map_err(|e| Msg::error(Code::InvariantViolated, e))?;
             alternatives.push(a);
         }
-        // Triées par D+ (min_distance : par longueur) ; la principale reste en tête.
+        // Triées par D+ (min_distance : par longueur ; cible : par erreur) ; la principale reste
+        // en tête.
         if p.min_distance() {
             alternatives.sort_by(|x, y| p.stats(x).0.total_cmp(&p.stats(y).0));
+        } else if p.target() {
+            alternatives.sort_by(|x, y| p.score(y).0.total_cmp(&p.score(x).0));
         } else {
             alternatives.sort_by(|x, y| p.stats(y).1.total_cmp(&p.stats(x).1));
         }

@@ -1,11 +1,22 @@
+<script lang="ts" module>
+  import type { Candidate as C } from '../lib/types';
+  import { idxAt } from '../lib/geo';
+  export type Mark = { idx: number; label: string; kind: 'via' | 'col' | 'summit' };
+  /** Repères du profil (D34) : points de passage numérotés (ordre de visite), cols et sommets. */
+  export function profileMarks(c: C, via: number[]): Mark[] {
+    return [...[...via].sort((a, b) => a - b).map((idx, k) => ({ idx, label: `P${k + 1}`, kind: 'via' as const })),
+      ...(c.landmarks ?? []).map((l) => ({ idx: idxAt(c, l.dist_m), label: l.name, kind: l.kind }))];
+  }
+</script>
+
 <script lang="ts">
-  // Profil d'altitude en canvas, lié à la carte (port de ProfileLink, trailopt/maplayers.py).
+  // Profil d'altitude en canvas, lié à la carte.
   import type { Candidate } from '../lib/types';
   import { grades, indexAtDist } from '../lib/geo';
   import { i18n, t } from '../i18n/i18n.svelte';
   import { num } from '../i18n/format';
 
-  let { cand, cursor = $bindable(-1), height = 130, onpick }: { cand: Candidate; cursor?: number; height?: number; onpick?: (i: number) => void } = $props();
+  let { cand, cursor = $bindable(-1), height = 130, onpick, marks = [] }: { cand: Candidate; cursor?: number; height?: number; onpick?: (i: number) => void; marks?: Mark[] } = $props();
 
   const PAD = { l: 46, r: 12, t: 22, b: 22 };
   // Dégradé selon la pente absolue : vert à plat, rouge sombre à 40 % et plus.
@@ -41,6 +52,7 @@
   $effect(() => {
     // dépendances : cand, cursor, w, langue, thème
     const n = cand.dist.length, r = devicePixelRatio || 1, D = cand, cur = cursor;
+    void marks;
     void i18n.lang;
     canvas.width = w * r;
     canvas.height = height * r;
@@ -69,6 +81,22 @@
     c.beginPath(); c.moveTo(X(D.dist[0]), Y(D.ele[0]));
     for (let i = 1; i < n; i++) c.lineTo(X(D.dist[i]), Y(D.ele[i]));
     c.strokeStyle = text; c.lineWidth = 1.5; c.stroke();
+    // repères : trait pointillé + étiquette (points de passage en pastille, cols/sommets en triangle)
+    c.font = 'bold 11px system-ui, sans-serif';
+    for (const m of marks) {
+      if (m.idx < 0 || m.idx >= n) continue;
+      const x = X(D.dist[m.idx]), y = Y(D.ele[m.idx]);
+      c.strokeStyle = text; c.lineWidth = 1; c.setLineDash([2, 3]);
+      c.beginPath(); c.moveTo(x, PAD.t - 4); c.lineTo(x, y); c.stroke(); c.setLineDash([]);
+      c.fillStyle = text; c.textAlign = 'center';
+      if (m.kind === 'via') {
+        c.beginPath(); c.arc(x, PAD.t - 11, 9, 0, 6.3); c.fill();
+        c.fillStyle = bg; c.fillText(m.label, x, PAD.t - 7);
+      } else {
+        c.textAlign = x > w / 2 ? 'right' : 'left'; c.fillText(m.label, x + (x > w / 2 ? -8 : 8), PAD.t - 6); c.textAlign = 'center';
+        c.beginPath(); c.moveTo(x - 5, PAD.t - 5); c.lineTo(x + 5, PAD.t - 5); c.lineTo(x, PAD.t - 14); c.closePath(); c.fill();
+      }
+    }
     if (cur >= 0 && cur < n) {
       const x = X(D.dist[cur]), left = x > w / 2;
       c.strokeStyle = text; c.lineWidth = 1;
@@ -108,7 +136,7 @@
     aria-valuetext={cursor >= 0 ? bubble(cursor) : label}
     onmousemove={(e) => pick(e.clientX)}
     onmouseleave={() => (cursor = -1)}
-    onclick={(e) => { pick(e.clientX); onpick?.(cursor); }}
+    onclick={(e) => { pick(e.clientX); const b = canvas.getBoundingClientRect(), m = marks.filter((k) => k.kind !== 'via' && Math.abs(X(cand.dist[k.idx]) - (e.clientX - b.left)) < 12).sort((p, q) => Math.abs(X(cand.dist[p.idx]) - (e.clientX - b.left)) - Math.abs(X(cand.dist[q.idx]) - (e.clientX - b.left)))[0]; if (m) cursor = m.idx; onpick?.(cursor); }}
     ontouchend={() => { if (cursor >= 0) onpick?.(cursor); }}
     ontouchstart={(e) => { if (e.touches.length) { e.preventDefault(); pick(e.touches[0].clientX); } }}
     ontouchmove={(e) => { if (e.touches.length) { e.preventDefault(); pick(e.touches[0].clientX); } }}

@@ -59,3 +59,12 @@ export async function placeStart(page: Page) {
   await page.mouse.click(x, y);
   await expect(page.locator('.start-marker')).toBeVisible();
 }
+
+/** Mobile : la feuille démarre repliée (poignée + barre) ; la déplie pour atteindre les réglages. Bureau : sans effet. */
+export async function openSheet(page: Page) {
+  const sheet = page.locator('.sheet');
+  if (!(await sheet.count()) || (await sheet.getAttribute('data-snap')) === '2') return;
+  await page.locator('.handle').click();
+  await expect(sheet).toHaveAttribute('data-snap', '2');
+  await expect.poll(async () => (await sheet.boundingBox())!.height).toBeGreaterThan(300);
+}

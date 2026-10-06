@@ -81,6 +81,10 @@ fn grid(l: f64, target: Option<f64>, node_simple: bool) -> Problem {
         parallel: vec![[0, polys.len() - 1]],
         q: Vec::new(),
         climbs: 0,
+        turn: Vec::new(),
+        inner: Vec::new(),
+        node_mu: 0.0,
+        via: Vec::new(),
     };
     (p.len, p.w) = polys.iter().map(|x| profile(&x.2)).unzip();
     p
@@ -234,6 +238,27 @@ fn optimize_modes_et_candidats() {
     assert!(d.windows(2).all(|x| x[0] >= x[1]));
 }
 
+/// D44 : le nombre de boucles ne dépend pas du temps restant. Échéance déjà passée (machine
+/// chargée) : les autres boucles viennent des recherches hors échéance d'`alternates`.
+#[test]
+fn candidats_malgre_echeance_depassee() {
+    let p = grid(2400.0, None, false);
+    let b = Budget {
+        deadline: Some(std::time::Instant::now()),
+        ..budget(4)
+    };
+    let o = optimize(&p, &b).unwrap();
+    assert_eq!(o.alternatives.len(), 3);
+    let fs = FaceSearch::new(&p);
+    let loops: Vec<&Vec<usize>> = std::iter::once(&o.ids).chain(&o.alternatives).collect();
+    for (i, a) in loops.iter().enumerate() {
+        p.check(a).unwrap();
+        for b in &loops[..i] {
+            assert!(fs.overlap(a, b) <= 0.9);
+        }
+    }
+}
+
 /// Codes stables (D14) : la fixture `codes.json` ne perd jamais un code ni ne change ses
 /// paramètres. Après ajout d'un code : `UPDATE_CODES=1 cargo test`.
 #[test]
@@ -349,6 +374,16 @@ fn climbs_poids_de_recherche() {
         let d: Vec<f64> = o.alternatives.iter().map(|a| p.stats(a).1).collect();
         assert!(d.windows(2).all(|x| x[0] >= x[1]));
     }
+    // mode cible : la préférence ne change pas la recherche (cible tenue sur le D+ réel)
+    let run = |gamma: i8| {
+        let mut p = grid(2400.0, Some(120.0), true);
+        p.q = p.w.iter().map(|w| w * w).collect();
+        p.climbs = gamma;
+        let o = optimize(&p, &budget(3)).unwrap();
+        (o.ids, o.alternatives)
+    };
+    assert_eq!(run(-1), run(0));
+    assert_eq!(run(1), run(0));
     // q absent : instance refusée
     let json = serde_json::to_string(&serde_json::json!({
         "version": 2, "mode": "max", "L": 1.0, "Lmin": 0.0, "Lmax": 2.0, "D": null, "s": 0,

@@ -13,10 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
-  RUST_VERSION: 1.99.0 # même toolchain que deploy.yml
-  # TODO T29 : retirer dès que la dalle de test versionnée (engine/tests/data/tiles/, lead data)
-  # est livrée. En attendant, les tests bout en bout sans dalle sautent au lieu d'échouer.
-  ENGINE_TILES_OPTIONAL: "1"
+  RUST_VERSION: 1.99.0 # même toolchain que scripts/deploy.sh
 
 jobs:
   test:

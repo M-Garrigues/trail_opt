@@ -4,10 +4,17 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
     <meta name="description" content="Boucles trail sur mesure · Custom trail loops" />
-    <meta name="theme-color" content="#c2185b" />
+    <!-- barre d'état = papier (--bg clair / sombre) ; app installée : manifest + icônes générées par scripts/icons.mjs -->
+    <meta name="theme-color" content="#fbf8f1" media="(prefers-color-scheme: light)" />
+    <meta name="theme-color" content="#1c1a16" media="(prefers-color-scheme: dark)" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
-    <title>optrail</title>
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Optrail" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+    <title>Optrail</title>
   </head>
   <body>
     <div id="app"></div>

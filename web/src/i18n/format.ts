@@ -2,7 +2,17 @@ import { fr } from './fr';
 import { en, type Dict } from './en';
 
 export type Lang = 'fr' | 'en';
-export const dicts: Record<Lang, Dict> = { fr, en };
+// D40 : pointeur fin (bureau) → « clique » au lieu de « touche » (ou « tap » → « click »).
+const fine = typeof matchMedia !== 'undefined' && matchMedia('(pointer: fine)').matches;
+const clicky = (s: string) => s.replace(/\b([Tt])ouche (la|le)\b/g, (_, t, a) => `${t === 'T' ? 'C' : 'c'}lique sur ${a}`).replace(/\bTap\b/g, 'Click').replace(/\btap\b/g, 'click');
+function patch<T>(o: T): T {
+  if (typeof o === 'string') return clicky(o) as T;
+  if (typeof o === 'function') return ((...a: unknown[]) => patch((o as (...x: unknown[]) => unknown)(...a))) as T;
+  if (Array.isArray(o)) return o.map(patch) as T;
+  if (o && typeof o === "object") return Object.fromEntries(Object.entries(o).map(([k, v]) => [k, patch(v)])) as T;
+  return o;
+}
+export const dicts: Record<Lang, Dict> = fine ? { fr: patch(fr), en: patch(en) } : { fr, en };
 export type Params = Record<string, number | string | null | undefined>;
 
 export function num(lang: Lang, v: number, maxFrac = 0): string {
@@ -47,4 +57,12 @@ export function warningText(lang: Lang, code: string, params?: Params): string {
   const d = dicts[lang];
   if (!(code in d.warn)) return '';
   return d.warn[code as keyof Dict['warn']](formatParams(lang, params));
+}
+
+/** D33 : « N montées · la plus longue G m sur ℓ km » (vide si le serveur n'a pas renvoyé `climbs`). */
+export function climbsText(c: { climbs?: { count: number; longest_gain_m: number; longest_len_m: number } }, lang: Lang): string {
+  const k = c.climbs, d = dicts[lang].detail;
+  if (!k) return '';
+  if (!k.count) return d.noClimb;
+  return d.climbsLine({ n: num(lang, k.count), plural: k.count > 1 ? 's' : '', gain: num(lang, k.longest_gain_m), len: km(lang, k.longest_len_m) });
 }

@@ -84,5 +84,14 @@ def clip(src, out, disks: list[tuple[float, float, float]]) -> dict:
                            jump_gt10=sum(t["jump_gt10"] for t in tot),
                            node_fallback=sum(t.get("node_fallback", 0) for t in tot),
                            nodata_frac=round(sum(t["nodata_frac"] * t["n"] for t in tot) / max(1, n), 5)))
+    if m.get("pois"):                                         # repères dans les disques
+        doc = json.loads((src / m["pois"]["file"]).read_text())
+        doc["pois"] = [q for q in doc["pois"]
+                       if ((q["x_dm"] - P[:, 0]) ** 2 + (q["y_dm"] - P[:, 1]) ** 2 < (R * 10) ** 2).any()]
+        doc["tiles"] = sorted(infos)
+        data = (json.dumps(doc, ensure_ascii=False, separators=(",", ":")) + "\n").encode()
+        (out / m["pois"]["file"]).write_bytes(data)
+        man["pois"] = dict(m["pois"], n=len(doc["pois"]), bytes=len(data), sha256=hashlib.sha256(data).hexdigest(),
+                           no_z=sum(q["z_dm"] is None for q in doc["pois"]))
     (out / "manifest.json").write_text(json.dumps(man, ensure_ascii=False, indent=1) + "\n")
     return man
