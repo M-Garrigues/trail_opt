@@ -117,7 +117,8 @@ jobs:
           python -m pipeline pois --tiles tiles
 
       - name: Validation du shard
-        run: python -m pipeline check --tiles tiles --list shard.txt
+        # non bloquant : le shard est toujours publié, le contrôle d'ensemble du job merge fait foi
+        run: python -m pipeline check --tiles tiles --list shard.txt || echo "::warning::contrôle du shard $SHARD en échec (voir le journal)"
 
       - name: Manifeste et repères propres au shard
         run: |

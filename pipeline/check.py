@@ -16,6 +16,7 @@ from .load import FORMAT, read_tile
 MAX_NODATA = 0.01          # part des points de profil sans MNT avant comblement : avertissement au-delà
 HARD_NODATA = 0.6          # ... erreur au-delà (MNT manquant sur la dalle, pas seulement la mer)
 MAX_JUMP = 0.005           # tronçons à saut > 10 m sur 5 m / n
+MIN_JUMPS = 10             # ... et au moins ce nombre de sauts (petites dalles)
 MAX_FALLBACK = 0.002       # nœuds sans MNT (altitude du voisin) / n
 MAX_DELTA_N = 0.05         # |n - n précédent| / max(n précédent, 1000)
 
@@ -73,7 +74,8 @@ def check(tiles_dir, expected: list[str] | None = None, previous: dict | None = 
             bad.append(f"{k} : fichier absent ou sha256 faux")
             broken.add(k)
         n = max(1, t["n"])
-        if "jump_gt10" not in t or t["jump_gt10"] / n > MAX_JUMP:
+        # au moins MIN_JUMPS sauts : sur une petite dalle (îlot, bord de mer) 2 sauts dépassent déjà le taux
+        if "jump_gt10" not in t or t["jump_gt10"] > max(MIN_JUMPS, MAX_JUMP * n):
             bad.append(f"{k} : jump_gt10 = {t.get('jump_gt10')} sur {n} tronçons (> {MAX_JUMP:.1%})")
         # Sans MNT : normal en bord de mer (liaisons maritimes, estran : dalles côtières à 1-15 %), donc
         # simple avertissement ; erreur seulement si la dalle entière manque de relief.
