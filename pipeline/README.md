@@ -10,6 +10,7 @@ python -m pipeline clip     --tiles tiles --out engine/tests/data/tiles --disk l
 python -m pipeline coverage --tiles tiles --out web/public/coverage.geojson
 python -m pipeline pois     --tiles tiles      # cols/sommets -> tiles/pois.json (après chaque build)
 python -m pipeline merge    --tiles tiles      # data.yml : fusionne manifest-<k>.json / pois-<k>.json des shards
+python -m pipeline enrich   --tiles copie [--osm france.osm.pbf …]   # étiquettes calm, osm_hike, osm_water (en place)
 ```
 
 Listes : `tiles_france.txt` (France métropolitaine, Corse et îles : 1 561 dalles, produite par
@@ -75,6 +76,41 @@ nombre de tronçons d'une dalle bouge de plus de 5 % par rapport à la version p
 - **Essai** : `gh workflow run data.yml --ref <branche> -f tiles_list=pipeline/tiles_essai.txt -f shards=2
   -f parallel=2 -f previous=none -f publish=false` (6 dalles, ~6 min, artefact `release` seul).
 
+## Étiquettes d'agrément (`enrich`, workflow `enrich`)
+
+Post-traitement d'un dossier de dalles déjà construites, sans requête IGN (colonnes et sens : contrat tiles.md
+§ Étiquettes). Il réécrit les `.npz` EN PLACE : toujours sur une copie ou sur les zips d'une release.
+
+- `calm` (0–15) : éloignement des routes importantes, depuis les dalles seules (la dalle et ses 8 voisines
+  doivent être dans le dossier ; `check` recalcule et refuse sinon).
+- Avec `--osm` : `osm_hike` (0/1/2, relations `route=hiking|foot`) et `osm_water` (0–15, part de la longueur
+  à moins de 50 m d'une rivière, d'un canal, d'un plan d'eau ou de la côte). © les contributeurs
+  d'OpenStreetMap, ODbL ; étiquettes seulement, absence = neutre.
+- `--osm` prend des extraits Geofabrik `.osm.pbf` (réduits par `osmium tags-filter` puis
+  `add-locations-to-ways` en un texte `.opl` gardé à côté ; paquet `osmium-tool`, `brew install osmium-tool`)
+  ou des `.opl` déjà filtrés. Le texte OPL est lu par la bibliothèque standard : pas de dépendance Python.
+- Version : `<base>.<n>` (`bdtopo-wfs-2026-10e` → `…-10e.1`), `derived_from`, `columns` (source et licence par
+  colonne) au manifeste. Relançable (les colonnes sont remplacées, la version avance).
+
+Workflow : `gh workflow run enrich.yml --ref <branche> -f base=bdtopo-wfs-2026-10e` (défaut : extrait
+`europe/france`, publication de `tiles-<base>.<n>` ; `-f publish=false` pour un essai, `-f osm=` pour `calm`
+seul ; DOM : ajouter `europe/france/reunion europe/france/guadeloupe europe/france/martinique
+europe/france/guyane europe/france/mayotte` à `osm`). Un seul job : télécharge les zips de la release
+d'entrée, étiquette, `check` (dont `--previous` = manifeste d'entrée : mêmes tronçons), refait les zips. Puis
+`scripts/tiles_to_s3.sh <base>.<n>` comme pour une version construite.
+
+Mesures (2026-10-06, poste local, 9 dalles autour de la Chartreuse, 186 577 tronçons) : extrait Rhône-Alpes
+530 Mo → filtre osmium 8 s et 1,6 Go de RAM (ensembles d'identifiants : même ordre de grandeur pour la France),
+129 Mo de texte OPL, 3,1 M de sommets ; lecture 3 s ; ~1 s par dalle pour les trois étiquettes ; `check` 0,3 s par
+dalle ; +0,56 o/tronçon (+0,95 %). France (extrait 5,1 Go, 1 561 dalles, 20,7 M de tronçons) : ~1,2 Go de texte
+filtré, 2 à 3 Go de RAM Python (494 Mo mesurés pour Rhône-Alpes), ~25 min d'étiquetage et ~10 min de contrôle sur le poste (compter le double sur un
+runner), +12 Mo de dalles, ~9 Go de disque au plus haut.
+
+Eau par la BD TOPO (non retenu) : `troncon_hydrographique` + `surface_hydrographique` au WFS = 2 requêtes et
+5 Mo par dalle (≈ 3 300 requêtes pour la France, loin du quota), mais `classe_de_largeur` vaut « 0 à 5 m » sur
+92 % des tronçons et les rivières larges sont des surfaces : pas de tri rivière / ruisseau, là où OSM le donne
+(`river` contre `stream`) sans une requête.
+
 ## Reproductibilité
 
 Non rejouable : le WFS BD TOPO et le WMS-R altimétrique de la Géoplateforme servent l'état du jour
@@ -86,4 +122,5 @@ dalles ne peut donc pas être reconstruite plus tard depuis le réseau. Rejouabl
 besoin : reconstruire depuis les éditions BD TOPO datées téléchargeables (GeoPackage par
 département) plutôt que le WFS.
 
-Données : BD TOPO®, RGE ALTI®, LiDAR HD — IGN, Licence Ouverte Etalab 2.0.
+Données : BD TOPO®, RGE ALTI®, LiDAR HD — IGN, Licence Ouverte Etalab 2.0. Colonnes `osm_*` des versions
+enrichies : © les contributeurs d'OpenStreetMap, ODbL 1.0.

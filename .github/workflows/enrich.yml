@@ -1,0 +1,154 @@
+# Étiquettes d'agrément (pipeline/enrich.py, contrat .team/contracts/tiles.md § Étiquettes) ajoutées à une
+# release de dalles EXISTANTE, sans reconstruire : `calm` (depuis les dalles seules), `osm_hike` et `osm_water`
+# (extraits Geofabrik filtrés par osmium ; © les contributeurs d'OpenStreetMap, ODbL). Aucune requête IGN,
+# aucun accès AWS. La release d'entrée n'est jamais modifiée : la sortie est `tiles-<base>.<n>` (premier n
+# libre), au même format que data.yml (zips de 300 dalles, manifest.json, pois.json, coverage.geojson), donc
+# `scripts/tiles_to_s3.sh <base>.<n>` marche tel quel.
+#
+# Un seul job. Mesures du 2026-10-06 (pipeline/README.md) : osmium tags-filter 1,6 Go de RAM quel que soit
+# l'extrait ; ~1 s par dalle pour les trois étiquettes ; France = 5,1 Go d'extrait -> ~1,2 Go filtré,
+# 2 à 3 Go de RAM en Python, ~9 Go de disque au plus haut, ~1 h.
+name: enrich
+
+on:
+  workflow_dispatch:
+    inputs:
+      base:
+        description: "Version d'entrée (release tiles-<base> existante), ex. bdtopo-wfs-2026-10e"
+        required: true
+      osm:
+        description: "Extraits Geofabrik (chemins sans -latest.osm.pbf, séparés par des espaces ; vide = calm seul). DOM : europe/france/reunion, …/guadeloupe, …/martinique, …/guyane, …/mayotte"
+        default: "europe/france"
+      publish:
+        description: "Publier la release (sinon artefact seul)"
+        type: boolean
+        default: true
+
+permissions: {}
+
+concurrency:
+  group: enrich
+  cancel-in-progress: false
+
+jobs:
+  enrich:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BASE: ${{ inputs.base }}
+      OSM: ${{ inputs.osm }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements*.txt
+      - run: pip install -r requirements.txt
+
+      - name: Version dérivée (premier <base>.<n> sans release)
+        id: version
+        run: |
+          case "$BASE" in
+            bdtopo-wfs-*) ;;
+            *) echo "::error::base inattendue : $BASE"; exit 1 ;;
+          esac
+          root=${BASE%%.*}
+          n=1
+          while gh release view "tiles-$root.$n" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; do
+            n=$(( n + 1 ))
+          done
+          echo "version=$root.$n" >> "$GITHUB_OUTPUT"
+          echo "V=$root.$n" >> "$GITHUB_ENV"
+          echo "entrée tiles-$BASE, sortie tiles-$root.$n"
+
+      - name: Dalles de la release d'entrée
+        run: |
+          gh release download "tiles-$BASE" -R "$GITHUB_REPOSITORY" -D in \
+            -p 'tiles-*.zip' -p manifest.json -p pois.json -p coverage.geojson
+          mkdir -p tiles
+          for z in in/tiles-*.zip; do
+            unzip -q -o "$z" -d tiles
+            rm "$z"
+          done
+          cp in/manifest.json in/pois.json tiles/
+          du -sh tiles
+          df -h . | tail -1
+
+      # osmium-tool : réduit l'extrait aux relations de randonnée et à l'eau (pipeline/enrich.py, OSM_FILTER)
+      - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends osmium-tool
+
+      - name: Extraits OSM (Geofabrik)
+        run: |
+          mkdir -p osm
+          for e in $OSM; do
+            f="osm/$(basename "$e").osm.pbf"
+            curl -fsSL --retry 3 -o "$f" "https://download.geofabrik.de/$e-latest.osm.pbf"
+            osmium fileinfo -g header.option.osmosis_replication_timestamp "$f"
+          done
+          ls -l osm
+
+      - name: Étiquettes (calm ; osm_hike et osm_water si des extraits sont donnés)
+        run: |
+          args=(--tiles tiles --version "$V")
+          if [ -n "$OSM" ]; then
+            args+=(--osm osm/*.osm.pbf)
+          fi
+          python -m pipeline enrich "${args[@]}"
+          rm -rf osm
+          df -h . | tail -1
+
+      - name: Validation (sha256, colonnes, bornes, calm recalculé aux bords, mêmes tronçons que l'entrée)
+        run: |
+          python -m pipeline check --tiles tiles --previous in/manifest.json
+          python -c 'import json; m = json.load(open("tiles/manifest.json")); print(m["data_version"], m["derived_from"], m["columns"], m["totals"])'
+
+      - name: Zips de 300 dalles, manifeste, repères et couverture (inchangés) à côté
+        run: |
+          mkdir -p release
+          cd tiles
+          find . -name '*.npz' | sed 's|^\./||' | LC_ALL=C sort | split -l 300 -d -a 2 - ../part-
+          for f in ../part-*; do
+            zip -q -0 -X "../release/tiles-$V-${f##*part-}.zip" -@ < "$f"
+          done
+          cd ..
+          cp tiles/manifest.json tiles/pois.json in/coverage.geojson release/
+          ls -l release
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: release
+          path: release/
+          compression-level: 0
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: enrich
+    if: inputs.publish
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      V: ${{ needs.enrich.outputs.version }}
+      BASE: ${{ inputs.base }}
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          name: release
+          path: out
+      - name: Release tiles-<version dérivée>
+        run: |
+          gh release create "tiles-$V" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Dalles $V" \
+            --notes "Dalles tiles/1 $V = tiles-$BASE + étiquettes par tronçon (pipeline enrich). Colonnes d'origine et colonne calm : BD TOPO® IGN, RGE ALTI®, LiDAR HD — Licence Ouverte Etalab 2.0. Colonnes osm_hike et osm_water : © les contributeurs d'OpenStreetMap, sous licence ODbL 1.0 (https://www.openstreetmap.org/copyright). Licence par colonne : clé columns de manifest.json. Fichiers : tiles-$V-NN.zip, manifest.json, pois.json, coverage.geojson. Copie S3 : scripts/tiles_to_s3.sh." \
+            out/*

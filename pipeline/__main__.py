@@ -3,7 +3,8 @@
          python -m pipeline check --tiles <dossier> [--list tiles.txt] [--previous manifest.json]
          python -m pipeline clip --tiles <dossier> --out <dossier> --disk lat,lon,rayon_m [--disk …]
          python -m pipeline pois --tiles <dossier>   (cols et sommets -> <dossier>/pois.json)
-         python -m pipeline merge --tiles <dossier>  (fusion des manifest-<k>.json de shards, data.yml)"""
+         python -m pipeline merge --tiles <dossier>  (fusion des manifest-<k>.json de shards, data.yml)
+         python -m pipeline enrich --tiles <dossier> [--osm extrait.osm.pbf …]  (étiquettes calm, osm_*)"""
 from __future__ import annotations
 
 import argparse
@@ -16,6 +17,7 @@ from .build import build
 from .check import check
 from .clip import clip
 from .coverage import write
+from .enrich import enrich
 from .merge import merge
 from .pois import build_pois
 
@@ -46,7 +48,15 @@ def main(argv=None):
     q.add_argument("--tiles", required=True, help="dossier des dalles (manifest.json)")
     g = sub.add_parser("merge", help="fusionne les manifest-<k>.json / pois-<k>.json des shards d'un dossier")
     g.add_argument("--tiles", required=True, help="dossier des dalles de tous les shards")
+    e = sub.add_parser("enrich", help="ajoute les étiquettes calm (et osm_hike, osm_water avec --osm) aux dalles d'un dossier")
+    e.add_argument("--tiles", required=True, help="dossier de dalles déjà construites, réécrit en place (travailler sur une copie)")
+    e.add_argument("--osm", nargs="+", default=[], help="extraits OSM : .osm.pbf Geofabrik (filtrés par osmium) ou .opl déjà filtrés")
+    e.add_argument("--version", help="data_version dérivée (défaut : <version du dossier>.<n+1>)")
     a = ap.parse_args(argv)
+    if a.cmd == "enrich":
+        m = enrich(a.tiles, a.osm, a.version, log=lambda s: print(s, flush=True))
+        print(json.dumps(m["totals"], ensure_ascii=False))
+        return
     if a.cmd == "merge":
         print(json.dumps(merge(a.tiles)["totals"], ensure_ascii=False))
         return

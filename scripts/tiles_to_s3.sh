@@ -15,7 +15,7 @@ export AWS_REGION=eu-north-1 AWS_DEFAULT_REGION=eu-north-1
 
 die() { echo "tiles_to_s3: $*" >&2; exit 1; }
 v=${1:-}
-[[ $v =~ ^bdtopo-wfs-[0-9]{4}-[0-9]{2}[a-z]?$ ]] || die "usage : $0 <data_version> (ex. bdtopo-wfs-2026-10e)"
+[[ $v =~ ^bdtopo-wfs-[0-9]{4}-[0-9]{2}[a-z]?(\.[0-9]+)?$ ]] || die "usage : $0 <data_version> (ex. bdtopo-wfs-2026-10e, ou bdtopo-wfs-2026-10e.1 pour une version enrichie)"
 [[ ${AWS_PROFILE:-} && ${AWS_PROFILE:-} != default ]] || die "AWS_PROFILE=optrail requis (le profil default vise un autre compte)"
 [[ $(aws sts get-caller-identity --query Account --output text) == "$ACCOUNT" ]] || die "mauvais compte AWS"
 

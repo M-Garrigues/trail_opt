@@ -11,6 +11,7 @@ from pathlib import Path
 
 import numpy as np
 
+from .enrich import verify
 from .load import FORMAT, read_tile
 
 MAX_NODATA = 0.01          # part des points de profil sans MNT avant comblement : avertissement au-delà
@@ -85,6 +86,7 @@ def check(tiles_dir, expected: list[str] | None = None, previous: dict | None = 
             print(f"avertissement {k} : nodata_frac = {t['nodata_frac']}, node_fallback = {t['node_fallback']} sur {n} tronçons",
                   file=sys.stderr)
     bad += node_conflicts(d, [k for k in tiles if k not in broken])
+    bad += verify(d, m, broken)       # étiquettes ajoutées par `pipeline enrich` (clé `columns`)
     po = m.get("pois")
     if po:
         p = d / po["file"]
