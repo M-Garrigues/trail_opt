@@ -34,7 +34,21 @@ fn validation_stricte() {
     assert_eq!(code(&format!("{ok}&distance_km=NaN")), Code::InvalidRequest);
     assert_eq!(code(&format!("{ok}&distance_km=inf")), Code::InvalidRequest);
     assert_eq!(code(&format!("{ok}&goal=fast")), Code::ModeUnknown);
-    assert_eq!(code(&format!("{ok}&roads=pedestrian")), Code::RoadsUnknown);
+    assert_eq!(code(&format!("{ok}&roads=x")), Code::RoadsUnknown);
+    assert_eq!(code(&format!("{ok}&surface=x")), Code::RoadsUnknown);
+    // v1.7 : `surface` ; l'ancien `roads` (liens partagés, historique) est traduit, `surface` l'emporte
+    let surf = |s: &str| parse(&q(&format!("{ok}{s}"))).unwrap().0.surface;
+    assert_eq!(surf(""), "trail");
+    assert_eq!(surf("&surface=road"), "road");
+    for (old, new) in [
+        ("unpaved", "trail"),
+        ("pedestrian", "trail"),
+        ("minor", "any"),
+        ("all", "any"),
+    ] {
+        assert_eq!(surf(&format!("&roads={old}")), new);
+    }
+    assert_eq!(surf("&roads=all&surface=trail"), "trail");
     assert_eq!(code(&format!("{ok}&n_candidates=5")), Code::InvalidRequest);
     assert_eq!(code(&format!("{ok}&seed=1000")), Code::InvalidRequest);
     assert_eq!(code(&format!("{ok}&seed=-1")), Code::InvalidRequest);
@@ -217,7 +231,8 @@ fn bout_en_bout_dalles_pilotes() {
     let r = handle(&dg, Some("t"), false, &store, &key, |_| Ok(true));
     assert_eq!(r.status, 200, "{}", r.body);
     assert!(r.body.get("candidates").is_none() && r.body["params"]["asked"] == 1);
-    assert_eq!(r.body["suggest"], json!({"roads": "minor"}));
+    assert!(r.body["checked"].is_boolean());
+    assert!(r.body["suggest"].get("roads").is_none(), "{}", r.body);
     // appel interne (smoke test deploy.yml) : pas de Turnstile
     let r = handle(&massy, None, true, &store, &key, never);
     assert_eq!(r.status, 200, "{}", r.body);

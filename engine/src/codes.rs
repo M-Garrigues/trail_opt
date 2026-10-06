@@ -62,6 +62,8 @@ pub enum Code {
     // Messages importants (api.md v1.5, D40)
     TargetNotReached,
     FewerLoops,
+    // Type de voie (api.md v1.7)
+    LowSurfaceShare,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -72,7 +74,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 43] = {
+    pub const ALL: [Code; 44] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -118,6 +120,7 @@ impl Code {
             ViaMissed,
             TargetNotReached,
             FewerLoops,
+            LowSurfaceShare,
         ]
     };
 
@@ -153,6 +156,7 @@ impl Code {
             // null : sans objet (mode max : pas de D+ demandé)
             TargetNotReached => (Warning, &["dplus_m", "best_dplus_m", "km", "best_km"]),
             FewerLoops => (Warning, &["asked", "got"]),
+            LowSurfaceShare => (Warning, &["pct"]),
         }
     }
 }

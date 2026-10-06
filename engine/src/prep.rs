@@ -20,6 +20,8 @@ pub const PARALLEL_MIN_LEN: f64 = 30.0;
 /// Réduction aux arêtes pentues : longueur gardée en multiples de Lmax, et seuil d'arêtes.
 pub const REDUCE_K: f64 = 8.0;
 pub const REDUCE_MIN_EDGES: usize = 5000;
+/// Préférence de type de voie : longueur gardée en plus, en multiples de `REDUCE_K` × Lmax.
+pub const REDUCE_SURF: f64 = 1.5;
 
 // ---------------------------------------------------------------------------
 // Zone
@@ -224,6 +226,8 @@ pub struct Edge {
     pub grade: f64,
     /// Pont ou tunnel.
     pub flat: bool,
+    /// Longueur (m) sur « chemin » (`Net::trail_t`) ; le reste de `len` est sur « route ».
+    pub trail: f64,
     /// Original dont cette arête est la copie (aller-retour d'accès près du départ).
     pub twin: Option<usize>,
 }
@@ -231,6 +235,8 @@ pub struct Edge {
 pub struct Net<'a> {
     pub t: &'a Troncons,
     pub frame: Frame,
+    /// Par tronçon : « chemin » (sinon « route »), voir `plan::trail_mask`. Vide : tout est route.
+    pub trail_t: Vec<bool>,
     pub xy: Vec<[f64; 2]>,
     pub key: Vec<i64>,
     pub key_of: HashMap<i64, usize>,
@@ -245,6 +251,7 @@ impl<'a> Net<'a> {
         Net {
             t,
             frame,
+            trail_t: Vec::new(),
             xy: Vec::new(),
             key: Vec::new(),
             key_of: HashMap::new(),
@@ -314,11 +321,14 @@ impl<'a> Net<'a> {
 
     /// Ajoute une arête (statistiques calculées) ; renvoie son identifiant.
     pub fn add_edge(&mut self, u: usize, v: usize, pieces: Vec<Piece>, flat: bool) -> usize {
-        let (mut len, mut w) = (0.0, 0.0);
+        let (mut len, mut w, mut trail) = (0.0, 0.0, 0.0);
         for p in &pieces {
             let (l, x) = self.piece_stats(p);
             len += l;
             w += x;
+            if self.trail_t.get(p.t as usize).is_some_and(|&c| c) {
+                trail += l;
+            }
         }
         self.edges.push(Edge {
             u,
@@ -328,6 +338,7 @@ impl<'a> Net<'a> {
             w,
             grade: 0.0,
             flat,
+            trail,
             twin: None,
         });
         let e = self.edges.len() - 1;
@@ -907,6 +918,10 @@ pub fn loop_components(net: &Net, ids: &[usize]) -> Vec<Vec<usize>> {
 /// plus courts chemins (le 2e pénalise les arêtes du 1er), plus les copies du rayon libre et
 /// leurs originaux. `w` exact (profils des dalles) : pas de criblage grossier.
 /// `via` : nœuds à garder (points de passage, T34) : leurs arêtes et leurs chemins vers `s`.
+/// `weight` (préférence de type de voie) : poids de recherche d'une arête (D+ plus prime) ; aux
+/// k × Lmax des plus pentues s'ajoutent alors les meilleures en `weight`/l, jusqu'à `REDUCE_SURF`
+/// × k × Lmax en tout. Un seul classement retirerait soit les chemins plats, soit les routes qui
+/// portent le D+ (Massy).
 pub fn steep_reduction(
     net: &Net,
     ids: &[usize],
@@ -914,26 +929,28 @@ pub fn steep_reduction(
     lmax: f64,
     k: f64,
     via: &[usize],
+    weight: Option<&dyn Fn(&Edge) -> f64>,
 ) -> Vec<usize> {
     let e = |i: usize| &net.edges[ids[i]];
-    let mut order: Vec<usize> = (0..ids.len()).collect();
-    order.sort_by(|&a, &b| {
-        let ra = e(a).w / e(a).len.max(1.0);
-        let rb = e(b).w / e(b).len.max(1.0);
-        rb.total_cmp(&ra)
-    });
     let mut keep = vec![false; ids.len()];
     let mut cum = 0.0;
-    let mut cut = order.len();
-    for (r, &i) in order.iter().enumerate() {
-        cum += e(i).len;
-        if cum >= k * lmax {
-            cut = r + 1;
-            break;
+    let steep: &dyn Fn(&Edge) -> f64 = &|ed| ed.w;
+    for (rank, share) in std::iter::once((steep, 1.0)).chain(weight.map(|w| (w, REDUCE_SURF))) {
+        let mut order: Vec<usize> = (0..ids.len()).collect();
+        order.sort_by(|&a, &b| {
+            let ra = rank(e(a)) / e(a).len.max(1.0);
+            let rb = rank(e(b)) / e(b).len.max(1.0);
+            rb.total_cmp(&ra)
+        });
+        for i in order {
+            if cum >= share * k * lmax {
+                break;
+            }
+            if !keep[i] {
+                keep[i] = true;
+                cum += e(i).len;
+            }
         }
-    }
-    for &i in &order[..cut] {
-        keep[i] = true;
     }
     for (i, k) in keep.iter_mut().enumerate() {
         *k |= via.contains(&e(i).u) || via.contains(&e(i).v);

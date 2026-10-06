@@ -24,7 +24,8 @@ pub struct Annealer<'a> {
     pub deadline: Option<Instant>,
 }
 
-/// Coût de parcours : longueur réduite sur les arêtes pentues (α), bruitée (σ). Le bruit d'une
+/// Coût de parcours : longueur (les mètres hors du type de voie voulu comptent double) réduite
+/// sur les arêtes pentues (α), bruitée (σ). Le bruit d'une
 /// arête est tiré d'un hachage (sel, arête) : calculé seulement pour les arêtes que Dijkstra
 /// regarde, et identique à chaque fois pendant un même appel.
 fn cost<'b>(
@@ -35,7 +36,8 @@ fn cost<'b>(
     salt: u64,
 ) -> impl Fn(usize) -> f64 + 'b {
     move |e: usize| {
-        let c = p.len[e] * (1.0 - alpha * gn[e]).max(0.05);
+        let off = p.off.get(e).copied().unwrap_or(0.0);
+        let c = (p.len[e] + off) * (1.0 - alpha * gn[e]).max(0.05);
         if sigma > 0.0 {
             let mut r = Rng::new(salt ^ (e as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15));
             c * (sigma * r.normal()).exp()

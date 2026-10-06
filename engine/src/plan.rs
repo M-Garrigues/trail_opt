@@ -9,7 +9,8 @@ use serde_json::{Value, json};
 
 use crate::codes::{Code, Msg};
 use crate::l93::Frame;
-use crate::prep::{self, FREE_RADIUS, Net, REDUCE_K, REDUCE_MIN_EDGES, Region};
+use crate::prep::{self, Edge, FREE_RADIUS, Net, REDUCE_K, REDUCE_MIN_EDGES, Region};
+use crate::problem::{SURF_TARGET, SURF_TARGET_BAND};
 use crate::tiles::{TileStore, Troncons};
 use crate::{Budget, Problem, optimize};
 
@@ -44,6 +45,19 @@ pub const MD_CAP_KM: (f64, f64) = (3.0, 60.0);
 /// Points de passage (T34, api.md v1.5) : au plus 5, accrochés à une voie à <= 150 m.
 pub const VIA_MAX: usize = 5;
 pub const VIA_SNAP_M: f64 = 150.0;
+/// Type de voie (api.md v1.7) : natures BD TOPO comptées « chemin » ; les autres voies gardées
+/// (`ROAD_NATURES`) sont « route ». La BD TOPO ne donne pas le revêtement : un « Chemin » de parc
+/// peut être goudronné, une petite « Route à 1 chaussée » forestière ne pas l'être.
+pub const TRAIL_NATURES: [&str; 4] = ["Sentier", "Chemin", "Route empierrée", "Escalier"];
+pub const ROAD_NATURES: [&str; 5] = [
+    "Piste cyclable",
+    "Route à 1 chaussée",
+    "Route à 2 chaussées",
+    "Rond-point",
+    "Bretelle",
+];
+/// Avertissement `low_surface_share` : part du type voulu sous ce seuil sur la première boucle.
+pub const LOW_SURFACE_SHARE: f64 = 0.5;
 
 /// Requête (champs de `pipeline.Params` utiles à la source IGN).
 #[derive(Deserialize, Clone, Debug)]
@@ -74,8 +88,9 @@ pub struct Request {
     pub time_s: Option<f64>,
     #[serde(default = "default_tol")]
     pub tol: f64,
-    #[serde(default = "default_roads")]
-    pub roads: String,
+    /// Type de voie préféré : "trail" (chemins) | "any" | "road" (routes). Jamais un filtre.
+    #[serde(default = "default_surface")]
+    pub surface: String,
     #[serde(default)]
     pub seed: u64,
     #[serde(default)]
@@ -141,8 +156,8 @@ fn default_mode() -> String {
 fn default_tol() -> f64 {
     0.05
 }
-fn default_roads() -> String {
-    "minor".into()
+fn default_surface() -> String {
+    "trail".into()
 }
 fn one() -> usize {
     1
@@ -185,8 +200,8 @@ fn validate(r: &Request) -> Result<(), Msg> {
     if r.gamma().is_none() {
         return Err(err(Code::ClimbsUnknown, &r.climbs));
     }
-    if !matches!(r.roads.as_str(), "unpaved" | "pedestrian" | "minor" | "all") {
-        return Err(err(Code::RoadsUnknown, &r.roads));
+    if !matches!(r.surface.as_str(), "trail" | "any" | "road") {
+        return Err(err(Code::RoadsUnknown, &r.surface));
     }
     if r.mode != "max" && !r.target_dplus.is_some_and(|d| d > 0.0) {
         return Err(err(Code::TargetDplusRequired, ""));
@@ -339,50 +354,44 @@ pub fn check_via(r: &Request) -> Result<(), Msg> {
     Ok(())
 }
 
-/// Codes de nature (manifeste) → tronçons gardés pour un type de voies (port de `ign.keep_mask`).
-pub fn keep_mask(t: &Troncons, natures: &[String], roads: &str) -> Vec<usize> {
-    let code = |names: &[&str]| -> Vec<u8> {
-        natures
-            .iter()
-            .enumerate()
-            .filter(|(_, n)| names.contains(&n.as_str()))
-            .map(|(i, _)| i as u8)
-            .collect()
-    };
-    let unpaved = code(&["Sentier", "Chemin", "Route empierrée"]);
-    let ped = code(&[
-        "Sentier",
-        "Chemin",
-        "Route empierrée",
-        "Escalier",
-        "Piste cyclable",
-    ]);
-    let road = code(&[
-        "Route à 1 chaussée",
-        "Route à 2 chaussées",
-        "Rond-point",
-        "Bretelle",
-    ]);
-    let excluded = code(&["Type autoroutier", "Bac ou liaison maritime"]);
-    (0..t.len())
-        .filter(|&i| {
-            let (n, imp) = (t.nature[i], t.importance[i]);
-            if t.flags[i] & 2 == 0 || excluded.contains(&n) || n == 255 || t.n_vertices(i) < 2 {
-                return false;
-            }
-            match roads {
-                "unpaved" => unpaved.contains(&n),
-                "pedestrian" => ped.contains(&n),
-                "all" => ped.contains(&n) || road.contains(&n),
-                _ => ped.contains(&n) || (road.contains(&n) && (4..=6).contains(&imp)),
-            }
+/// Codes de nature (manifeste) → tronçons gardés : toutes les voies praticables à pied (port de
+/// `ign.keep_mask`, type « all »), quel que soit le type de voie préféré. Exclus : non praticables
+/// (privé, ayants droit, hors service), « Type autoroutier », « Bac ou liaison maritime », nature inconnue.
+pub fn keep_mask(t: &Troncons, natures: &[String]) -> Vec<usize> {
+    let kept = |n: u8| {
+        natures.get(n as usize).is_some_and(|x| {
+            TRAIL_NATURES.contains(&x.as_str()) || ROAD_NATURES.contains(&x.as_str())
         })
+    };
+    (0..t.len())
+        .filter(|&i| t.flags[i] & 2 != 0 && kept(t.nature[i]) && t.n_vertices(i) >= 2)
         .collect()
+}
+
+/// Par tronçon : « chemin » (`TRAIL_NATURES`) ; sinon « route ».
+pub fn trail_mask(t: &Troncons, natures: &[String]) -> Vec<bool> {
+    let trail = |n: u8| {
+        natures
+            .get(n as usize)
+            .is_some_and(|x| TRAIL_NATURES.contains(&x.as_str()))
+    };
+    t.nature.iter().map(|&n| trail(n)).collect()
+}
+
+/// Longueur (m) de l'arête hors du type de voie voulu (`Request::surface`).
+fn off_type(ed: &Edge, surface: &str) -> f64 {
+    match surface {
+        "trail" => (ed.len - ed.trail).max(0.0),
+        "road" => ed.trail,
+        _ => 0.0,
+    }
 }
 
 /// Aller-retour d'accès : chemin, sur toutes les voies, du point cliqué vers le réseau.
 pub struct AccessPath {
     pub length: f64,
+    /// Longueur sur « chemin ».
+    pub trail: f64,
     pub xy: Vec<[f64; 2]>,
     pub z: Vec<f64>,
     pub updown: f64,
@@ -404,9 +413,11 @@ impl<'a> Access<'a> {
         t: &'a Troncons,
         frame: Frame,
         sel: &[usize],
+        trail_t: &[bool],
         region: &Region,
     ) -> Option<Access<'a>> {
         let mut net = Net::new(t, frame);
+        net.trail_t = trail_t.to_vec();
         let mut ids = net.build(sel, region);
         let (s0, snap0, _) = net.insert_start(&mut ids, [0.0, 0.0])?;
         if snap0 > ACCESS_MAX_START_M {
@@ -464,9 +475,11 @@ impl<'a> Access<'a> {
         };
         let (xy, z) = route_geometry(&self.net, &path);
         let length = path.iter().map(|&(e, _, _)| self.net.edges[e].len).sum();
+        let trail = path.iter().map(|&(e, _, _)| self.net.edges[e].trail).sum();
         let updown = z.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
         Some(AccessPath {
             length,
+            trail,
             xy,
             z,
             updown,
@@ -503,9 +516,10 @@ pub struct Candidate {
 }
 
 /// Port de `build_candidate` : départ (accès éventuel), copies d'accès près du départ,
-/// élagage, pente max, borne inférieure (min_distance), réduction aux arêtes pentues. None si aucune boucle >= Lmin possible.
+/// élagage, pente max, borne inférieure (min_distance), réduction aux arêtes pentues. Err si aucune boucle >= Lmin
+/// possible, avec les arêtes du réseau trop court autour de ce départ (vide pour un autre motif).
 /// `x` : D+ visé du mode min_distance ; None (statut `dplus_unreachable`) si la borne
-/// inférieure de distance dépasse Lmax.
+/// inférieure de distance dépasse Lmax. `weight` : poids de recherche d'une arête (réduction).
 #[allow(clippy::too_many_arguments)]
 pub fn build_candidate(
     net: &mut Net,
@@ -517,8 +531,9 @@ pub fn build_candidate(
     reduce: bool,
     x: Option<f64>,
     via: &mut [ViaPt],
+    weight: Option<&dyn Fn(&Edge) -> f64>,
     info: &mut serde_json::Map<String, Value>,
-) -> Option<Candidate> {
+) -> Result<Candidate, Vec<usize>> {
     let mut ids = sub.to_vec();
     let nearest = net.nearest_vertex(&ids);
     let use_access = access.is_some() && nearest > ACCESS_MIN_M;
@@ -536,7 +551,7 @@ pub fn build_candidate(
             by_road = true;
         }
     }
-    let (mut s, _, mut pos) = net.insert_start(&mut ids, point)?;
+    let (mut s, _, mut pos) = net.insert_start(&mut ids, point).ok_or(Vec::new())?;
     info.insert("start_snap_m".into(), json!(round1(pos[0].hypot(pos[1]))));
     let mut acc = None;
     if use_access {
@@ -552,7 +567,7 @@ pub fn build_candidate(
             _ if by_road => {
                 // accès inutilisable : départ au plus proche à vol d'oiseau
                 ids = sub.to_vec();
-                let (s2, snap, p2) = net.insert_start(&mut ids, [0.0, 0.0])?;
+                let (s2, snap, p2) = net.insert_start(&mut ids, [0.0, 0.0]).ok_or(Vec::new())?;
                 (s, pos) = (s2, p2);
                 info.insert("start_snap_m".into(), json!(round1(snap)));
             }
@@ -576,14 +591,14 @@ pub fn build_candidate(
     info.insert("network_km".into(), json!((total / 10.0).round() / 100.0));
     if total < lmin {
         info.insert("status".into(), json!("network_too_short"));
-        return None;
+        return Err(ids);
     }
     if let Some(g) = max_grade {
         ids.retain(|&e| net.edges[e].grade <= g);
         ids = prep::prune(net, ids, s, lmax);
         if net.total_len(&ids) < lmin {
             info.insert("status".into(), json!("too_short_after_grade_filter"));
-            return None;
+            return Err(ids);
         }
     }
     // point de passage sur une impasse ou une voie retirée (pente) : ré-accroché au réseau restant
@@ -600,7 +615,7 @@ pub fn build_candidate(
             _ => {
                 info.insert("status".into(), json!("via_unreachable"));
                 info.insert("via_n".into(), json!(k + 1));
-                return None;
+                return Err(Vec::new());
             }
         }
     }
@@ -620,7 +635,7 @@ pub fn build_candidate(
         info.insert("lower_bound_m".into(), json!(b.map(f64::round)));
         if b.is_none_or(|b| b > lmax) {
             info.insert("status".into(), json!("dplus_unreachable"));
-            return None;
+            return Err(ids);
         }
         lb = b;
     }
@@ -632,6 +647,7 @@ pub fn build_candidate(
             lmax,
             REDUCE_K,
             &via.iter().map(|v| v.node).collect::<Vec<_>>(),
+            weight,
         );
         // La réduction n'est qu'une heuristique de vitesse : si elle laisse un réseau plus court que
         // la boucle demandée (départ resté sur une tige), on garde le réseau complet.
@@ -649,9 +665,9 @@ pub fn build_candidate(
     }) {
         info.insert("status".into(), json!("via_unreachable"));
         info.insert("via_n".into(), json!(k + 1));
-        return None;
+        return Err(Vec::new());
     }
-    Some(Candidate {
+    Ok(Candidate {
         ids,
         s,
         access: acc,
@@ -748,6 +764,8 @@ pub fn to_problem(
         inner,
         node_mu: 0.0,
         via: via.iter().map(|&n| idx[n]).collect(),
+        off: Vec::new(),
+        off_price: 0.0,
     };
     (p, nodes)
 }
@@ -816,6 +834,8 @@ pub struct Track {
     pub z: Vec<f64>,
     pub length: f64,
     pub dplus: f64,
+    /// Longueur sur « chemin » (accès compris).
+    pub trail: f64,
     pub feasible: bool,
 }
 
@@ -856,7 +876,9 @@ fn assemble(
         }
     }
     let (mut length, mut dplus) = p.stats(loop_ids);
+    let mut trail: f64 = loop_ids.iter().map(|&e| net.edges[ids[e]].trail).sum();
     if let Some(a) = acc {
+        trail += 2.0 * a.trail;
         let mut az = a.z.clone();
         *az.last_mut().unwrap() = z[0];
         let rev_xy: Vec<[f64; 2]> = a.xy.iter().rev().skip(1).copied().collect();
@@ -882,6 +904,7 @@ fn assemble(
         z,
         length,
         dplus,
+        trail,
         feasible,
     })
 }
@@ -990,7 +1013,7 @@ fn widen_cap(run: impl FnOnce(&Request) -> Result<Value, Msg>, req: &mut Request
 /// D40/D46 « messages importants » (api.md v1.6) : demande non atteinte (`target_not_reached`) ou
 /// moins de boucles que demandé (`fewer_loops`). `plan` ne rend que le message (`params`, sans
 /// `suggest` ni `checked`, aucun calcul en plus) ; la CONTRAINTE LIMITANTE vient de `diagnose`
-/// (`diagnose=1`) : pour chaque contrainte active (types de voies, pente max, zone, carrefours
+/// (`diagnose=1`) : pour chaque contrainte active (pente max, zone, carrefours
 /// uniques, points de passage, distance max fournie) un calcul SANS elle seule (n = demandé,
 /// budget = ce qu'il reste de `DIAG_TOTAL_S`, ≤ `DIAG_MAX_S`) ; la première qui atteint la cible
 /// (ou rend assez de boucles) est proposée en `suggest` (réglages d'API à changer).
@@ -1073,12 +1096,6 @@ fn diagnose_with(
         f(&mut r);
         (r, s)
     };
-    // échelle des voies : sentiers → minor → all (le niveau au-dessus d'abord)
-    for lvl in ["minor", "all"] {
-        if !(req.roads == "all" || req.roads == "minor" && lvl == "minor") {
-            relax.push(with(&|r| r.roads = lvl.into(), json!({"roads": lvl})));
-        }
-    }
     if req.max_grade.is_some() {
         relax.push(with(&|r| r.max_grade = None, json!({"max_grade_pct": 0})));
     }
@@ -1159,6 +1176,17 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
     }
     if !prep_only {
         important(&req, &mut out);
+        // type de voie voulu minoritaire sur la première boucle (le réseau n'en offre pas plus)
+        let share = out["candidates"][0]["trail_frac"]
+            .as_f64()
+            .map(|f| if req.surface == "road" { 1.0 - f } else { f })
+            .filter(|&s| req.surface != "any" && s < LOW_SURFACE_SHARE);
+        if let (Some(s), Some(w)) = (share, out["warnings"].as_array_mut()) {
+            w.push(json!(Msg::new(
+                Code::LowSurfaceShare,
+                json!({"pct": (100.0 * s).round()}),
+            )));
+        }
     }
     out["data_version"] = json!(store.manifest.data_version);
     if let Some(cands) = out["candidates"].as_array_mut() {
@@ -1354,8 +1382,10 @@ pub fn plan_with(
     );
 
     let t1 = Instant::now();
-    let sel = keep_mask(&t, natures, &r.roads);
+    let sel = keep_mask(&t, natures);
+    let trail_t = trail_mask(&t, natures);
     let mut net = Net::new(&t, frame);
+    net.trail_t = trail_t.clone();
     let mut edges = net.build(&sel, &region);
     dbg.insert("source_ways".into(), json!(sel.len()));
     dbg.insert("edges_simplified".into(), json!(edges.len()));
@@ -1378,7 +1408,18 @@ pub fn plan_with(
         }
     }
     let mut best_via: Vec<ViaPt> = via.clone();
-    let sel_all = keep_mask(&t, natures, "all");
+    // préférence de type de voie (mode max) : prime par mètre sur le bon type, à l'échelle de la
+    // densité moyenne de D+ du réseau de la zone
+    let off_price = {
+        let (pl, pw): (Vec<f64>, Vec<f64>) = edges
+            .iter()
+            .map(|&e| (net.edges[e].len, net.edges[e].w))
+            .unzip();
+        crate::problem::SURF_MAX * crate::problem::knapsack_ub(&pl, &pw, lmax) / lmax
+    };
+    let surface = r.surface.clone();
+    let weight = |ed: &Edge| ed.w + off_price * (ed.len - off_type(ed, &surface));
+    let weight: Option<&dyn Fn(&Edge) -> f64> = (surface != "any" && !md).then_some(&weight);
     let mut access_net: Option<Option<Access>> = None;
 
     // search_loop
@@ -1393,6 +1434,8 @@ pub fn plan_with(
         .map(|c| t_all + std::time::Duration::from_secs_f64(c.max(0.0)));
     // plus petite borne prouvée parmi les essais refusés (INF : Σw < X partout)
     let mut proven_lb: Option<f64> = None;
+    // borne finie prouvée sur le réseau du point cliqué : rendue telle quelle, pas de repli (D34)
+    let mut depart_lb = false;
     let mut remaining = time_s;
     let mut attempts: Vec<Value> = Vec::new();
     let mut tried: HashSet<usize> = HashSet::new();
@@ -1408,7 +1451,13 @@ pub fn plan_with(
         Option<f64>,
     );
     let mut first: Option<Found> = None;
-    let mut sets: Vec<(&str, Vec<usize>)> = vec![("depart", edges.clone())];
+    // (genre, arêtes, distance du point cliqué) : le réseau du départ, puis les replis du plus proche au plus loin
+    let mut sets: Vec<(&str, Vec<usize>, f64)> = vec![("depart", edges.clone(), 0.0)];
+    let mind = |net: &Net, c: &[usize]| {
+        c.iter()
+            .map(|&e| net.min_dist(e))
+            .fold(f64::INFINITY, f64::min)
+    };
     let mut comps_done = false;
     let mut k = 0;
     loop {
@@ -1417,20 +1466,18 @@ pub fn plan_with(
                 break;
             }
             comps_done = true;
-            let mut comps = prep::loop_components(&net, &edges);
-            let mind: Vec<f64> = comps
+            // composantes du réseau sous la pente max : sinon le point le plus proche d'une
+            // composante peut être dans une poche fermée par des tronçons trop raides
+            let ok: Vec<usize> = edges
                 .iter()
-                .map(|c| {
-                    c.iter()
-                        .map(|&e| net.min_dist(e))
-                        .fold(f64::INFINITY, f64::min)
-                })
+                .copied()
+                .filter(|&e| r.max_grade.is_none_or(|g| net.edges[e].grade <= g))
                 .collect();
-            let mut order: Vec<usize> = (0..comps.len()).collect();
-            order.sort_by(|&a, &b| mind[a].total_cmp(&mind[b]));
-            for i in order {
-                sets.push(("repli", std::mem::take(&mut comps[i])));
+            for c in prep::loop_components(&net, &ok) {
+                let d = mind(&net, &c);
+                sets.push(("repli", c, d));
             }
+            sets[k..].sort_by(|a, b| a.2.total_cmp(&b.2));
             continue;
         }
         let (kind, sub) = (sets[k].0, sets[k].1.clone());
@@ -1440,9 +1487,7 @@ pub fn plan_with(
         // borne prouvée finie (« pas de boucle de ce D+ sous Y km ») est rendue telle quelle
         // plutôt qu'un départ à plusieurs km (Grenoble, X = 500 : départ déplacé de 5,8 km).
         // avec points de passage, déplacer le départ n'a pas de sens
-        if kind == "repli"
-            && (first.is_some() || proven_lb.is_some_and(f64::is_finite) || !via.is_empty())
-        {
+        if kind == "repli" && (first.is_some() || depart_lb || !via.is_empty()) {
             break;
         }
         let solved = attempts
@@ -1459,7 +1504,7 @@ pub fn plan_with(
             continue;
         }
         let tp = Instant::now();
-        let mut cand = None;
+        let mut cand = Err(Vec::new());
         let mut cur_via = via.clone();
         let mut info = serde_json::Map::new();
         // Avec accès par aller-retour d'abord ; s'il rend la boucle impossible, même
@@ -1471,7 +1516,7 @@ pub fn plan_with(
             let acc = if with_access {
                 let nearest = net.nearest_vertex(&sub);
                 if nearest > ACCESS_MIN_M && access_net.is_none() {
-                    access_net = Some(Access::new(&t, frame, &sel_all, &region));
+                    access_net = Some(Access::new(&t, frame, &sel, &trail_t, &region));
                 }
                 access_net.as_mut().and_then(|a| a.as_mut())
             } else {
@@ -1489,9 +1534,10 @@ pub fn plan_with(
                 r.mode != "target",
                 x_md,
                 &mut vp,
+                weight,
                 &mut info,
             );
-            if c.is_some() || !had_access || !info.contains_key("access_m") {
+            if c.is_ok() || !had_access || !info.contains_key("access_m") {
                 (cand, cur_via) = (c, vp);
                 break;
             }
@@ -1505,13 +1551,39 @@ pub fn plan_with(
             attempts.push(Value::Object(info.clone()));
         }
         prep_s += tp.elapsed().as_secs_f64();
-        let Some(c) = cand else {
-            if info.get("status").and_then(Value::as_str) == Some("dplus_unreachable") {
-                let b = info["lower_bound_m"].as_f64().unwrap_or(f64::INFINITY);
-                proven_lb = Some(proven_lb.map_or(b, |p| p.min(b)));
+        let c = match cand {
+            Ok(c) => c,
+            Err(short) => {
+                if info.get("status").and_then(Value::as_str) == Some("dplus_unreachable") {
+                    let b = info["lower_bound_m"].as_f64().unwrap_or(f64::INFINITY);
+                    proven_lb = Some(proven_lb.map_or(b, |p| p.min(b)));
+                    depart_lb |= kind == "depart" && b.is_finite();
+                }
+                attempts.push(Value::Object(info));
+                // Repli : le réseau à portée de ce départ est trop court, mais la composante
+                // continue plus loin (reliée par un long détour) : on écarte ce réseau et on
+                // reprend sur le reste, au point le plus proche.
+                if kind == "repli" && !short.is_empty() {
+                    let mut near = vec![false; net.xy.len()];
+                    for &e in &short {
+                        near[net.edges[e].u] = true;
+                        near[net.edges[e].v] = true;
+                    }
+                    let rest: Vec<usize> = sub
+                        .iter()
+                        .copied()
+                        .filter(|&e| !(near[net.edges[e].u] && near[net.edges[e].v]))
+                        .collect();
+                    if rest.len() < sub.len() {
+                        for c in prep::loop_components(&net, &rest) {
+                            let d = mind(&net, &c);
+                            sets.push(("repli", c, d));
+                        }
+                        sets[k..].sort_by(|a, b| a.2.total_cmp(&b.2));
+                    }
+                }
+                continue;
             }
-            attempts.push(Value::Object(info));
-            continue;
         };
         tried.extend(c.ids.iter().copied());
         let acc_len = c.access.as_ref().map_or(0.0, |a| a.length);
@@ -1534,6 +1606,15 @@ pub fn plan_with(
         );
         if let Some(lb) = c.lb {
             p.l = p.lmax.min(2.0 * lb); // indicatif : couloirs et waypoints
+        }
+        // (min_distance : la sortie la plus courte prime, pas de préférence dans la recherche)
+        if r.surface != "any" && !md {
+            p.off = c
+                .ids
+                .iter()
+                .map(|&e| off_type(&net.edges[e], &r.surface))
+                .collect();
+            p.off_price = off_price;
         }
         if prep_only {
             dbg.insert("prep_s".into(), json!(prep_s));
@@ -1670,7 +1751,15 @@ pub fn plan_with(
         loops.push(assemble(&net, &ids, &p, a, acc.as_ref(), gamma)?);
     }
     match r.mode.as_str() {
-        "max" => loops.sort_by(|a, b| b.dplus.total_cmp(&a.dplus)),
+        // D+ décroissant ; avec un type de voie préféré, D+ plus sa prime (ce que la recherche maximise)
+        "max" => {
+            let val = |t: &Track| match r.surface.as_str() {
+                "trail" => t.dplus + off_price * t.trail,
+                "road" => t.dplus + off_price * (t.length - t.trail),
+                _ => t.dplus,
+            };
+            loops.sort_by(|a, b| val(b).total_cmp(&val(a)))
+        }
         // réalisables d'abord, puis par longueur croissante
         "min_distance" => loops.sort_by(|a, b| {
             b.feasible
@@ -1681,7 +1770,15 @@ pub fn plan_with(
         // qui ne la tiennent pas ne sont pas rendues (sinon `target_not_reached`, voir `important`)
         _ => {
             let d = r.target_dplus.unwrap_or(1.0);
-            let err = |t: &Track| ((t.length - l) / l).abs() + ((t.dplus - d) / d).abs();
+            // (type de voie : même ordre que la recherche, `Problem::score`)
+            let err = |t: &Track| {
+                let e = ((t.length - l) / l).abs() + ((t.dplus - d) / d).abs();
+                match r.surface.as_str() {
+                    "trail" => e.max(SURF_TARGET_BAND) + SURF_TARGET * (1.0 - t.trail / l),
+                    "road" => e.max(SURF_TARGET_BAND) + SURF_TARGET * t.trail / l,
+                    _ => e,
+                }
+            };
             let tol = |t: &Track| {
                 ((t.length - l) / l).abs() <= DIAG_TOL && ((t.dplus - d) / d).abs() <= DIAG_TOL
             };
@@ -1838,6 +1935,7 @@ fn track_json(
         "alt_min_m": round1(zmin),
         "alt_max_m": round1(zmax),
         "max_grade_pct": round1(100.0 * max_grade(&tr.z, &dist)),
+        "trail_frac": ((1000.0 * tr.trail / tr.length.max(1.0)).round() / 1000.0).clamp(0.0, 1.0),
         "target_gap": target.map(|(l, d)| json!({"distance_m": round1(tr.length - l), "dplus_m": round1(tr.dplus - d)})),
         "climbs": {
             "count": c.iter().filter(|x| x.0 >= 20.0).count(),

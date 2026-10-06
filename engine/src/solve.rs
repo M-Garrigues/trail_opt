@@ -16,6 +16,8 @@ use crate::{Annealer, FaceSearch, Problem};
 pub const FACES_ONLY_EDGES: usize = 5000;
 /// Recherches indépendantes sur les petits graphes (voir `optimize`).
 const RESTARTS: u64 = 2;
+/// Voir `search` : part des itérations de faces faite sans la prime de type de voie.
+const SURF_FIRST: f64 = 0.6;
 
 pub struct Budget {
     /// Itérations du recuit par faces (boucle principale).
@@ -43,6 +45,10 @@ impl Budget {
     pub fn from_time(time_s: f64, candidates: usize, n_edges: usize, seed: u64) -> Budget {
         let main_s = time_s / (1.0 + 0.5 * (candidates.max(1) - 1) as f64);
         let (lo, hi) = ANNEAL_MIN_MAX;
+        // au-delà de 10 000 arêtes (mode cible en ville, toutes les routes dans le graphe depuis
+        // api.md v1.7), le plancher baisse d'autant : temps du recuit constant (Croix-Rousse cible,
+        // 18 000 arêtes : 3,9 s → 2,7 s, cible tenue pareil)
+        let lo = lo * (1e4 / n_edges.max(1) as f64).min(1.0);
         let anneal = (ANNEAL_WORK / n_edges.max(1) as f64).clamp(lo, hi) * (main_s / 5.0).min(1.0);
         Budget {
             iters: (FACES_PER_S * main_s) as u64,
@@ -84,11 +90,34 @@ fn search(p: &Problem, b: &Budget, seed: u64, use_anneal: bool) -> Found {
         None
     };
     let (mut method, mut depart, mut face_iterations) = ("recuit", None, 0);
+    // Type de voie en mode max : `SURF_FIRST` des itérations sans la prime, pour partir de la boucle
+    // de plus fort D+ et l'amener vers le bon type (une seule recherche avec la prime, lancée de la
+    // face du départ, reste parfois sur des chemins plats : Massy, 136 m de D+ au lieu de 380).
+    let mut iters = b.iters;
+    if !p.off.is_empty() && !p.target() {
+        let plain = Problem {
+            off: Vec::new(),
+            ..p.clone()
+        };
+        let mut f0 = FaceSearch::new(&plain);
+        f0.deadline = b.deadline;
+        let first = (SURF_FIRST * iters as f64) as u64;
+        if let Some(sol) = f0.solve(first, seed, route.as_deref()) {
+            face_iterations = sol.iterations;
+            if route
+                .as_ref()
+                .is_none_or(|r| key_cmp(key(&plain, &sol.ids), key(&plain, r)).is_ge())
+            {
+                route = Some(sol.ids);
+            }
+        }
+        iters -= first;
+    }
     // min_distance avec préférence de montées : la clé (−L) ignore le bonus B, on garde les
     // faces (prototype `solve_minlen`).
     let prefer_faces = p.min_distance() && p.climbs < 0;
-    if let Some(sol) = fs.solve(b.iters, seed, route.as_deref()) {
-        face_iterations = sol.iterations;
+    if let Some(sol) = fs.solve(iters, seed, route.as_deref()) {
+        face_iterations += sol.iterations;
         if route
             .as_ref()
             .is_none_or(|r| prefer_faces || key_cmp(key(p, &sol.ids), key(p, r)).is_ge())

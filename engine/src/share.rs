@@ -86,6 +86,10 @@ pub struct Candidate {
     pub alt_min_m: f64,
     pub alt_max_m: f64,
     pub max_grade_pct: f64,
+    /// v1.7 : part de la longueur sur « chemin » ; absente des boucles plus anciennes (et alors
+    /// non sérialisée : leur signature d'origine reste valable).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trail_frac: Option<f64>,
     #[serde(default)]
     pub target_gap: Option<Gap>,
     pub climbs: Climbs,

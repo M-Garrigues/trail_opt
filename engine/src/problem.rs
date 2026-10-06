@@ -24,6 +24,17 @@ pub const VIA_MISS: f64 = 1e6;
 /// Mode cible : écart relatif admis sur la distance et sur le D+ pour une autre boucle (un peu
 /// sous les 10 % du message `target_not_reached`, l'aller-retour d'accès s'ajoutant ensuite).
 pub const TARGET_TOL: f64 = 0.08;
+/// Préférence de type de voie (api.md v1.7, `surface`) : jamais un filtre, un prix sur la longueur
+/// parcourue hors du type voulu (`Problem::off`). Les contraintes restent sur les valeurs réelles.
+/// Pas en mode min_distance : la boucle la plus courte prime.
+/// Mode max : un mètre sur le bon type vaut `off_price` m de D+ (posé par `plan`) = `SURF_MAX` ×
+/// la densité de D+ des meilleures arêtes de la zone (borne du sac à dos / Lmax, ≈ 2 × la densité
+/// de la meilleure boucle, en ville comme en montagne).
+pub const SURF_MAX: f64 = 0.6;
+/// Mode cible : sous `SURF_TARGET_BAND` d'erreur relative (distance + D+), la cible est tenue et le
+/// type de voie départage ; une boucle entièrement hors type « coûte » `SURF_TARGET` d'erreur.
+pub const SURF_TARGET_BAND: f64 = 0.02;
+pub const SURF_TARGET: f64 = 0.03;
 
 #[derive(Deserialize, Clone)]
 pub struct Problem {
@@ -77,6 +88,12 @@ pub struct Problem {
     /// Points de passage obligatoires (T34, api.md v1.5) : nœuds que la boucle doit toucher.
     #[serde(default)]
     pub via: Vec<usize>,
+    /// Préférence de type de voie : par arête, longueur (m) hors du type voulu. Vide : indifférent.
+    #[serde(default)]
+    pub off: Vec<f64>,
+    /// Mode max : valeur (m de D+) d'un mètre sur le type voulu.
+    #[serde(default)]
+    pub off_price: f64,
 }
 
 impl Problem {
@@ -107,6 +124,40 @@ impl Problem {
     pub fn climb_bonus(&self) -> Option<Vec<f64>> {
         let g = self.climbs as f64 * CLIMBS_BETA / CLIMBS_H_SCALE;
         (self.climbs < 0).then(|| self.q.iter().map(|&q| g * q).collect())
+    }
+
+    /// Bonus B par arête du recuit par faces, dans les unités de son score : préférence de montées
+    /// « courtes » en min_distance (où `w` reste le D+ réel), ou type de voie (modes max et cible).
+    /// Mode max : prime `off_price` par mètre SUR le bon type (à longueur égale, c'est un coût par
+    /// mètre hors type ; en coût, les faces de ville seraient toutes négatives et la boucle
+    /// n'atteindrait pas Lmin). Mode cible : coût par mètre hors type.
+    pub fn search_bonus(&self) -> Option<Vec<f64>> {
+        if self.min_distance() {
+            return self.climb_bonus();
+        }
+        if self.off.is_empty() {
+            return None;
+        }
+        let c = crate::faces::TARGET_SCALE * SURF_TARGET / self.l;
+        Some(
+            (0..self.n_edges())
+                .map(|e| {
+                    if self.target() {
+                        -c * self.off[e]
+                    } else {
+                        self.off_price * (self.len[e] - self.off[e])
+                    }
+                })
+                .collect(),
+        )
+    }
+
+    /// Longueur hors du type de voie voulu (0 sans préférence).
+    pub fn off_len(&self, ids: &[usize]) -> f64 {
+        if self.off.is_empty() {
+            return 0.0;
+        }
+        ids.iter().map(|&e| self.off[e]).sum()
     }
 
     /// Mode max avec préférence de montées : copie dont `w` est le poids de recherche (le D+
@@ -312,7 +363,10 @@ impl Problem {
         let feas = self.lmin <= length && length <= self.lmax;
         if self.target() {
             let d = self.d.unwrap();
-            let err = (length - self.l).abs() / self.l + (dplus - d).abs() / d;
+            let mut err = (length - self.l).abs() / self.l + (dplus - d).abs() / d;
+            if !self.off.is_empty() {
+                err = err.max(SURF_TARGET_BAND) + SURF_TARGET * self.off_len(ids) / self.l;
+            }
             return (-err, length, dplus, feas);
         }
         let viol = (self.lmin - length).max(length - self.lmax).max(0.0);
@@ -323,8 +377,14 @@ impl Problem {
         };
         // D40 : au-delà de la distance demandée, un mètre doit rapporter LEN_DENSITY × la densité
         // moyenne de D+ de la boucle (sinon c'est un détour)
-        let over = LEN_DENSITY * dplus / length.max(1.0) * (length - self.l).max(0.0);
-        (dplus - nc - over - 0.5 * viol, length, dplus, feas)
+        // type de voie : D+ plus la prime `off_price` par mètre sur le bon type (comme `search_bonus`)
+        let val = if self.off.is_empty() {
+            dplus
+        } else {
+            dplus + self.off_price * (length - self.off_len(ids))
+        };
+        let over = LEN_DENSITY * val / length.max(1.0) * (length - self.l).max(0.0);
+        (val - nc - over - 0.5 * viol, length, dplus, feas)
     }
 
     /// Sac à dos fractionnaire (w/l décroissant, capacité Lmax) : borne sur le D+.

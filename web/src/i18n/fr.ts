@@ -56,14 +56,24 @@ export const fr = {
     },
     helpTarget: 'En mode Cible, ce réglage ne change que le sens de parcours.',
   },
+  surface: {
+    label: 'Type de voie',
+    trail: 'Chemins au max',
+    any: 'Indifférent',
+    road: 'Routes au max',
+    help: {
+      trail: 'Sentiers et chemins d’abord ; une route quand il n’y a pas mieux.',
+      any: 'Chemins et routes, sans préférence.',
+      road: 'Routes d’abord ; un chemin quand il n’y a pas mieux.',
+    },
+    share: (p: P) => `${p.trail} % chemin · ${p.road} % route`,
+    lowTrail: (p: P) => `Seulement ${p.pct} % de chemins ici : peu de sentiers autour de ce départ.`,
+    lowRoad: (p: P) => `Seulement ${p.pct} % de routes ici : peu de routes autour de ce départ.`,
+  },
   more: {
     title: 'Plus d’options',
     maxGrade: 'Pente max des chemins (sur 50 m)',
     noLimit: 'sans limite',
-    roads: 'Voies',
-    unpaved: 'Sentiers',
-    minor: '+ petites routes',
-    all: '+ toutes routes',
     noRepeat: 'Jamais deux fois le même carrefour',
     pace: 'Allure',
     paceUnit: 'min/km-effort',
@@ -97,7 +107,7 @@ export const fr = {
     remove: 'Retirer la zone',
     tooMany: '50 points maximum.',
     editHint: 'Fais glisser un point pour le déplacer, ou un point du milieu pour en ajouter.',
-    outside: 'Le départ doit être dans la zone.',
+    outside: 'Départ hors de la zone : à déplacer avant de lancer la recherche.',
     used: 'Zone utilisée',
   },
   result: {
@@ -202,7 +212,6 @@ export const fr = {
   },
   actions: {
     seeCoverage: 'Voir la couverture',
-    widenRoads: 'Élargir les voies',
     changeDistance: 'Changer la distance',
     changeSettings: 'Modifier les réglages',
     redraw: 'Redessiner',
@@ -214,7 +223,7 @@ export const fr = {
   important: {
     title: 'Demande non atteinte',
     suggest: {
-      roads_minor: 'Inclure les petites routes ?', roads_all: 'Inclure toutes les routes ?', max_grade_pct: 'Retirer la limite de pente ?', polygon: 'Retirer la zone ?',
+      max_grade_pct: 'Retirer la limite de pente ?', polygon: 'Retirer la zone ?',
       no_repeat_junction: 'Autoriser de repasser aux mêmes carrefours ?', via: 'Retirer les points de passage ?', max_distance_km: 'Doubler la distance max ?',
     },
     keep: 'Garder cette sortie',
@@ -225,12 +234,12 @@ export const fr = {
     via_outside_zone: (p: P) => `Le point ${p.n} est hors de la zone dessinée.`,
     via_unreachable: (p: P) => `Le point ${p.n} n’est sur aucun chemin praticable (ou dans une impasse).`,
     outside_coverage: () => 'Pas encore de données ici.',
-    no_way_in_zone: () => 'Aucun chemin de ce type ici.',
+    no_way_in_zone: () => 'Aucune voie praticable ici.',
     no_loop_of_distance: () => 'Aucune sortie de cette longueur depuis ce départ.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible : il faut au moins ${p.min_km} km.` : 'Pas assez de relief ici.',
     zone_invalid: () => 'Zone invalide : 3 à 50 points.',
-    start_outside_zone: () => 'Le départ doit être dans la zone.',
+    start_outside_zone: () => 'Ton départ est hors de la zone : déplace-le ou modifie la zone.',
     zone_too_large: (p: P) => `Zone trop grande (${p.area_km2} km², max ${p.max_km2}).`,
     distance_out_of_range: (p: P) => `Distance entre ${p.min_km} et ${p.max_km} km.`,
     dplus_out_of_range: (p: P) => `D+ entre ${p.min_m} et ${p.max_m} m.`,
@@ -260,6 +269,7 @@ export const fr = {
     fewer_loops: (p: P) => `${p.got} sortie${Number(p.got) === 1 ? '' : 's'} trouvée${Number(p.got) === 1 ? '' : 's'} sur ${p.asked} demandées.`,
     via_missed: (p: P) => `La sortie ne passe pas par le point ${p.n}.`,
     coverage_edge: () => 'Zone en bord de couverture : chemins au-delà ignorés.',
+    low_surface_share: (p: P) => `Seulement ${p.pct} % du type de voie voulu ici.`,
   },
   // Installation de l'app (PWA) : entrée du menu + suggestion unique après le premier GPX.
   install: {

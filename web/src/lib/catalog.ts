@@ -32,14 +32,7 @@ const KM = [5, 10, 15, 21, 30, 42];
 const distance: Field = { param: 'distance_km', unit: 'km', def: 10, min: 2, max: 100, step: 0.5, presets: KM };
 
 export const CATALOG: TrainingType[] = [
-  {
-    id: 'max_dplus',
-    goal: 'max_dplus',
-    icon: 'M2 20 L7 11 L10 15 L15 6 L18 11 L22 4 M22 4 L22 9 M22 4 L17 4',
-    fields: [distance],
-    headline: (c, _r, lang) => `+${num(lang, c.dplus_m)} m`,
-    enabled: true,
-  },
+  // Cible en premier : type présélectionné à la première visite (`defaultSettings`)
   {
     id: 'target',
     goal: 'target',
@@ -48,6 +41,14 @@ export const CATALOG: TrainingType[] = [
     headline: (c, _r, lang) =>
       `${num(lang, c.length_m / 1000, 1)} km · +${num(lang, c.dplus_m)} m` +
       (c.target_gap ? ` (${signed(lang, c.target_gap.dplus_m)})` : ''),
+    enabled: true,
+  },
+  {
+    id: 'max_dplus',
+    goal: 'max_dplus',
+    icon: 'M2 20 L7 11 L10 15 L15 6 L18 11 L22 4 M22 4 L22 9 M22 4 L17 4',
+    fields: [distance],
+    headline: (c, _r, lang) => `+${num(lang, c.dplus_m)} m`,
     enabled: true,
   },
   {

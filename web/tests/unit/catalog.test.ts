@@ -2,7 +2,8 @@ import { describe, it, expect } from 'vitest';
 import bounds from '../fixtures/api-bounds.json';
 import plan from '../fixtures/plan1.json';
 import { CATALOG, byId, clampField } from '../../src/lib/catalog';
-import { buildQuery, defaultSettings, mergeSettings, durationMin, settingsFromRequest, MAX_GRADES, computeEstimateS } from '../../src/lib/settings';
+import { buildQuery, defaultSettings, mergeSettings, durationMin, settingsFromRequest, MAX_GRADES, computeEstimateS, lowSurface } from '../../src/lib/settings';
+import { surfaceText, lowSurfaceText } from '../../src/i18n/format';
 import type { PlanResponse } from '../../src/lib/types';
 
 describe('catalogue (ui-spec §2)', () => {
@@ -39,10 +40,12 @@ describe('requête', () => {
   it('seulement des paramètres de api.md, défauts ui-spec', () => {
     const q = buildQuery(defaultSettings(), { lat: 48.7309, lon: 2.2713 }, { n: 1, seed: 0 });
     for (const k of q.keys()) expect(bounds.params).toContain(k);
-    expect(q.get('goal')).toBe('max_dplus');
+    expect(q.get('goal')).toBe('target'); // Cible : type par défaut
     expect(q.get('distance_km')).toBe('10');
+    expect(q.get('dplus_m')).toBe('300');
+    expect(q.get('surface')).toBe('trail');
+    expect(q.has('roads')).toBe(false);
     expect(q.get('n_candidates')).toBe('1');
-    expect(q.has('dplus_m')).toBe(false);
     expect(q.has('max_grade_pct')).toBe(false);
   });
   it('le plus court : dplus_m, pas de distance_km, max auto absent', () => {
@@ -56,8 +59,32 @@ describe('requête', () => {
     expect(q.get('polygon')).toBe('5.80000,45.00000;5.90000,45.00000;5.90000,45.10000');
     expect(q.get('seed')).toBe('3');
   });
+  it('type de voie (api.md v1.7) : ancien `roads` mémorisé ou partagé, traduit', () => {
+    expect(mergeSettings({ roads: 'minor' }).surface).toBe('trail'); // ancien défaut → nouveau défaut
+    expect(mergeSettings({ roads: 'unpaved' }).surface).toBe('trail');
+    expect(mergeSettings({ roads: 'all' }).surface).toBe('any');
+    expect(mergeSettings({ surface: 'road', roads: 'all' }).surface).toBe('road');
+    expect('roads' in mergeSettings({ roads: 'all' })).toBe(false);
+    const s = defaultSettings();
+    expect(settingsFromRequest({ goal: 'target', roads: 'unpaved' }, s).surface).toBe('trail');
+    expect(settingsFromRequest({ goal: 'target', roads: 'minor' }, s).surface).toBe('any');
+    expect(settingsFromRequest({ goal: 'target', surface: 'road', roads: 'minor' }, s).surface).toBe('road');
+    expect(settingsFromRequest({ lat: '45', lon: '5' }, s).typeId).toBe('max_dplus'); // goal absent = défaut de l'API
+  });
+  it('part de chemin et avertissement sous 50 % du type voulu', () => {
+    expect(surfaceText({ trail_frac: 0.724 }, 'fr')).toBe('72 % chemin · 28 % route');
+    expect(surfaceText({}, 'fr')).toBe('');
+    expect(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' })).toEqual({ surface: 'trail', share: 0.38 });
+    expect(lowSurfaceText(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' }), 'fr')).toBe('Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.');
+    expect(lowSurfaceText(lowSurface({ trail_frac: 0.7 }, { surface: 'road' }), 'en')).toBe('Only 30% roads here: few roads around this start.');
+    expect(lowSurface({ trail_frac: 0.38 }, { surface: 'any' })).toBeNull();
+    expect(lowSurface({ trail_frac: 0.38 }, { roads: 'minor' })).toBeNull();
+    expect(lowSurface({ trail_frac: 0.6 }, { surface: 'trail' })).toBeNull();
+    expect(lowSurface({}, { surface: 'trail' })).toBeNull();
+  });
   it('réglages mémorisés corrompus → défauts', () => {
-    expect(mergeSettings('x').typeId).toBe('max_dplus');
+    expect(mergeSettings('x').typeId).toBe('target');
+    expect(mergeSettings({ typeId: 'max_dplus' }).typeId).toBe('max_dplus'); // le dernier type choisi reste prioritaire
     expect(mergeSettings({ typeId: 'nope', values: { target: { dplus_m: 700 } } }).values.target).toEqual({ distance_km: 10, dplus_m: 700 });
   });
   it('pente max (api.md v1.2) : défaut 60 % absent, « sans limite » = 0, bornes 5–60', () => {

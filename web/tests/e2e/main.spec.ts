@@ -30,11 +30,13 @@ test('parcours principal', async ({ page }) => {
   // AC4 radiogroup, flèches
   const radios = page.getByRole('radiogroup', { name: isFr() ? 'Type de sortie' : 'Run type' }).getByRole('radio');
   await expect(radios).toHaveCount(3);
-  await radios.first().focus();
+  // ordre : Cible, Max D+ (mémorisé ici, voir `setup`), Le plus court
+  await radios.nth(1).focus();
+  await page.keyboard.press('ArrowLeft');
+  await expect(radios.first()).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('#f-dplus_m')).toBeVisible();
   await page.keyboard.press('ArrowRight');
   await expect(radios.nth(1)).toHaveAttribute('aria-checked', 'true');
-  await expect(page.locator('#f-dplus_m')).toBeVisible();
-  await page.keyboard.press('ArrowLeft');
   await expect(page.locator('#f-dplus_m')).toHaveCount(0);
 
   // AC5 1 km : bureau → ramené à 2 + message ; mobile → refusé par le pavé
@@ -73,7 +75,7 @@ test('parcours principal', async ({ page }) => {
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toHaveText('+424 m');
   const q = calls[0].searchParams;
-  expect([...q.keys()].every((k) => ['lat', 'lon', 'goal', 'distance_km', 'dplus_m', 'max_distance_km', 'climbs', 'max_grade_pct', 'roads', 'no_repeat_junction', 'n_candidates', 'polygon', 'seed'].includes(k))).toBe(true);
+  expect([...q.keys()].every((k) => ['lat', 'lon', 'goal', 'distance_km', 'dplus_m', 'max_distance_km', 'climbs', 'max_grade_pct', 'surface', 'no_repeat_junction', 'n_candidates', 'polygon', 'seed'].includes(k))).toBe(true);
   expect(q.get('n_candidates')).toBe('1');
   expect(q.get('climbs')).toBe('short');
   expect(await axe(page), 'axe E6').toEqual([]);
@@ -154,9 +156,10 @@ test.describe('sombre', () => {
   });
 });
 
-test('zone : 2 points → Valider désactivé ; départ hors zone refusé (AC7)', async ({ page }) => {
+test('zone : 2 points → Valider désactivé ; départ hors zone : zone validée, erreur au lancement (AC7)', async ({ page }) => {
   const t = T();
   await setup(page);
+  const calls = await mockPlan(page);
   await page.goto('/');
   await placeStart(page);
   await page.getByRole('button', { name: isFr() ? 'Zone' : 'Area', exact: true }).click();
@@ -171,7 +174,17 @@ test('zone : 2 points → Valider désactivé ; départ hors zone refusé (AC7)'
   await expect(validate).toBeDisabled(); // pas encore fermée
   await zoneClick(page, ...pts[0], 3); // fermeture
   await expect(validate).toBeEnabled();
+  // départ hors zone : indice non bloquant, la zone se valide quand même
+  await expect(page.getByTestId('zone-outside')).toBeVisible();
   await validate.click();
-  await expect(page.getByRole('alert')).toContainText(isFr() ? 'Le départ doit être dans la zone.' : 'The start must be inside the area.');
-  await expect(page.getByRole('button', { name: t.find })).toHaveCount(0); // toujours en E4
+  const find = page.getByRole('button', { name: t.find });
+  await expect(find).toBeVisible(); // retour en E3, zone gardée
+  await expect(page.locator('.hint .warn-inline')).toBeVisible();
+  // l'erreur n'arrive qu'au lancement, sans appel au serveur, avec la sortie de secours
+  await find.click();
+  const alert = page.locator('.alert');
+  await expect(alert).toContainText(isFr() ? 'Ton départ est hors de la zone : déplace-le ou modifie la zone.' : 'Your start is outside the area: move it or edit the area.');
+  expect(calls.length).toBe(0);
+  await alert.getByRole('button', { name: isFr() ? 'Modifier la zone' : 'Edit the area' }).click();
+  await expect(page.getByTestId('zone-validate')).toBeEnabled();
 });

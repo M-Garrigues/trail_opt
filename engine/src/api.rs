@@ -1,4 +1,4 @@
-//! `GET /api/plan` (contrat `.team/contracts/api.md` v1.6 ; `diagnose=1` est traité à part, hors `KNOWN`) : paramètres de requête → statut HTTP,
+//! `GET /api/plan` (contrat `.team/contracts/api.md` v1.7 ; `diagnose=1` est traité à part, hors `KNOWN`) : paramètres de requête → statut HTTP,
 //! corps JSON et ligne de log. Logique pure, sans dépendance Lambda (testée par `cargo test`) ;
 //! le binaire `lambda` ne fait que la glue (événement, Turnstile, réponse).
 use serde_json::{Map, Value, json};
@@ -24,7 +24,7 @@ pub const DEFAULT_GRADE_PCT: f64 = 60.0;
 pub const TARGET_DPLUS_M: (f64, f64) = (10.0, 5000.0);
 /// Simplification Douglas–Peucker en plan (m).
 pub const SIMPLIFY_M: f64 = 1.0;
-const KNOWN: [&str; 15] = [
+const KNOWN: [&str; 16] = [
     "lat",
     "lon",
     "goal",
@@ -33,6 +33,7 @@ const KNOWN: [&str; 15] = [
     "max_distance_km",
     "climbs",
     "max_grade_pct",
+    "surface",
     "roads",
     "no_repeat_junction",
     "n_candidates",
@@ -129,10 +130,15 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
             json!({"min_m": TARGET_DPLUS_M.0, "max_m": TARGET_DPLUS_M.1}),
         ));
     }
-    let roads = s("roads").unwrap_or("minor");
-    if !matches!(roads, "unpaved" | "minor" | "all") {
-        return Err(Msg::error(Code::RoadsUnknown, roads)); // `pedestrian` exige OSM (D2)
-    }
+    // v1.7 : `surface` (préférence) ; l'ancien filtre `roads` (liens partagés, historique) est
+    // encore lu et traduit, `surface` l'emporte
+    let surface = match (s("surface"), s("roads")) {
+        (Some(x @ ("trail" | "any" | "road")), _) => x,
+        (None, None) => "trail",
+        (None, Some("unpaved" | "pedestrian")) => "trail",
+        (None, Some("minor" | "all")) => "any",
+        (x, y) => return Err(Msg::error(Code::RoadsUnknown, x.or(y).unwrap_or(""))),
+    };
     let grade = match num("max_grade_pct")?.unwrap_or(DEFAULT_GRADE_PCT) {
         0.0 => None,
         g if (GRADE_PCT.0..=GRADE_PCT.1).contains(&g) => Some(g),
@@ -160,7 +166,7 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         "max_distance_km": num("max_distance_km")?,
         "climbs": s("climbs").unwrap_or("balanced"),
         "max_grade": grade.map(|g| g / 100.0),
-        "roads": roads,
+        "surface": surface,
         "node_simple": flag("no_repeat_junction", true)?,
         "n_candidates": n,
         "polygon": polygon,

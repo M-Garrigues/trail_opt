@@ -128,7 +128,6 @@
     const a = t().actions;
     if (c === 'offline' || c === 'service_paused') return null;
     if (c === 'outside_coverage') return { label: a.seeCoverage, run: () => tmap?.fitCoverage() };
-    if (c === 'no_way_in_zone') return { label: a.widenRoads, run: () => { app.settings.roads = 'all'; } };
     if (c === 'no_loop_of_distance' || c === 'distance_out_of_range' || c === 'dplus_out_of_range' || c === 'dplus_unreachable_proven')
       return { label: a.changeSettings, run: () => { app.snap = 2; document.querySelector<HTMLElement>('[id^=f-]')?.focus(); } };
     if (c === 'zone_invalid') return { label: a.redraw, run: () => { app.zone = null; openLayer('zone'); } };

@@ -1,6 +1,6 @@
 // Parcours 3 : autres boucles, historique, langue, dernier type, partage et lien /b/<id>.
 import { test, expect } from '@playwright/test';
-import { setup, mockPlan, placeStart, T, isFr, plan1, plan4 } from './helpers';
+import { setup, mockPlan, placeStart, openOptions, closeOptions, T, isFr, plan1, plan4 } from './helpers';
 
 test('autres boucles + historique (AC9, AC15)', async ({ page }) => {
   const t = T();
@@ -47,6 +47,57 @@ test('réglage 3 boucles → « Autres boucles (2) » sans appel (AC9)', async (
   await expect(page.getByText(isFr() ? 'Autres sorties (2)' : 'Other runs (2)')).toBeVisible();
   expect(calls.length).toBe(1);
   expect(calls[0].searchParams.get('n_candidates')).toBe('3');
+});
+
+test('première visite : Cible présélectionné (10 km, +300 m), en tête des types', async ({ page }) => {
+  const t = T();
+  await setup(page, { type: null });
+  const calls = await mockPlan(page);
+  await page.goto('/');
+  const types = page.locator('[aria-labelledby="type-l"] [role=radio]');
+  await expect(types.first()).toHaveAttribute('id', 'type-target');
+  await expect(types.first()).toHaveAttribute('aria-checked', 'true');
+  await expect(page.locator('.estimate strong')).toHaveText('~1 h 18'); // (10 km + 300 m / 100) × 6 min
+  await placeStart(page);
+  await page.getByRole('button', { name: t.find }).click();
+  await expect(page.getByTestId('headline')).toContainText('+424 m');
+  const q = calls[0].searchParams;
+  expect([q.get('goal'), q.get('distance_km'), q.get('dplus_m')]).toEqual(['target', '10', '300']);
+});
+
+test('type de voie : trois choix, part de chemin affichée, avertissement sous 50 %', async ({ page }) => {
+  const t = T();
+  await setup(page);
+  const body = (f: number) => { const p = JSON.parse(plan1); p.candidates[0].trail_frac = f; p.warnings = [{ code: 'low_surface_share', params: { pct: 38 } }]; return JSON.stringify(p); };
+  const calls = await mockPlan(page, async (route, url) => {
+    await route.fulfill({ contentType: 'application/json', body: body(url.searchParams.get('surface') === 'road' ? 0.2 : 0.38) });
+    return true;
+  });
+  await page.goto('/');
+  await placeStart(page);
+  await openOptions(page);
+  const seg = page.locator('#surface');
+  await expect(seg.locator('label')).toHaveText(isFr() ? ['Chemins au max', 'Indifférent', 'Routes au max'] : ['Mostly trails', 'No preference', 'Mostly roads']);
+  await expect(seg.locator('label.on')).toHaveText(isFr() ? 'Chemins au max' : 'Mostly trails');
+  await closeOptions(page);
+  await page.getByRole('button', { name: t.find }).click();
+  await expect(page.getByTestId('headline')).toBeVisible();
+  expect(calls[0].searchParams.get('surface')).toBe('trail');
+  expect(calls[0].searchParams.has('roads')).toBe(false);
+  const low = isFr() ? 'Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.' : 'Only 38% trails here: few paths around this start.';
+  const share = isFr() ? '38 % chemin · 62 % route' : '38% trail · 62% road';
+  await expect(page.getByText(share).first()).toBeVisible();
+  await expect(page.locator('.warnings').first()).toHaveText(low); // une seule ligne : celle de la sortie affichée
+  await expect(page.getByRole('alertdialog')).toHaveCount(0); // discret : pas de popup
+  // « Routes au max » : 80 % de route, plus d'avertissement
+  await page.goBack();
+  await openOptions(page);
+  await seg.locator('label').nth(2).click();
+  await closeOptions(page);
+  await page.getByRole('button', { name: t.find }).click();
+  await expect(page.getByText(isFr() ? '20 % chemin · 80 % route' : '20% trail · 80% road').first()).toBeVisible();
+  expect(calls[1].searchParams.get('surface')).toBe('road');
+  await expect(page.locator('.warnings')).toHaveCount(0);
 });
 
 test('langue et dernier type gardés (AC20, AC22)', async ({ page }) => {

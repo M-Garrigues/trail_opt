@@ -1,14 +1,16 @@
 import { byId, defaults, CATALOG, type TypeId, type Values } from './catalog';
 
 export type Climbs = 'short' | 'balanced' | 'long';
-export type Roads = 'unpaved' | 'minor' | 'all';
+/** Type de voie préféré (api.md v1.7) : jamais un filtre. */
+export type Surface = 'trail' | 'any' | 'road';
+const isSurface = (x: unknown): x is Surface => x === 'trail' || x === 'any' || x === 'road';
 export type Settings = {
   typeId: TypeId;
   values: Record<TypeId, Values>;
   climbs: Climbs;
   /** % sur 50 m glissants (api.md v1.2) ; 0 = sans limite */
   maxGrade: number;
-  roads: Roads;
+  surface: Surface;
   noRepeat: boolean;
   paceS: number; // s par km-effort
   nLoops: number;
@@ -21,11 +23,11 @@ const okGrade = (g: unknown) => typeof g === 'number' && MAX_GRADES.includes(g);
 
 export function defaultSettings(): Settings {
   return {
-    typeId: 'max_dplus',
+    typeId: 'target',
     values: Object.fromEntries(CATALOG.map((t) => [t.id, defaults(t)])) as Record<TypeId, Values>,
     climbs: 'balanced',
     maxGrade: MAX_GRADE_DEFAULT,
-    roads: 'minor',
+    surface: 'trail',
     noRepeat: true,
     paceS: 360,
     nLoops: 1,
@@ -45,6 +47,10 @@ export function mergeSettings(saved: unknown): Settings {
   const old = saved as { maxGradeOn?: boolean };
   if (old.maxGradeOn === false || !okGrade(s.maxGrade)) s.maxGrade = MAX_GRADE_DEFAULT;
   delete (s as { maxGradeOn?: boolean }).maxGradeOn;
+  // avant v1.7 : filtre `roads` ; seul « toutes routes » (choisi exprès) devient « indifférent »
+  const roads = (s as { roads?: string }).roads;
+  if (!isSurface((saved as Partial<Settings>).surface)) s.surface = roads === 'all' ? 'any' : d.surface;
+  delete (s as { roads?: string }).roads;
   return s;
 }
 
@@ -63,7 +69,7 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   if (t.goal === 'min_distance' && v.max_distance_km != null) q.set('max_distance_km', String(v.max_distance_km));
   q.set('climbs', s.climbs);
   if (s.maxGrade !== MAX_GRADE_DEFAULT) q.set('max_grade_pct', String(s.maxGrade)); // absent = 60 (api.md v1.2)
-  q.set('roads', s.roads);
+  q.set('surface', s.surface);
   q.set('no_repeat_junction', String(s.noRepeat));
   q.set('n_candidates', String(opts.n));
   if (opts.polygon?.length) q.set('polygon', opts.polygon.map(([lo, la]) => `${lo.toFixed(5)},${la.toFixed(5)}`).join(';'));
@@ -72,14 +78,30 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   return q;
 }
 
+/** Type de voie d'une requête (liens partagés, historique) : `surface`, sinon l'ancien `roads` traduit comme le fait l'API ; null si absent. */
+export function requestSurface(req: Record<string, string>): Surface | null {
+  if (isSurface(req.surface)) return req.surface;
+  if (req.roads === 'unpaved' || req.roads === 'pedestrian') return 'trail';
+  if (req.roads === 'minor' || req.roads === 'all') return 'any';
+  return null;
+}
+
+/** Part (0–1) du type de voie voulu sur une sortie, si elle est sous 50 % (avertissement) ; sinon null. */
+export function lowSurface(c: { trail_frac?: number }, req: Record<string, string>): { surface: 'trail' | 'road'; share: number } | null {
+  const sf = requestSurface(req);
+  if (c.trail_frac == null || !sf || sf === 'any') return null;
+  const share = sf === 'trail' ? c.trail_frac : 1 - c.trail_frac;
+  return share < 0.5 ? { surface: sf, share } : null;
+}
+
 /** Réglages préremplis depuis la requête d'une boucle partagée (« Recalculer depuis ici »). */
 export function settingsFromRequest(req: Record<string, string>, base: Settings): Settings {
   const s = mergeSettings(base);
-  const t = CATALOG.find((c) => c.goal === req.goal) ?? CATALOG[0];
+  const t = CATALOG.find((c) => c.goal === (req.goal ?? 'max_dplus'))!; // goal absent = max_dplus (défaut de l'API)
   s.typeId = t.id;
   for (const f of t.fields) if (req[f.param] != null && Number.isFinite(+req[f.param])) s.values[t.id][f.param] = +req[f.param];
   if (req.climbs === 'short' || req.climbs === 'balanced' || req.climbs === 'long') s.climbs = req.climbs;
-  if (req.roads === 'unpaved' || req.roads === 'minor' || req.roads === 'all') s.roads = req.roads;
+  s.surface = requestSurface(req) ?? s.surface;
   s.maxGrade = req.max_grade_pct == null ? MAX_GRADE_DEFAULT : okGrade(+req.max_grade_pct) ? +req.max_grade_pct : s.maxGrade;
   if (req.no_repeat_junction) s.noRepeat = req.no_repeat_junction === 'true' || req.no_repeat_junction === '1';
   return s;

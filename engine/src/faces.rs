@@ -19,7 +19,7 @@ use crate::{Annealer, Problem, Rng};
 
 const INF: f64 = f64::INFINITY;
 /// Mode cible : erreur relative -> unités comparables à des mètres de D+.
-const TARGET_SCALE: f64 = 1000.0;
+pub(crate) const TARGET_SCALE: f64 = 1000.0;
 /// Pénalité par mètre au-delà de Lmax (mode max).
 const PEN: f64 = 0.5;
 /// Mode min_distance (modes.md A) : pénalité du D+ manquant et du dépassement de Lcap, et
@@ -333,7 +333,7 @@ pub struct FaceSearch<'a> {
     foe: Vec<Vec<usize>>,
     par: Vec<Vec<usize>>,
     far: Option<Vec<bool>>,
-    /// Mode min_distance avec préférence de montées : bonus B par arête (γβq/H).
+    /// Bonus B par arête (`Problem::search_bonus` : montées courtes, type de voie).
     wb: Option<Vec<f64>>,
     lam0: f64,
     /// Plafond de temps (sécurité) : le recuit s'arrête et rend sa meilleure boucle.
@@ -362,7 +362,7 @@ impl<'a> FaceSearch<'a> {
             foe,
             par: p.par_lists(),
             far,
-            wb: p.climb_bonus().filter(|_| p.min_distance()),
+            wb: p.search_bonus(),
             lam0: if p.min_distance() { LAM0_MD } else { LAM0 },
             deadline: None,
         }
@@ -543,6 +543,12 @@ impl<'a> FaceSearch<'a> {
         let bonus = |e: usize| wb.map_or(0.0, |b| b[e]);
         let (lmin, lmax, lt, dt) = (p.lmin, p.lmax, p.l, p.d.unwrap_or(1.0));
         let (x_md, wt) = (dt, dt * (1.0 + MD_MARGIN));
+        // type de voie en mode cible : sous cette erreur la cible est tenue, B départage
+        let band = if p.off.is_empty() {
+            0.0
+        } else {
+            crate::problem::SURF_TARGET_BAND
+        };
         let (m, n) = (p.n_edges(), p.n_nodes());
         let mut st = Loop {
             inx: vec![false; m],
@@ -595,8 +601,9 @@ impl<'a> FaceSearch<'a> {
                 } else {
                     0.0
                 };
-                // b : seulement dans `alternates` (prix des arêtes déjà prises)
-                b - TARGET_SCALE * ((l - lt).abs() / lt + (wv - dt).abs() / dt + 3.0 * out / lt)
+                // b : type de voie, et prix des arêtes déjà prises (`alternates`)
+                let err = ((l - lt).abs() / lt + (wv - dt).abs() / dt).max(band);
+                b - TARGET_SCALE * (err + 3.0 * out / lt)
             } else {
                 wv + b - lam * l - if l > lmax { PEN * (l - lmax) } else { 0.0 }
             }
@@ -1039,6 +1046,7 @@ impl<'a> FaceSearch<'a> {
                     })
                     .collect()
             };
+            let base = |e: usize| self.wb.as_ref().map_or(0.0, |b| b[e]);
             let wb_eff: Option<Vec<f64>> = if p.min_distance() {
                 Some(
                     (0..p.n_edges())
@@ -1048,7 +1056,7 @@ impl<'a> FaceSearch<'a> {
                             } else {
                                 0.0
                             };
-                            self.wb.as_ref().map_or(0.0, |b| b[e]) - pen
+                            base(e) - pen
                         })
                         .collect(),
                 )
@@ -1056,11 +1064,16 @@ impl<'a> FaceSearch<'a> {
                 let c = TARGET_FEE * cut / p.l;
                 Some(
                     (0..p.n_edges())
-                        .map(|e| if used[e] { -c * p.len[e] } else { 0.0 })
+                        .map(|e| base(e) - if used[e] { c * p.len[e] } else { 0.0 })
                         .collect(),
                 )
             } else {
-                None
+                // mode max : la prime de type de voie des arêtes déjà prises est remisée comme leur D+
+                self.wb.as_ref().map(|b| {
+                    (0..p.n_edges())
+                        .map(|e| if used[e] { (1.0 - cut) * b[e] } else { b[e] })
+                        .collect()
+                })
             };
             (w_eff, wb_eff)
         };

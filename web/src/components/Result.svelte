@@ -3,10 +3,10 @@
   import { isImportant, app, compute, select, open as openLayer, close, current, mapUi, debug, viaIdx } from '../lib/app.svelte';
   import { saveGpx, canShareGpx } from '../lib/gpx';
   import { byId } from '../lib/catalog';
-  import { durationMin } from '../lib/settings';
+  import { durationMin, lowSurface } from '../lib/settings';
   import { LOOP_COLORS } from '../lib/map';
   import { i18n, t } from '../i18n/i18n.svelte';
-  import { num, km, duration, warningText, climbsText } from '../i18n/format';
+  import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText } from '../i18n/format';
   import Profile, { profileMarks } from './Profile.svelte';
   import Detail from './Detail.svelte';
 
@@ -15,7 +15,10 @@
   const res = $derived(app.result!);
   const type = $derived(byId(app.settings.typeId));
   const L = $derived(i18n.lang);
-  const warnings = $derived(res.warnings.filter((w) => !isImportant(w.code)).map((w) => warningText(L, w.code, w.params ?? {})).filter(Boolean));
+  // type de voie : l'avertissement est recalculé pour la sortie AFFICHÉE (celui du serveur vaut pour la première)
+  const warnings = $derived([...res.warnings.filter((w) => !isImportant(w.code) && w.code !== 'low_surface_share').map((w) => warningText(L, w.code, w.params ?? {})),
+    lowSurfaceText(lowSurface(c, app.request), L)].filter(Boolean));
+  const surface = $derived(surfaceText(c, L));
   const extra = $derived(app.cands.length - 1);
   const climbs = $derived(climbsText(c, L));
 </script>
@@ -65,6 +68,7 @@
     {/if}
   {:else}
     {#if climbs}<p class="climbs" data-testid="climbs">{climbs}</p>{/if}
+    {#if surface}<p class="climbs" data-testid="surface">{surface}</p>{/if}
     <Profile cand={c} bind:cursor={app.cursor} height={110} onpick={mapUi.center} marks={profileMarks(c, viaIdx(c))} />
     <p class="hint">{t().detail.centerHint}</p>
   {/if}

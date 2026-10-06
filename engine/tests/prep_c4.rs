@@ -3,7 +3,7 @@
 //! test_revisit.py, test_ign.py, test_large.py).
 use engine::Code;
 use engine::l93::{self, Frame};
-use engine::plan::{Request, keep_mask, plan_with};
+use engine::plan::{Request, keep_mask, plan_with, trail_mask};
 use engine::prep::{Net, Region, disk};
 use engine::tiles::Troncons;
 use geo::MultiPolygon;
@@ -234,7 +234,8 @@ fn access_out_and_back_keeps_clicked_start() {
     assert!(!codes(&out).contains(&"profile_mismatch".to_string()));
 }
 
-/// Aller-retour trop long (> ACCESS_MAX_SHARE de la distance) : refusé, départ déplacé.
+/// Aller-retour trop long (> ACCESS_MAX_SHARE de la distance) : refusé, départ déplacé (la route
+/// d'accès est dans le réseau depuis api.md v1.7 : le point cliqué est sur une impasse).
 #[test]
 fn access_longer_than_max_share_is_refused() {
     let mut w = World::new();
@@ -252,7 +253,8 @@ fn access_longer_than_max_share_is_refused() {
     assert!(out["effective_start"]["access_m"].is_null());
     let snap = out["effective_start"]["moved_m"].as_f64().unwrap();
     assert!((295.0..=305.0).contains(&snap), "{snap}");
-    assert!(codes(&out).contains(&"start_far_from_network".to_string()));
+    assert_eq!(out["effective_start"]["kind"], "moved");
+    assert!(codes(&out).contains(&"start_moved".to_string()));
     assert_eq!(out["candidates"][0]["feasible"], true);
 }
 
@@ -271,7 +273,8 @@ fn access_not_searched_within_min_distance() {
     let out = w.run(json!({"distance_km": 1.6}), false).unwrap();
     assert!(out["effective_start"]["access_m"].is_null());
     assert!((out["effective_start"]["moved_m"].as_f64().unwrap() - 20.0).abs() < 1.0);
-    assert!(codes(&out).is_empty(), "{:?}", codes(&out));
+    // le point cliqué est sur une route en impasse : départ déplacé de 20 m, sans aller-retour
+    assert_eq!(codes(&out), ["start_moved"]);
 }
 
 /// Aucune voie à moins de ACCESS_MAX_START_M du point cliqué : pas d'accès, départ au plus
@@ -397,33 +400,30 @@ fn no_loop_anywhere() {
 // Types de voies, contraction, découpe, parallèles, pente
 // ---------------------------------------------------------------------------
 
-/// Table de `tests/test_ign.py::test_keep_mask`.
+/// Voies gardées (toutes les voies praticables, quel que soit le type préféré) et classement
+/// chemin / route (api.md v1.7).
 #[test]
-fn keep_mask_by_road_type() {
-    let cases: [(&str, u8, u8, &str, bool); 13] = [
-        ("Sentier", 6, OK, "unpaved", true),
-        ("Route empierrée", 5, OK, "unpaved", true),
-        ("Escalier", 6, OK, "unpaved", false),
-        ("Escalier", 6, OK, "pedestrian", true),
-        ("Route à 1 chaussée", 5, OK, "pedestrian", false),
-        ("Route à 1 chaussée", 5, OK, "minor", true),
-        ("Route à 1 chaussée", 3, OK, "minor", false),
-        ("Route à 1 chaussée", 3, OK, "all", true),
-        ("Route à 2 chaussées", 2, OK, "all", true),
-        ("Type autoroutier", 1, OK, "all", false),
-        ("?", 5, OK, "all", false),
-        ("Sentier", 6, 0, "all", false), // privé, ayants droit ou hors service
-        ("Sentier", 6, OK | FLAT, "all", true),
+fn keep_mask_and_trail_class() {
+    // (nature, importance, drapeaux, gardé, chemin)
+    let cases: [(&str, u8, u8, bool, bool); 11] = [
+        ("Sentier", 6, OK, true, true),
+        ("Chemin", 6, OK, true, true),
+        ("Route empierrée", 5, OK, true, true),
+        ("Escalier", 6, OK, true, true),
+        ("Piste cyclable", 6, OK, true, false),
+        ("Route à 1 chaussée", 3, OK, true, false),
+        ("Route à 2 chaussées", 2, OK, true, false),
+        ("Type autoroutier", 1, OK, false, false),
+        ("Bac ou liaison maritime", 1, OK, false, false),
+        ("?", 5, OK, false, false),
+        ("Sentier", 6, 0, false, true), // privé, ayants droit ou hors service
     ];
-    for (nature, imp, flags, roads, expected) in cases {
+    for (nature, imp, flags, kept, trail) in cases {
         let mut t = Troncons::new();
         let n = if nature == "?" { 255 } else { code(nature) };
         t.push(1, &[[0, 0], [100, 0]], |_, _| 0.0, n, imp, flags, &[]);
-        assert_eq!(
-            !keep_mask(&t, &natures(), roads).is_empty(),
-            expected,
-            "{nature} {imp} {roads}"
-        );
+        assert_eq!(!keep_mask(&t, &natures()).is_empty(), kept, "{nature}");
+        assert_eq!(trail_mask(&t, &natures()), [trail], "{nature}");
     }
 }
 
@@ -563,7 +563,7 @@ fn request_limits() {
         Code::ModeUnknown
     );
     assert_eq!(
-        err(json!({"distance_km": 10.0, "roads": "x"})),
+        err(json!({"distance_km": 10.0, "surface": "x"})),
         Code::RoadsUnknown
     );
     assert_eq!(

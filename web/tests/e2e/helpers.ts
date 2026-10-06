@@ -10,13 +10,16 @@ export const T = (fr = isFr()) => fr
   : { go: 'Let’s go', find: 'Find my run', cancel: 'Cancel', details: 'Details', back: 'Back', other: 'Other runs', history: 'My runs', clear: 'Clear history', share: 'Share', create: 'Create link', menu: 'Menu', download: 'Download GPX' };
 
 
-/** Départ mémorisé à Massy (cadre la carte) ; Turnstile coupé (jeton absent, accepté en local). */
-export async function setup(page: Page, opts: { intro?: boolean; start?: { lat: number; lon: number } } = {}) {
-  await page.addInitScript(([intro, start]) => {
+/** Départ mémorisé à Massy (cadre la carte) ; Turnstile coupé (jeton absent, accepté en local).
+ *  `type` : dernier type de sortie mémorisé (Max D+ par défaut ICI : la plupart des parcours testés sont les siens) ;
+ *  `null` = première visite, sans réglage mémorisé (l'app présélectionne alors Cible). */
+export async function setup(page: Page, opts: { intro?: boolean; start?: { lat: number; lon: number }; type?: string | null } = {}) {
+  await page.addInitScript(([intro, start, type]) => {
     if (!sessionStorage.getItem('seeded')) {
       sessionStorage.setItem('seeded', '1');
       localStorage.setItem('optrail.lastStart', JSON.stringify(start));
       if (!intro) localStorage.setItem('optrail.intro', 'true');
+      if (type) localStorage.setItem('optrail.settings', JSON.stringify({ typeId: type }));
     }
     // AC2 : compte les appels de géolocalisation
     (window as unknown as { geoCalls: number }).geoCalls = 0;
@@ -25,7 +28,7 @@ export async function setup(page: Page, opts: { intro?: boolean; start?: { lat: 
       const orig = g.getCurrentPosition.bind(g);
       g.getCurrentPosition = (...a: Parameters<Geolocation['getCurrentPosition']>) => { (window as unknown as { geoCalls: number }).geoCalls++; return orig(...a); };
     }
-  }, [opts.intro ?? false, opts.start ?? { lat: 48.73, lon: 2.27 }] as const);
+  }, [opts.intro ?? false, opts.start ?? { lat: 48.73, lon: 2.27 }, opts.type === undefined ? 'max_dplus' : opts.type] as const);
   await page.route('https://challenges.cloudflare.com/**', (r) => r.abort());
 }
 
@@ -64,7 +67,7 @@ export async function placeStart(page: Page) {
 export async function openOptions(page: Page) {
   if (await page.locator('.sheet').count()) await page.locator('.bar .btn.ico').first().click();
   else if (await page.locator('details.more:not([open])').count()) await page.locator('details.more summary').click();
-  await expect(page.locator('#roads')).toBeVisible();
+  await expect(page.locator('#surface')).toBeVisible();
 }
 /** Mobile : referme la page Options (« Terminé ») ; bureau : sans effet. */
 export async function closeOptions(page: Page) {

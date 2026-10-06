@@ -7,7 +7,7 @@ import { fetchPlan, fetchDiagnose, PlanError } from './api';
 import { getToken } from './turnstile';
 import { routeGenerated } from './install.svelte';
 import * as hist from './history';
-import { roundStart, inGeometry, nearestIndex, parseVia, idxAt } from './geo';
+import { roundStart, inGeometry, inPolygon, nearestIndex, parseVia, idxAt } from './geo';
 import type { Candidate, Msg, PlanResponse } from './types';
 import { dicts } from '../i18n/format';
 import { i18n } from '../i18n/i18n.svelte';
@@ -83,19 +83,17 @@ async function diagnose(q: URLSearchParams, notice: NonNullable<typeof app.notic
   }) };
 }
 export function dismissNotice() { app.notice = null; }
-/** Libellé du bouton d'une suggestion (`roads` : selon le niveau proposé). */
+/** Libellé du bouton d'une suggestion (clé d'API inconnue : pas de bouton). */
 export function suggestLabel(sg: NonNullable<Msg['suggest']> | null | undefined) {
   if (!sg) return '';
-  const k = Object.keys(sg)[0], L = dicts[i18n.lang].important.suggest as Record<string, string>;
-  return L[k === 'roads' ? `roads_${sg.roads}` : k] ?? '';
+  return (dicts[i18n.lang].important.suggest as Record<string, string>)[Object.keys(sg)[0]] ?? '';
 }
 /** Applique `suggest` (noms de paramètres de l'API ; null = retirer) puis relance. */
 export function applySuggest(sg: NonNullable<Msg['suggest']>) {
   app.notice = null;
   const s = app.settings;
   for (const [k, v] of Object.entries(sg)) {
-    if (k === 'roads') s.roads = v as Settings['roads'];
-    else if (k === 'max_grade_pct') s.maxGrade = Number(v);
+    if (k === 'max_grade_pct') s.maxGrade = Number(v);
     else if (k === 'polygon') app.zone = null;
     else if (k === 'no_repeat_junction') s.noRepeat = Boolean(v);
     else if (k === 'via') app.via = [];
@@ -174,6 +172,8 @@ export async function loadCoverage() {
   return coverage;
 }
 export const inCoverage = (p: Start) => !coverage || inGeometry([p.lon, p.lat], coverage);
+/** Départ hors de la zone dessinée : la zone reste validable, la recherche le refuse (`compute`). */
+export const startOutsideZone = () => !!app.start && !!app.zone && !inPolygon([app.start.lon, app.start.lat], app.zone);
 
 // ---- départ ----
 export function setStart(p: Start) {
@@ -216,6 +216,7 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
   if (!app.start || has('computing')) return;
   if (app.offline) { app.error = { code: 'offline' }; return; }
   if (!inCoverage(app.start)) { app.error = { code: 'outside_coverage', params: {} }; return; }
+  if (startOutsideZone()) { app.error = { code: 'start_outside_zone', params: {} }; return; }
   app.error = null;
   if (mode === 'new') app.seed = 0;
   if (mode === 'seed') app.seed = (app.seed + 1) % 1000;

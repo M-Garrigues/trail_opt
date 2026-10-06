@@ -8,6 +8,8 @@ export type Candidate = {
   alt_min_m: number;
   alt_max_m: number;
   max_grade_pct: number;
+  /** api.md v1.7 : part (0–1) de la longueur sur chemin (le reste : route) ; absente des sorties plus anciennes */
+  trail_frac?: number;
   target_gap: { distance_m: number; dplus_m: number } | null;
   climbs?: { count: number; longest_gain_m: number; longest_len_m: number; gbar_m: number; mean_grade_pct: number };
   lat: number[];

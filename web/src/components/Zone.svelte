@@ -1,5 +1,5 @@
 <script lang="ts">
-  // E4 zone : polygone terra-draw, 3 à 50 sommets, départ dedans. Monté = mode dessin ; démonté = carte rendue.
+  // E4 zone : polygone terra-draw, 3 à 50 sommets. Départ hors zone : indice seulement, la recherche le refusera. Monté = mode dessin ; démonté = carte rendue.
   // Une fois fermée (ou rouverte), la zone reste éditable : glisser un sommet, glisser un point milieu pour en ajouter.
   import { onMount } from 'svelte';
   import type { Map as MlMap } from 'maplibre-gl';
@@ -18,6 +18,8 @@
   let msg = $state('');
 
   const valid = $derived(!!ring && ring.length >= 3 && ring.length <= MAX);
+  // indice non bloquant : la zone se valide quand même, l'erreur vient au lancement de la recherche
+  const outside = $derived(valid && !!app.start && !inPolygon([app.start.lon, app.start.lat], ring!));
 
   const drawing = () => draw?.getSnapshot().find((x) => x.geometry.type === 'Polygon');
   function readSnapshot() {
@@ -96,7 +98,6 @@
   }
   async function validate() {
     if (!valid || !ring) return;
-    if (app.start && !inPolygon([app.start.lon, app.start.lat], ring)) { msg = t().zone.outside; return; }
     app.zone = ring;
     await close();
   }
@@ -113,6 +114,7 @@
 </div>
 <p>{ring ? t().zone.editHint : t().zone.hint}</p>
 <p class="msg" role="alert">{msg}</p>
+{#if outside}<p class="hint-out" data-testid="zone-outside">{t().zone.outside}</p>{/if}
 <div class="actions">
   <button class="btn secondary" onclick={undo} disabled={!ring && points === 0}>{t().zone.undo}</button>
   <button class="btn secondary" onclick={clear}>{t().zone.clear}</button>
@@ -126,5 +128,6 @@
   .count { color: var(--muted); font-variant-numeric: tabular-nums; }
   .msg { color: var(--danger); min-height: 1.2em; margin: 4px 0; }
   .msg:empty { display: none; }
+  .hint-out { color: var(--warn-text); margin: 4px 0; }
   .actions { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
 </style>

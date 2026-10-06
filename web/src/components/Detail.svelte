@@ -3,10 +3,10 @@
   import { isImportant, app, close, current, open as openLayer, closeTo, mapUi, viaIdx } from '../lib/app.svelte';
   import { legs, idxAt } from '../lib/geo';
   import { LM_PATH } from '../lib/icons';
-  import { durationMin } from '../lib/settings';
+  import { durationMin, lowSurface } from '../lib/settings';
   import { saveGpx, canShareGpx } from '../lib/gpx';
   import { i18n, t } from '../i18n/i18n.svelte';
-  import { num, km, duration, warningText, climbsText } from '../i18n/format';
+  import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText } from '../i18n/format';
   import Profile, { profileMarks } from './Profile.svelte';
 
   let { embedded = false }: { embedded?: boolean } = $props();
@@ -14,7 +14,10 @@
   const res = $derived(app.result!);
   const L = $derived(i18n.lang);
   const kmEffort = $derived(c.length_m / 1000 + c.dplus_m / 100);
-  const warnings = $derived(res.warnings.filter((w) => !isImportant(w.code)).map((w) => warningText(L, w.code, w.params ?? {})).filter(Boolean));
+  // type de voie : l'avertissement est recalculé pour la sortie AFFICHÉE (celui du serveur vaut pour la première)
+  const warnings = $derived([...res.warnings.filter((w) => !isImportant(w.code) && w.code !== 'low_surface_share').map((w) => warningText(L, w.code, w.params ?? {})),
+    lowSurfaceText(lowSurface(c, app.request), L)].filter(Boolean));
+  const surface = $derived(surfaceText(c, L));
 
   // D34 : tronçons départ → points de passage → arrivée (seulement s'il y a des points)
   const vi = $derived(viaIdx(c));
@@ -52,6 +55,10 @@
     <div><dt>{t().detail.kmEffort}</dt><dd>{num(L, kmEffort, 1)}</dd></div>
     <div><dt>{t().detail.duration}</dt><dd>{duration(durationMin(c.length_m / 1000, c.dplus_m, app.settings.paceS))}</dd></div>
   </dl>
+  {#if surface}
+    <h3>{t().surface.label}</h3>
+    <p class="climbs" data-testid="surface-detail">{surface}</p>
+  {/if}
   {#if c.climbs}
     <h3>{t().detail.climbs}</h3>
     <p class="climbs" data-testid="climbs-detail">{climbsText(c, L)}{#if c.climbs.count > 0}<br /><span class="muted">{t().detail.typical({ g: num(L, c.climbs.gbar_m) })}</span>{/if}</p>

@@ -248,43 +248,68 @@ fn landmarks_within_distance() {
     assert!((l[0]["dist_m"].as_f64().unwrap() - 100.0).abs() < 1.5);
 }
 
-/// D40/D46 : cible hors de portée avec des sentiers seuls : `plan` rend `target_not_reached` sans
-/// piste ; `diagnose` propose les types de voies « all » (vérifié par un calcul).
+/// Type de voie (api.md v1.7) : jamais un filtre. Dans les trois modes de préférence et les trois
+/// types de sortie, le nombre demandé de boucles est rendu, sans erreur ni message « demande non
+/// atteinte » ; la part de chemin de la première boucle va dans le sens de la préférence ;
+/// « chemins » ne coûte pas plus de 15 % de D+ (mode max) ; la cible reste tenue sur la distance
+/// et le D+ RÉELS (5 %) ; `low_surface_share` si et seulement si la part voulue est sous 50 %.
 #[test]
-fn important_message_suggests_limiting_constraint() {
-    let Some((_, store)) = common::tiles(&[MASSY]) else {
-        return;
-    };
-    let o = plan(
-        &store,
-        serde_json::json!({"lat": MASSY.0, "lon": MASSY.1, "mode": "target", "distance_km": 10.0,
-                           "target_dplus": 300.0, "roads": "unpaved", "n_candidates": 4,
-                           "node_simple": true, "enforce_limits": true}),
-    );
-    let w = o["warnings"].as_array().unwrap();
-    let nr = w
-        .iter()
-        .find(|x| x["code"] == "target_not_reached")
-        .expect("target_not_reached");
-    assert!(nr.get("suggest").is_none() && nr.get("checked").is_none());
-    assert_eq!(nr["params"]["dplus_m"], 300.0);
-    let req = serde_json::from_value(serde_json::json!({
-        "lat": MASSY.0, "lon": MASSY.1, "mode": "target", "distance_km": 10.0,
-        "target_dplus": 300.0, "roads": "unpaved", "n_candidates": 4,
-        "node_simple": true, "enforce_limits": true, "max_compute_s": 15.0}))
-    .unwrap();
-    let d = engine::plan::diagnose(&store, &req);
-    assert_eq!(d["suggest"], serde_json::json!({"roads": "minor"}));
-    assert_eq!(d["checked"], true);
-    assert_eq!(d["params"]["dplus_m"], 300.0);
-    assert_eq!(d["params"]["asked"], 4);
-    let got = o["candidates"].as_array().unwrap().len();
-    if got < 4 {
-        let fl = w
-            .iter()
-            .find(|x| x["code"] == "fewer_loops")
-            .expect("fewer_loops");
-        assert_eq!(fl["params"], serde_json::json!({"asked": 4, "got": got}));
+fn surface_preference_never_rejects() {
+    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 500.0)] {
+        let Some((_, store)) = common::tiles(&[site]) else {
+            return;
+        };
+        for mode in ["max", "target", "min_distance"] {
+            let run = |surface: &str| {
+                let out = plan(
+                    &store,
+                    serde_json::json!({"lat": site.0, "lon": site.1, "mode": mode, "distance_km": km,
+                        "target_dplus": if mode == "max" { None } else { Some(dplus) },
+                        "surface": surface, "n_candidates": 3, "node_simple": true,
+                        "max_grade": 0.6, "enforce_limits": true}),
+                );
+                let w: Vec<&str> = out["warnings"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(|x| x["code"].as_str().unwrap())
+                    .collect();
+                let c = out["candidates"].as_array().unwrap();
+                assert_eq!(c.len(), 3, "{site:?} {mode} {surface}");
+                assert!(
+                    !w.contains(&"target_not_reached") && !w.contains(&"fewer_loops"),
+                    "{site:?} {mode} {surface} : {w:?}"
+                );
+                let (l, d, f) = (
+                    c[0]["length_m"].as_f64().unwrap(),
+                    c[0]["dplus_m"].as_f64().unwrap(),
+                    c[0]["trail_frac"].as_f64().unwrap(),
+                );
+                eprintln!("{site:?} {mode} {surface} : {l:.0} m, +{d:.0} m, chemin {f}");
+                if mode == "target" {
+                    assert!(
+                        ((l / 1000.0 - km) / km).abs() <= 0.05
+                            && ((d - dplus) / dplus).abs() <= 0.05
+                    );
+                }
+                let share = match surface {
+                    "trail" => f,
+                    "road" => 1.0 - f,
+                    _ => 1.0,
+                };
+                assert_eq!(w.contains(&"low_surface_share"), share < 0.5, "{w:?}");
+                (d, f)
+            };
+            let (trail, any, road) = (run("trail"), run("any"), run("road"));
+            if mode != "min_distance" {
+                assert!(trail.1 >= any.1 && any.1 >= road.1, "{site:?} {mode}");
+                let gap = if mode == "max" { 0.1 } else { 0.0 };
+                assert!(trail.1 > road.1 + gap, "{site:?} {mode}");
+            }
+            if mode == "max" {
+                assert!(trail.0 >= 0.85 * any.0, "{site:?} : {trail:?} {any:?}");
+            }
+        }
     }
 }
 
@@ -358,7 +383,7 @@ fn target_holds_real_dplus_whatever_climbs() {
                 &store,
                 serde_json::json!({"lat": site.0, "lon": site.1, "mode": "target",
                     "distance_km": km, "target_dplus": dplus, "climbs": climbs, "n_candidates": 3,
-                    "node_simple": true, "max_grade": 0.6, "enforce_limits": true}),
+                    "surface": "any", "node_simple": true, "max_grade": 0.6, "enforce_limits": true}),
             );
             let c: Vec<(f64, f64)> = out["candidates"]
                 .as_array()
@@ -390,27 +415,21 @@ fn target_holds_real_dplus_whatever_climbs() {
     }
 }
 
-/// Retour fondateur : 20 km en sentiers seuls sans boucle (`plan` échoue : no_loop_of_distance) ;
-/// `diagnose` propose un niveau de voies supérieur (minor puis all), vérifié par un calcul.
+/// Retour fondateur : 20 km en « sentiers seuls » rendait `no_loop_of_distance` (filtre dur).
+/// Avec la préférence, une boucle à la distance demandée. Dalles locales, sauté sinon.
 #[test]
-fn diagnose_after_plan_failure_suggests_next_road_level() {
+fn trail_preference_where_trails_alone_had_no_loop() {
     let p = (48.68, 2.35);
     let Some((_, store)) = common::tiles(&[p]) else {
         return;
     };
-    let q = |roads: &str| -> engine::plan::Request {
-        serde_json::from_value(serde_json::json!({
-            "lat": p.0, "lon": p.1, "mode": "max", "distance_km": 20.0, "roads": roads,
-            "n_candidates": 1, "node_simple": true, "enforce_limits": true, "max_compute_s": 15.0}))
-        .unwrap()
-    };
-    let e = engine::plan::plan(&store, &q("unpaved"), false).unwrap_err();
-    assert_eq!(e.code, engine::Code::NoLoopOfDistance);
-    let d = engine::plan::diagnose(&store, &q("unpaved"));
-    let lvl = d["suggest"]["roads"].as_str().expect("suggest roads");
-    assert!(matches!(lvl, "minor" | "all"), "{d}");
-    assert_eq!(d["checked"], true);
-    assert!(engine::plan::plan(&store, &q(lvl), false).is_ok());
+    let out = plan(
+        &store,
+        serde_json::json!({"lat": p.0, "lon": p.1, "mode": "max", "distance_km": 20.0,
+            "surface": "trail", "node_simple": true, "enforce_limits": true, "max_compute_s": 15.0}),
+    );
+    let l = out["candidates"][0]["length_m"].as_f64().unwrap();
+    assert!((19_000.0..=21_000.0).contains(&l), "{l}");
 }
 
 /// Revue pré-déploiement A1 : la réduction aux arêtes pentues vidait le réseau pour certains départs

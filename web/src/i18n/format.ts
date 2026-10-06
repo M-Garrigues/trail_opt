@@ -59,6 +59,20 @@ export function warningText(lang: Lang, code: string, params?: Params): string {
   return d.warn[code as keyof Dict['warn']](formatParams(lang, params));
 }
 
+/** api.md v1.7 : « 72 % chemin · 28 % route » (vide si le serveur n'a pas renvoyé `trail_frac`). */
+export function surfaceText(c: { trail_frac?: number }, lang: Lang): string {
+  if (c.trail_frac == null) return '';
+  const trail = Math.round(100 * c.trail_frac);
+  return dicts[lang].surface.share({ trail: String(trail), road: String(100 - trail) });
+}
+
+/** Avertissement « peu de chemins / de routes » de la sortie affichée (`lowSurface`), '' sinon. */
+export function lowSurfaceText(low: { surface: 'trail' | 'road'; share: number } | null, lang: Lang): string {
+  if (!low) return '';
+  const pct = String(Math.round(100 * low.share));
+  return low.surface === 'trail' ? dicts[lang].surface.lowTrail({ pct }) : dicts[lang].surface.lowRoad({ pct });
+}
+
 /** D33 : « N montées · la plus longue G m sur ℓ km » (vide si le serveur n'a pas renvoyé `climbs`). */
 export function climbsText(c: { climbs?: { count: number; longest_gain_m: number; longest_len_m: number } }, lang: Lang): string {
   const k = c.climbs, d = dicts[lang].detail;

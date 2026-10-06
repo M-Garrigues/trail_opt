@@ -85,6 +85,8 @@ fn grid(l: f64, target: Option<f64>, node_simple: bool) -> Problem {
         inner: Vec::new(),
         node_mu: 0.0,
         via: Vec::new(),
+        off: Vec::new(),
+        off_price: 0.0,
     };
     (p.len, p.w) = polys.iter().map(|x| profile(&x.2)).unzip();
     p
@@ -417,4 +419,40 @@ fn max_grade_window_50m() {
     assert_eq!(engine::plan::GRADE_WINDOW_M, 50.0);
     // plus court que la fenêtre : pente moyenne
     assert!((engine::plan::max_grade(&[0.0, 3.0, 6.0], &[0.0, 10.0, 20.0]) - 0.3).abs() < 1e-12);
+}
+
+/// Préférence de type de voie (api.md v1.7) : jamais une contrainte. Moitié ouest de la grille « hors
+/// type » : la boucle reste valide et dans les bornes (mode max), la cible reste tenue sur la
+/// distance et le D+ RÉELS (mode cible), et la longueur hors type baisse dans les deux modes.
+#[test]
+fn type_de_voie_preference_souple() {
+    for target in [None, Some(60.0)] {
+        let p0 = grid(2400.0, target, false);
+        let off: Vec<f64> = (0..p0.n_edges())
+            .map(|e| {
+                let west = p0.xy[p0.u[e]][0] + p0.xy[p0.v[e]][0] < 2.0 * p0.xy[p0.s][0];
+                if west { p0.len[e] } else { 0.0 }
+            })
+            .collect();
+        let p = Problem {
+            off: off.clone(),
+            off_price: 0.6 * p0.dplus_upper_bound() / p0.lmax,
+            ..p0.clone()
+        };
+        let (a, b) = (
+            optimize(&p0, &budget(1)).unwrap(),
+            optimize(&p, &budget(1)).unwrap(),
+        );
+        p.check(&b.ids).unwrap();
+        assert!(b.feasible, "{target:?}");
+        if let Some(d) = target {
+            // erreur réelle (distance + D+) : au plus la bande + le prix d'une boucle hors type
+            let err = |o: &engine::Output| (o.length - p.l).abs() / p.l + (o.dplus - d).abs() / d;
+            assert!(err(&b) <= err(&a) + 0.05, "{} {}", err(&b), err(&a));
+        }
+        let out = |ids: &[usize]| ids.iter().map(|&e| off[e]).sum::<f64>();
+        if target.is_none() {
+            assert!(out(&b.ids) <= out(&a.ids) && out(&b.ids) < 0.5 * b.length);
+        }
+    }
 }

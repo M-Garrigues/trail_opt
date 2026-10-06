@@ -3,7 +3,7 @@
   // Mobile : tout le parcours courant tient dans une feuille à hauteur de contenu, SANS clavier du système : type en
   // rangée de puces, chaque valeur est un bouton qui ouvre le pavé numérique intégré (à la place des réglages, même
   // hauteur de feuille), options dans une couche à part.
-  import { app, compute, cancel, locate, setStart, has, top, close, open as openLayer } from '../lib/app.svelte';
+  import { app, compute, cancel, locate, setStart, has, top, close, open as openLayer, startOutsideZone } from '../lib/app.svelte';
   import { byId, clampField, type Field, type TypeId } from '../lib/catalog';
   import { expectedKm, durationMin, MAX_GRADES, defaultSettings } from '../lib/settings';
   import { i18n, t } from '../i18n/i18n.svelte';
@@ -28,7 +28,7 @@
 
   // Options hors défaut : pastille sur le bouton « Options » (mobile)
   const D = defaultSettings();
-  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== D.maxGrade || s.roads !== D.roads || s.noRepeat !== D.noRepeat);
+  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== D.maxGrade || s.surface !== D.surface || s.noRepeat !== D.noRepeat);
   // mobile : valeur en cours de saisie au pavé (couche `pad` : le bouton Retour annule) ; le pavé reprend la hauteur
   // qu'avait le contenu de la feuille, pour que ni la feuille ni la carte ne bougent
   let editing = $state<Field | null>(null);
@@ -84,6 +84,16 @@
   </div>
 
   <div class="field">
+    <span class="label" id="surface-l">{t().surface.label}</span>
+    <div class="seg" id="surface" role="radiogroup" aria-labelledby="surface-l" aria-describedby="surface-help">
+      {#each ['trail', 'any', 'road'] as const as v}
+        <label class:on={s.surface === v}><input type="radio" name="surface" value={v} bind:group={app.settings.surface} />{t().surface[v]}</label>
+      {/each}
+    </div>
+    <p class="note" id="surface-help">{t().surface.help[s.surface]}</p>
+  </div>
+
+  <div class="field">
     <label for="loops">{t().more.loops} : <strong>{s.nLoops}</strong></label>
     <input id="loops" type="range" min="1" max="4" step="1" bind:value={app.settings.nLoops} aria-valuetext={String(s.nLoops)} />
   </div>
@@ -93,14 +103,6 @@
       <label for="max-grade">{t().more.maxGrade}</label>
       <select id="max-grade" bind:value={app.settings.maxGrade}>
         {#each MAX_GRADES as g}<option value={g}>{g ? `${g} %` : t().more.noLimit}</option>{/each}
-      </select>
-    </div>
-    <div class="field">
-      <label for="roads">{t().more.roads}</label>
-      <select id="roads" bind:value={app.settings.roads}>
-        <option value="unpaved">{t().more.unpaved}</option>
-        <option value="minor">{t().more.minor}</option>
-        <option value="all">{t().more.all}</option>
       </select>
     </div>
     <div class="field check">
@@ -146,6 +148,7 @@
   {#if locating}{t().start.locating}
   {:else if app.geoError}<span class="err-inline">{t().geo.denied}</span>
   {:else if app.placing}{t().via.hint({ max: String(VIA_MAX) })}
+  {:else if startOutsideZone()}<span class="warn-inline">{t().zone.outside}</span>
   {:else if app.start}✓ {t().start.set} · {num(i18n.lang, app.start.lat, 4)}, {num(i18n.lang, app.start.lon, 4)}
   {:else}{t().start.tapMap}{/if}
 </p>
@@ -229,7 +232,7 @@
         <span class="cap">{t().options.title}</span>{#if optsChanged}<i class="dot"></i>{/if}
       </button>
     {/if}
-    <button class="btn secondary" class:ico={!desktop} onclick={() => openLayer('zone')} aria-pressed={!!app.zone} disabled={!app.start}
+    <button class="btn secondary" class:ico={!desktop} onclick={() => openLayer('zone')} aria-pressed={!!app.zone}
       aria-label={app.zone ? t().zone.set : t().zone.button} title={app.zone ? t().zone.set : t().zone.button}>
       {#if desktop}{app.zone ? t().zone.set : t().zone.button}{:else}
         <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 6l10-2 5 8-4 8-11-2z" stroke-dasharray="3 3" /></svg>
@@ -309,4 +312,5 @@
   @keyframes pulse { 50% { opacity: 0.45; } }
   @media (prefers-reduced-motion: reduce) { .progress.pulse span { animation: none; } }
   .err-inline { color: var(--danger); }
+  .warn-inline { color: var(--warn-text); }
 </style>

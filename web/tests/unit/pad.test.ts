@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
-import { CATALOG, bump, padKey, padParse } from '../../src/lib/catalog';
+import { CATALOG, byId, bump, padKey, padParse } from '../../src/lib/catalog';
 
-const km = CATALOG[0].fields[0], dplus = CATALOG[1].fields[1], maxKm = CATALOG[2].fields[1];
+const km = byId('max_dplus').fields[0], dplus = byId('target').fields[1], maxKm = byId('shortest').fields[1];
 const type = (keys: string[], decimals: boolean, raw = '') => keys.reduce((r, k) => padKey(r, k, decimals), raw);
 
 describe('pavé numérique (mobile)', () => {

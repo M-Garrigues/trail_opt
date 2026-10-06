@@ -269,5 +269,12 @@
       "asked",
       "got"
     ]
+  },
+  {
+    "code": "low_surface_share",
+    "kind": "warning",
+    "params": [
+      "pct"
+    ]
   }
 ]

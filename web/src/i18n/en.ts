@@ -56,14 +56,24 @@ export const en: Dict = {
     },
     helpTarget: 'In Target mode, this setting only changes the direction of travel.',
   },
+  surface: {
+    label: 'Surface',
+    trail: 'Mostly trails',
+    any: 'No preference',
+    road: 'Mostly roads',
+    help: {
+      trail: 'Trails and paths first; a road when there is nothing better.',
+      any: 'Trails and roads, no preference.',
+      road: 'Roads first; a trail when there is nothing better.',
+    },
+    share: (p: P) => `${p.trail}% trail · ${p.road}% road`,
+    lowTrail: (p: P) => `Only ${p.pct}% trails here: few paths around this start.`,
+    lowRoad: (p: P) => `Only ${p.pct}% roads here: few roads around this start.`,
+  },
   more: {
     title: 'More options',
     maxGrade: 'Max path grade (over 50 m)',
     noLimit: 'no limit',
-    roads: 'Paths',
-    unpaved: 'Trails',
-    minor: '+ minor roads',
-    all: '+ all roads',
     noRepeat: 'No repeated junctions',
     pace: 'Pace',
     paceUnit: 'min/effort-km',
@@ -97,7 +107,7 @@ export const en: Dict = {
     remove: 'Remove area',
     tooMany: '50 points maximum.',
     editHint: 'Drag a point to move it, or a midpoint to add one.',
-    outside: 'The start must be inside the area.',
+    outside: 'Start outside the area: move it before searching.',
     used: 'Area used',
   },
   result: {
@@ -200,7 +210,6 @@ export const en: Dict = {
   },
   actions: {
     seeCoverage: 'See coverage',
-    widenRoads: 'Allow more paths',
     changeDistance: 'Change the distance',
     changeSettings: 'Change settings',
     redraw: 'Redraw',
@@ -212,7 +221,7 @@ export const en: Dict = {
   important: {
     title: 'Request not met',
     suggest: {
-      roads_minor: 'Include minor roads?', roads_all: 'Include all roads?', max_grade_pct: 'Remove the grade limit?', polygon: 'Remove the area?',
+      max_grade_pct: 'Remove the grade limit?', polygon: 'Remove the area?',
       no_repeat_junction: 'Allow revisiting junctions?', via: 'Remove waypoints?', max_distance_km: 'Double the max distance?',
     },
     keep: 'Keep this run',
@@ -223,12 +232,12 @@ export const en: Dict = {
     via_outside_zone: (p: P) => `Point ${p.n} is outside the drawn area.`,
     via_unreachable: (p: P) => `Point ${p.n} is not on any usable path (or on a dead end).`,
     outside_coverage: () => 'No data here yet.',
-    no_way_in_zone: () => 'No paths of this kind here.',
+    no_way_in_zone: () => 'No usable path here.',
     no_loop_of_distance: () => 'No run of this length from this start.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible: needs at least ${p.min_km} km.` : 'Not enough relief here.',
     zone_invalid: () => 'Invalid area: 3 to 50 points.',
-    start_outside_zone: () => 'The start must be inside the area.',
+    start_outside_zone: () => 'Your start is outside the area: move it or edit the area.',
     zone_too_large: (p: P) => `Area too large (${p.area_km2} km², max ${p.max_km2}).`,
     distance_out_of_range: (p: P) => `Distance between ${p.min_km} and ${p.max_km} km.`,
     dplus_out_of_range: (p: P) => `Climb between ${p.min_m} and ${p.max_m} m.`,
@@ -258,6 +267,7 @@ export const en: Dict = {
     fewer_loops: (p: P) => `${p.got} run${Number(p.got) === 1 ? '' : 's'} found out of ${p.asked} requested.`,
     via_missed: (p: P) => `The run does not pass through point ${p.n}.`,
     coverage_edge: () => 'Area at the edge of coverage: paths beyond are ignored.',
+    low_surface_share: (p: P) => `Only ${p.pct}% of the preferred surface here.`,
   },
   install: {
     title: 'Install the app',
