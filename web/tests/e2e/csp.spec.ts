@@ -9,6 +9,7 @@ const tf = readFileSync(new URL('../../../infra/cdn.tf', import.meta.url), 'utf8
 const csp = [...tf.match(/csp = join\("; ", \[([\s\S]*?)\]\)/)![1].matchAll(/"([^"]+)"/g)].map((m) => m[1]).join('; ');
 
 test('CSP de prod : aucune violation sur le parcours principal', async ({ page }) => {
+  test.slow(); // premier chargement de la carte à froid : proche de la minute sur le runner de CI
   const t = T();
   await setup(page);
   await page.unroute('https://challenges.cloudflare.com/**'); // Turnstile réel : script + iframe
