@@ -3,7 +3,7 @@ import bounds from '../fixtures/api-bounds.json';
 import plan from '../fixtures/plan1.json';
 import { CATALOG, byId, clampField } from '../../src/lib/catalog';
 import { buildQuery, defaultSettings, mergeSettings, durationMin, settingsFromRequest, MAX_GRADES, computeEstimateS, lowSurface } from '../../src/lib/settings';
-import { surfaceText, lowSurfaceText } from '../../src/i18n/format';
+import { surfaceText, lowSurfaceText, labelsText } from '../../src/i18n/format';
 import type { PlanResponse } from '../../src/lib/types';
 
 describe('catalogue (ui-spec §2)', () => {
@@ -67,20 +67,34 @@ describe('requête', () => {
     expect('roads' in mergeSettings({ roads: 'all' })).toBe(false);
     const s = defaultSettings();
     expect(settingsFromRequest({ goal: 'target', roads: 'unpaved' }, s).surface).toBe('trail');
-    expect(settingsFromRequest({ goal: 'target', roads: 'minor' }, s).surface).toBe('any');
+    expect(settingsFromRequest({ goal: 'target', roads: 'minor' }, s).surface).toBe('trail'); // comme le réglage mémorisé et l'API
+    expect(settingsFromRequest({ goal: 'target', roads: 'all' }, s).surface).toBe('any');
     expect(settingsFromRequest({ goal: 'target', surface: 'road', roads: 'minor' }, s).surface).toBe('road');
     expect(settingsFromRequest({ lat: '45', lon: '5' }, s).typeId).toBe('max_dplus'); // goal absent = défaut de l'API
   });
   it('part de chemin et avertissement sous 50 % du type voulu', () => {
     expect(surfaceText({ trail_frac: 0.724 }, 'fr')).toBe('72 % chemin · 28 % route');
     expect(surfaceText({}, 'fr')).toBe('');
-    expect(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' })).toEqual({ surface: 'trail', share: 0.38 });
+    // trois classes (v1.8) : arrondi à 100 %, parts nulles omises ; `trail_frac` des anciennes sorties sinon
+    expect(surfaceText({ trail_frac: 0.6, surface_share: [0.555, 0.105, 0.34] }, 'fr')).toBe('56 % chemin · 10 % intermédiaire · 34 % route');
+    expect(surfaceText({ surface_share: [0.333, 0.333, 0.334] }, 'en')).toBe('33% trail · 33% mixed · 34% road');
+    expect(surfaceText({ surface_share: [0, 0.004, 0.996] }, 'fr')).toBe('100 % route');
+    expect(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' })).toEqual({ share: 0.38 });
     expect(lowSurfaceText(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' }), 'fr')).toBe('Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.');
-    expect(lowSurfaceText(lowSurface({ trail_frac: 0.7 }, { surface: 'road' }), 'en')).toBe('Only 30% roads here: few roads around this start.');
+    expect(lowSurface({ trail_frac: 0.1 }, { surface: 'road' })).toBeNull(); // D53 : « Route » = revêtu par construction
     expect(lowSurface({ trail_frac: 0.38 }, { surface: 'any' })).toBeNull();
-    expect(lowSurface({ trail_frac: 0.38 }, { roads: 'minor' })).toBeNull();
+    expect(lowSurface({ trail_frac: 0.38 }, { roads: 'all' })).toBeNull();
+    expect(lowSurface({ trail_frac: 0.38 }, { roads: 'minor' })).toEqual({ share: 0.38 });
+    // « Le plus court » : la préférence n'agit pas, pas d'avertissement
+    expect(lowSurface({ trail_frac: 0.3 }, { goal: 'min_distance', surface: 'trail' })).toBeNull();
+    expect(lowSurface({ trail_frac: 0.3 }, { goal: 'target', surface: 'trail' })).toEqual({ share: 0.3 });
     expect(lowSurface({ trail_frac: 0.6 }, { surface: 'trail' })).toBeNull();
     expect(lowSurface({}, { surface: 'trail' })).toBeNull();
+  });
+  it('étiquettes (v1.8) : calme, balisé, eau ; mention OSM seulement avec une part OSM', () => {
+    expect(labelsText({ calm_frac: 0.823, hike_m: 3400, water_m: 1200 }, 'fr')).toEqual({ text: '82 % au calme · 3,4 km balisés · 1,2 km au bord de l’eau', osm: true });
+    expect(labelsText({ calm_frac: 0.5, hike_m: 0, water_m: 20 }, 'en')).toEqual({ text: '50% quiet', osm: false });
+    expect(labelsText({}, 'fr')).toEqual({ text: '', osm: false });
   });
   it('réglages mémorisés corrompus → défauts', () => {
     expect(mergeSettings('x').typeId).toBe('target');

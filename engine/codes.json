@@ -276,5 +276,15 @@
     "params": [
       "pct"
     ]
+  },
+  {
+    "code": "paved_network_too_short",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "paved_network_major_roads",
+    "kind": "error",
+    "params": []
   }
 ]

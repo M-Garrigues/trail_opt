@@ -36,14 +36,23 @@ export function downloadGpx(c: Candidate, dataVersion = ''): void {
   document.body.append(a);
   a.click();
   a.remove();
-  setTimeout(() => URL.revokeObjectURL(url), 1000);
+  // révoquée tard : Safari (iOS) ouvre l'aperçu du fichier après coup, une URL déjà révoquée échoue sans bruit
+  setTimeout(() => URL.revokeObjectURL(url), 60_000);
 }
 
-/** GPX = seule sortie v1 (D27) : partage de fichier si le système le permet (mobile), sinon téléchargement. */
+/** GPX = seule sortie v1 (D27) : partage de fichier si le système le permet (mobile), sinon téléchargement.
+ *  Partage sur écran tactile seulement : Safari sur Mac sait « partager » un fichier (Mail, AirDrop) mais pas
+ *  l'enregistrer, le bouton ne téléchargeait donc rien sur ordinateur (retour du fondateur, 2026-10-07). */
 export const canShareGpx = (c: Candidate) =>
+  typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches &&
   typeof navigator.canShare === 'function' && navigator.canShare({ files: [gpxFile(c)] });
 export async function saveGpx(c: Candidate, dataVersion = ''): Promise<void> {
   if (!canShareGpx(c)) { downloadGpx(c, dataVersion); return; }
   const f = gpxFile(c, dataVersion);
-  try { await navigator.share({ files: [f], title: f.name }); } catch { /* annulé */ }
+  try {
+    await navigator.share({ files: [f], title: f.name });
+  } catch (e) {
+    // refus du système (type de fichier, permission, certificat local…) : téléchargement ; annulation : rien
+    if ((e as DOMException)?.name !== 'AbortError') downloadGpx(c, dataVersion);
+  }
 }

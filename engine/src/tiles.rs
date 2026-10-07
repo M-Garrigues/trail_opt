@@ -46,6 +46,68 @@ pub struct Manifest {
     /// Zones DOM (tiles.md § Zones) ; absent : métropole seule.
     #[serde(default)]
     pub zones: HashMap<String, ZoneDef>,
+    /// Colonnes ajoutées par `pipeline enrich` (tiles.md § Étiquettes) ; absent : aucune.
+    #[serde(default)]
+    pub columns: HashMap<String, serde_json::Value>,
+}
+
+/// D53 : valeurs OSM `surface` revêtues (bois : seulement sur un pont, voir `surface_kind`).
+const PAVED: [&str; 8] = [
+    "asphalt",
+    "paved",
+    "concrete",
+    "concrete:plates",
+    "paving_stones",
+    "sett",
+    "chipseal",
+    "metal",
+];
+/// Revêtement d'un tronçon (`Troncons::surf` après `load_in`) : inconnu (repli sur la nature
+/// IGN), revêtu, non revêtu, bois (revêtu sur un pont seulement).
+pub const SURF_UNKNOWN: u8 = 0;
+pub const SURF_PAVED: u8 = 1;
+pub const SURF_UNPAVED: u8 = 2;
+pub const SURF_WOOD: u8 = 3;
+/// Bits de `Troncons::has` : étiquettes lues dans au moins une dalle.
+pub const HAS_CALM: u8 = 1;
+pub const HAS_HIKE: u8 = 2;
+pub const HAS_WATER: u8 = 4;
+
+impl Manifest {
+    /// Code brut `osm_highway` → grand axe OSM (trunk, primary et leurs bretelles, D54).
+    fn major_highways(&self) -> Vec<bool> {
+        let codes = self
+            .columns
+            .get("osm_highway")
+            .and_then(|c| c["codes"].as_array());
+        let mut k = vec![false; 256];
+        for (i, c) in codes.into_iter().flatten().enumerate().take(255) {
+            k[i] = matches!(
+                c.as_str(),
+                Some("trunk" | "trunk_link" | "primary" | "primary_link")
+            );
+        }
+        k
+    }
+
+    /// Code brut `osm_surface` → `SURF_*` (table `columns.osm_surface.codes` ; 0 et hors table :
+    /// inconnu ; toute autre valeur connue hors `PAVED` : non revêtu).
+    fn surface_kinds(&self) -> Vec<u8> {
+        let codes = self
+            .columns
+            .get("osm_surface")
+            .and_then(|c| c["codes"].as_array());
+        let mut k = vec![SURF_UNKNOWN; 256];
+        for (i, c) in codes.into_iter().flatten().enumerate().take(255).skip(1) {
+            k[i] = match c.as_str().unwrap_or("") {
+                "" => SURF_UNKNOWN,
+                "wood" => SURF_WOOD,
+                x if PAVED.contains(&x) => SURF_PAVED,
+                _ => SURF_UNPAVED,
+            };
+        }
+        k
+    }
 }
 
 #[derive(Deserialize)]
@@ -114,6 +176,18 @@ pub struct Troncons {
     /// Parallèles du tronçon i : par_id[par_off[i]..par_off[i+1]] (identifiants globaux).
     pub par_off: Vec<usize>,
     pub par_id: Vec<i64>,
+    /// Étiquettes facultatives (tiles.md § Étiquettes), colonne absente = valeur neutre :
+    /// classe OSM (0 chemin naturel, 1 intermédiaire, 255 inconnue), revêtement (`SURF_*`),
+    /// calme (0–15, 15 = calme), balisage (0–2), bord de l'eau (0–15).
+    pub osm_class: Vec<u8>,
+    pub surf: Vec<u8>,
+    /// `osm_highway` brut, puis au chargement 1 si OSM trunk/primary (grand axe, D54), sinon 0.
+    pub osm_major: Vec<u8>,
+    pub calm: Vec<u8>,
+    pub hike: Vec<u8>,
+    pub water: Vec<u8>,
+    /// `HAS_*` : colonnes calm / osm_hike / osm_water présentes dans au moins une dalle.
+    pub has: u8,
 }
 
 impl Troncons {
@@ -271,6 +345,17 @@ impl Troncons {
         self.flags.push(flags);
         self.par_id.extend(par);
         self.par_off.push(self.par_id.len());
+        self.push_labels();
+    }
+
+    /// Étiquettes neutres du dernier tronçon ajouté.
+    fn push_labels(&mut self) {
+        self.osm_class.push(255);
+        self.surf.push(SURF_UNKNOWN);
+        self.osm_major.push(0);
+        self.calm.push(15);
+        self.hike.push(0);
+        self.water.push(0);
     }
 
     // `push` : profil avant que poff soit complété.
@@ -640,6 +725,12 @@ impl TileStore {
                 read_tile(&path, ix, iy, &mut t).map_err(|e| format!("{REMOTE_ERR}{e}"))?;
             }
         }
+        let kinds = self.manifest.surface_kinds();
+        t.surf.iter_mut().for_each(|c| *c = kinds[*c as usize]);
+        let major = self.manifest.major_highways();
+        t.osm_major
+            .iter_mut()
+            .for_each(|c| *c = u8::from(major[*c as usize]));
         Ok(t)
     }
 }
@@ -769,6 +860,27 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
     let (gx, gy) = (col("geom_x")?, col("geom_y")?);
     let (prof_d, z0) = (col("prof_d")?, col("prof_z0_dm")?);
     let (par_n, par_id) = (col("par_n")?, col("par_id")?);
+    // étiquettes facultatives : colonne absente = neutre (tiles.md § Étiquettes)
+    let mut opt = |name: &str| -> Result<Option<Vec<i64>>, String> {
+        match z.by_name(&format!("{name}.npy")) {
+            Ok(file) => read_npy(file, name).map(Some),
+            Err(_) => Ok(None),
+        }
+    };
+    let labels = [
+        opt("osm_class")?,
+        opt("osm_surface")?,
+        opt("calm")?,
+        opt("osm_hike")?,
+        opt("osm_water")?,
+        opt("osm_highway")?,
+    ];
+    let mut col = |name: &str| -> Result<Vec<i64>, String> {
+        let file = z
+            .by_name(&format!("{name}.npy"))
+            .map_err(|e| format!("{} : {name} : {e}", path.display()))?;
+        read_npy(file, name)
+    };
     let cols = [
         col("dplus_dm")?,
         col("dminus_dm")?,
@@ -781,6 +893,7 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
     if [len_dm.len(), geom_n.len(), z0.len(), par_n.len()]
         .into_iter()
         .chain(cols.iter().map(Vec::len))
+        .chain(labels.iter().flatten().map(Vec::len))
         .any(|k| k != n)
     {
         return bad("colonnes de tailles différentes");
@@ -812,6 +925,13 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         t.nature.push(cols[3][i] as u8);
         t.importance.push(cols[4][i] as u8);
         t.flags.push(cols[5][i] as u8);
+        let lab = |k: usize, d: u8| labels[k].as_ref().map_or(d, |c| c[i] as u8);
+        t.osm_class.push(lab(0, 255));
+        t.surf.push(lab(1, SURF_UNKNOWN));
+        t.calm.push(lab(2, 15));
+        t.hike.push(lab(3, 0));
+        t.water.push(lab(4, 0));
+        t.osm_major.push(lab(5, 0));
         let (mut x, mut y) = (ox, oy);
         for j in 0..geom_n[i] as usize {
             x += gx[gk + j];
@@ -829,6 +949,11 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         pk += profile_count(len_dm[i] as i32);
         t.poff.push(t.z_dm.len());
     }
+    for (k, bit) in [(2, HAS_CALM), (3, HAS_HIKE), (4, HAS_WATER)] {
+        if labels[k].is_some() {
+            t.has |= bit;
+        }
+    }
     t.par_id.extend(&par_id);
     let base = t.par_off.last().copied().unwrap_or(0);
     let mut acc = base;
@@ -842,6 +967,33 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D53 : table `columns.osm_surface.codes` du manifeste → revêtu / non revêtu / bois / inconnu.
+    #[test]
+    fn surface_kinds_from_manifest() {
+        let m: Manifest = serde_json::from_str(
+            r#"{"format": "tiles/1", "tiles": {}, "columns": {"osm_surface": {"codes":
+                ["", "asphalt", "paved", "cobblestone", "wood", "gravel", "sett"]}}}"#,
+        )
+        .unwrap();
+        let k = m.surface_kinds();
+        assert_eq!(
+            k[..8],
+            [
+                SURF_UNKNOWN,
+                SURF_PAVED,
+                SURF_PAVED,
+                SURF_UNPAVED,
+                SURF_WOOD,
+                SURF_UNPAVED,
+                SURF_PAVED,
+                SURF_UNKNOWN
+            ]
+        );
+        assert_eq!(k[255], SURF_UNKNOWN);
+        let none: Manifest = serde_json::from_str(r#"{"format": "tiles/1", "tiles": {}}"#).unwrap();
+        assert!(none.surface_kinds().iter().all(|&x| x == SURF_UNKNOWN));
+    }
 
     #[test]
     fn profile_points_follow_contract() {

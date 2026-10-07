@@ -78,20 +78,20 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   return q;
 }
 
-/** Type de voie d'une requête (liens partagés, historique) : `surface`, sinon l'ancien `roads` traduit comme le fait l'API ; null si absent. */
+/** Type de voie d'une requête (liens partagés, historique) : `surface`, sinon l'ancien `roads` traduit comme le fait l'API
+ *  et la migration des réglages (seul `all` devient `any`) ; null si absent. */
 export function requestSurface(req: Record<string, string>): Surface | null {
   if (isSurface(req.surface)) return req.surface;
-  if (req.roads === 'unpaved' || req.roads === 'pedestrian') return 'trail';
-  if (req.roads === 'minor' || req.roads === 'all') return 'any';
+  if (req.roads === 'unpaved' || req.roads === 'pedestrian' || req.roads === 'minor') return 'trail';
+  if (req.roads === 'all') return 'any';
   return null;
 }
 
-/** Part (0–1) du type de voie voulu sur une sortie, si elle est sous 50 % (avertissement) ; sinon null. */
-export function lowSurface(c: { trail_frac?: number }, req: Record<string, string>): { surface: 'trail' | 'road'; share: number } | null {
-  const sf = requestSurface(req);
-  if (c.trail_frac == null || !sf || sf === 'any') return null;
-  const share = sf === 'trail' ? c.trail_frac : 1 - c.trail_frac;
-  return share < 0.5 ? { surface: sf, share } : null;
+/** Part (0–1) de chemin d'une sortie en « Chemins », si elle est sous 50 % (avertissement) ; sinon null.
+ *  Jamais en « Le plus court » (la préférence n'y agit pas) ni en « Route » (D53 : tout est revêtu). */
+export function lowSurface(c: { trail_frac?: number }, req: Record<string, string>): { share: number } | null {
+  if (c.trail_frac == null || requestSurface(req) !== 'trail' || req.goal === 'min_distance') return null;
+  return c.trail_frac < 0.5 ? { share: c.trail_frac } : null;
 }
 
 /** Réglages préremplis depuis la requête d'une boucle partagée (« Recalculer depuis ici »). */

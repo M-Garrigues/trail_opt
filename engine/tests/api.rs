@@ -43,7 +43,7 @@ fn validation_stricte() {
     for (old, new) in [
         ("unpaved", "trail"),
         ("pedestrian", "trail"),
-        ("minor", "any"),
+        ("minor", "trail"),
         ("all", "any"),
     ] {
         assert_eq!(surf(&format!("&roads={old}")), new);
@@ -447,6 +447,33 @@ fn partage_schema_strict() {
     let s: share::SharedLoop = serde_json::from_value(v.clone()).unwrap();
     v["candidate"]["sig"] = json!(share::signature(&key(), &s));
     assert!(!invalid(&v));
+}
+
+/// Boucle partagée avant la v1.7 (sans `trail_frac`) : sa signature, calculée comme l'ancien
+/// binaire (HMAC du JSON brut, sans passer par le schéma actuel), reste valable ; une part de
+/// chemin ajoutée après coup ne l'est pas (champ signé), une part signée l'est.
+#[test]
+fn partage_ancienne_boucle_sans_trail_frac() {
+    let hmac_raw = |v: &Value| {
+        let body = json!({"data_version": v["data_version"], "solver_version": v["solver_version"],
+            "effective_start": v["effective_start"], "zone": v["zone"], "candidate": v["candidate"],
+            "warnings": v["warnings"]});
+        let tag = hmac::sign(&key(), &serde_json::to_vec(&body).unwrap());
+        tag.as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    };
+    let mut old = unsigned(cand());
+    assert!(old["candidate"].get("trail_frac").is_none());
+    old["candidate"]["sig"] = json!(hmac_raw(&old));
+    assert!(!invalid(&old), "ancienne signature refusée");
+    let mut forged = old.clone();
+    forged["candidate"]["trail_frac"] = json!(0.9);
+    assert!(invalid(&forged), "trail_frac ajouté sans signature");
+    let mut c = cand();
+    c["trail_frac"] = json!(0.62);
+    assert!(!invalid(&shared(c)));
 }
 
 #[test]

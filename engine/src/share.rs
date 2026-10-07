@@ -90,6 +90,17 @@ pub struct Candidate {
     /// non sérialisée : leur signature d'origine reste valable).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trail_frac: Option<f64>,
+    /// v1.8 : parts (chemin naturel, intermédiaire, route) ; absentes des boucles plus anciennes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub surface_share: Option<[f64; 3]>,
+    /// v1.8 (étiquettes des dalles) : part au calme, mètres balisés, mètres au bord de l'eau ;
+    /// absents sans la colonne correspondante (et dans les boucles plus anciennes).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub calm_frac: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hike_m: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub water_m: Option<f64>,
     #[serde(default)]
     pub target_gap: Option<Gap>,
     pub climbs: Climbs,

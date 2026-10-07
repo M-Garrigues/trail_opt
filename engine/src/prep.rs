@@ -214,6 +214,19 @@ pub fn max_grade(z: &[f64], s: &[f64]) -> f64 {
     g
 }
 
+/// Classes de voie (demande du fondateur 2026-10-07, D50) : chemin naturel, intermédiaire (voies
+/// piétonnes, allées, escaliers), route, grand axe (route d'importance 1 à 3).
+pub const CLS_TRAIL: usize = 0;
+pub const CLS_MIXED: usize = 1;
+pub const CLS_ROAD: usize = 2;
+pub const CLS_MAJOR: usize = 3;
+pub const N_CLS: usize = 4;
+/// Étiquettes des dalles (demande 4, tiles.md § Étiquettes) cumulées par arête.
+pub const LAB_NOISY: usize = 0;
+pub const LAB_HIKE: usize = 1;
+pub const LAB_WATER: usize = 2;
+pub const N_LAB: usize = 3;
+
 #[derive(Clone, Debug)]
 pub struct Edge {
     pub u: usize,
@@ -226,8 +239,11 @@ pub struct Edge {
     pub grade: f64,
     /// Pont ou tunnel.
     pub flat: bool,
-    /// Longueur (m) sur « chemin » (`Net::trail_t`) ; le reste de `len` est sur « route ».
-    pub trail: f64,
+    /// Longueur (m) par classe de voie (`Net::cls_t`, voir `CLS_*`).
+    pub cls: [f64; N_CLS],
+    /// Étiquettes (m, voir `LAB_*`) : longueur bruyante Σ len·(1 − calm/15), balisée, au bord de
+    /// l'eau Σ len·osm_water/15 (colonnes absentes : 0).
+    pub lab: [f64; N_LAB],
     /// Original dont cette arête est la copie (aller-retour d'accès près du départ).
     pub twin: Option<usize>,
 }
@@ -235,8 +251,8 @@ pub struct Edge {
 pub struct Net<'a> {
     pub t: &'a Troncons,
     pub frame: Frame,
-    /// Par tronçon : « chemin » (sinon « route »), voir `plan::trail_mask`. Vide : tout est route.
-    pub trail_t: Vec<bool>,
+    /// Par tronçon : classe de voie (`CLS_*`), voir `plan::class_mask`. Vide : tout est route.
+    pub cls_t: Vec<u8>,
     pub xy: Vec<[f64; 2]>,
     pub key: Vec<i64>,
     pub key_of: HashMap<i64, usize>,
@@ -251,7 +267,7 @@ impl<'a> Net<'a> {
         Net {
             t,
             frame,
-            trail_t: Vec::new(),
+            cls_t: Vec::new(),
             xy: Vec::new(),
             key: Vec::new(),
             key_of: HashMap::new(),
@@ -321,14 +337,16 @@ impl<'a> Net<'a> {
 
     /// Ajoute une arête (statistiques calculées) ; renvoie son identifiant.
     pub fn add_edge(&mut self, u: usize, v: usize, pieces: Vec<Piece>, flat: bool) -> usize {
-        let (mut len, mut w, mut trail) = (0.0, 0.0, 0.0);
+        let (mut len, mut w, mut cls, mut lab) = (0.0, 0.0, [0.0; N_CLS], [0.0; N_LAB]);
         for p in &pieces {
             let (l, x) = self.piece_stats(p);
             len += l;
             w += x;
-            if self.trail_t.get(p.t as usize).is_some_and(|&c| c) {
-                trail += l;
-            }
+            let t = p.t as usize;
+            cls[self.cls_t.get(t).map_or(CLS_ROAD, |&c| c as usize)] += l;
+            lab[LAB_NOISY] += l * (1.0 - f64::from(self.t.calm[t].min(15)) / 15.0);
+            lab[LAB_HIKE] += if self.t.hike[t] > 0 { l } else { 0.0 };
+            lab[LAB_WATER] += l * f64::from(self.t.water[t].min(15)) / 15.0;
         }
         self.edges.push(Edge {
             u,
@@ -338,7 +356,8 @@ impl<'a> Net<'a> {
             w,
             grade: 0.0,
             flat,
-            trail,
+            cls,
+            lab,
             twin: None,
         });
         let e = self.edges.len() - 1;
@@ -618,33 +637,54 @@ impl<'a> Net<'a> {
         Some((node, snap, self.xy[node]))
     }
 
-    /// Double les ponts d'accès entièrement à moins de FREE_RADIUS de `center` (port de
-    /// `duplicate_near_start`). Renvoie le nombre de copies.
-    pub fn duplicate_near_start(
+    /// Passages uniques (demande du fondateur, 2026-10-07) : double, pour l'aller-retour, les
+    /// isthmes du réseau (ponts au sens des graphes, après effeuillage des culs-de-sac, `s`
+    /// protégé : seul accès à une partie bouclable, pont sur une rivière, vallée à accès unique,
+    /// col à sentier unique) et les ponts et tunnels des dalles (`flat`) entre deux carrefours. Le rayon libre du départ
+    /// en était le cas particulier (port de `duplicate_near_start`). Renvoie (copies à moins de
+    /// `radius` de `center`, copies en tout, longueur copiée en m).
+    pub fn duplicate_unique(
         &mut self,
         ids: &mut Vec<usize>,
         center: [f64; 2],
         s: usize,
         radius: f64,
-    ) -> usize {
-        let near: Vec<usize> = ids
+    ) -> (usize, usize, f64) {
+        let mut forced = access_bridges(self, ids, s);
+        let mut deg = vec![0u32; self.xy.len()];
+        for &e in ids.iter() {
+            deg[self.edges[e].u] += 1;
+            deg[self.edges[e].v] += 1;
+        }
+        // déjà doublées (2e passage après le filtre de pente) : ni la copie ni l'original
+        let done: HashSet<usize> = ids.iter().filter_map(|&e| self.edges[e].twin).collect();
+        let free = |e: usize| self.edges[e].twin.is_none() && !done.contains(&e);
+        // pont ou tunnel entre deux carrefours. Doubler aussi ses voies d'approche (bout de degré 2)
+        // a été essayé (2026-10-07) : 700 copies à Massy, recherche dégradée (D+ max 366 → 113–346 m)
+        for &e in ids.iter() {
+            let ed = &self.edges[e];
+            if ed.flat && free(e) && deg[ed.u] > 2 && deg[ed.v] > 2 {
+                forced.insert(e);
+            }
+        }
+        let mut pick: Vec<usize> = ids
             .iter()
             .copied()
-            .filter(|&e| self.max_dist_over(e, center, radius) <= radius)
+            .filter(|&e| free(e) && forced.contains(&e))
             .collect();
-        if near.is_empty() {
-            return 0;
-        }
-        let forced = access_bridges(self, ids, s);
-        let mut n = 0;
-        for e in near.into_iter().filter(|e| forced.contains(e)) {
+        pick.sort_unstable();
+        let (mut near, mut km) = (0, 0.0);
+        for &e in &pick {
+            if self.max_dist_over(e, center, radius) <= radius {
+                near += 1;
+            }
+            km += self.edges[e].len;
             let mut c = self.edges[e].clone();
             c.twin = Some(e);
             self.edges.push(c);
             ids.push(self.edges.len() - 1);
-            n += 1;
         }
-        n
+        (near, pick.len(), km)
     }
 
     pub fn total_len(&self, ids: &[usize]) -> f64 {
@@ -727,7 +767,9 @@ pub fn shortest(
         }
         for &(e, nb) in adj.of(x) {
             let (e, nb) = (e as usize, nb as usize);
-            let nd = d + cost(e);
+            // garde : coût négatif ou NaN compté 0 (voir `faces::shortest`)
+            let c = cost(e);
+            let nd = d + if c > 0.0 { c } else { 0.0 };
             if nd < dist[nb] {
                 dist[nb] = nd;
                 prev[nb] = Some((e, x));
@@ -915,8 +957,8 @@ pub fn loop_components(net: &Net, ids: &[usize]) -> Vec<Vec<usize>> {
 
 /// HEURISTIQUE (port de `steep_reduction`) : garde les arêtes les plus pentues (w/l
 /// décroissant) jusqu'à k × Lmax de longueur, plus leurs chemins vers `s` dans deux arbres de
-/// plus courts chemins (le 2e pénalise les arêtes du 1er), plus les copies du rayon libre et
-/// leurs originaux. `w` exact (profils des dalles) : pas de criblage grossier.
+/// plus courts chemins (le 2e pénalise les arêtes du 1er) ; une arête doublée (passage unique)
+/// est gardée avec sa copie. `w` exact (profils des dalles) : pas de criblage grossier.
 /// `via` : nœuds à garder (points de passage, T34) : leurs arêtes et leurs chemins vers `s`.
 /// `weight` (préférence de type de voie) : poids de recherche d'une arête (D+ plus prime) ; aux
 /// k × Lmax des plus pentues s'ajoutent alors les meilleures en `weight`/l, jusqu'à `REDUCE_SURF`
@@ -946,7 +988,8 @@ pub fn steep_reduction(
             if cum >= share * k * lmax {
                 break;
             }
-            if !keep[i] {
+            // une copie (passage unique) suit son original plus bas : ne compte pas deux fois
+            if !keep[i] && e(i).twin.is_none() {
                 keep[i] = true;
                 cum += e(i).len;
             }
@@ -1004,12 +1047,12 @@ pub fn steep_reduction(
             }
         }
     }
+    // passages uniques : la copie suit l'original et inversement (les arbres depuis `s` gardent
+    // ceux du chemin d'accès)
     for i in 0..ids.len() {
-        if let Some(o) = e(i).twin {
-            keep[i] = true;
-            if let Some(&j) = pos.get(&o) {
-                keep[j] = true;
-            }
+        if let Some(&j) = e(i).twin.and_then(|o| pos.get(&o)) {
+            let k = keep[i] || keep[j];
+            (keep[i], keep[j]) = (k, k);
         }
     }
     (0..ids.len())

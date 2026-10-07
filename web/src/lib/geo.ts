@@ -114,3 +114,19 @@ export function legs(dist: number[], ele: number[], idx: number[]) {
 /** `via=lat,lon;lat,lon` (requête, api.md v1.5 : attention, l'inverse de `polygon`) → points. */
 export const parseVia = (v: string | undefined) =>
   (v ?? '').split(';').map((s) => s.split(',').map(Number)).filter((p) => p.length === 2 && p.every(Number.isFinite)).map(([lat, lon]) => ({ lat, lon }));
+
+/** Demande du fondateur (2026-10-07) : noms des repères sans chevauchement. `boxes` = [début, fin] en px de chaque
+ *  étiquette (texte + triangle), `prio` = importance (plus grand d'abord). Chaque étiquette prend la première rangée
+ *  libre (0 = la plus basse) ; sans place sur `rows` rangées, elle est masquée (−1). */
+export function placeLabels(boxes: [number, number][], prio: number[], rows = 2, gap = 4): number[] {
+  const used: [number, number][][] = Array.from({ length: rows }, () => []);
+  const out = boxes.map(() => -1);
+  for (const i of boxes.map((_, k) => k).sort((a, b) => prio[b] - prio[a] || a - b)) {
+    const [lo, hi] = boxes[i];
+    const r = used.findIndex((row) => row.every(([p, q]) => hi + gap <= p || lo >= q + gap));
+    if (r >= 0) { used[r].push([lo, hi]); out[i] = r; }
+  }
+  return out;
+}
+/** Priorité d'un repère : points de passage, puis sommets avant cols, puis le plus haut. */
+export const markPrio = (m: { kind: string; ele?: number | null }, z: number) => (m.kind === 'via' ? 1e6 : m.kind === 'summit' ? 1e5 : 0) + (m.ele ?? z);

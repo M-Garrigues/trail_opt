@@ -35,6 +35,13 @@ pub const SURF_MAX: f64 = 0.6;
 /// type de voie départage ; une boucle entièrement hors type « coûte » `SURF_TARGET` d'erreur.
 pub const SURF_TARGET_BAND: f64 = 0.02;
 pub const SURF_TARGET: f64 = 0.03;
+/// D50 (fondateur, 2026-10-07) : un mètre sur grand axe (route d'importance 1 à 3) compte `MAJOR_K`
+/// mètres « hors type » de plus, dans tous les modes et toutes les préférences : emprunté
+/// seulement s'il est indispensable (pont, liaison courte sans autre voie). Jamais un filtre.
+/// En min_distance, c'est `MAJOR_K` mètres de longueur en plus (`score`, `search_bonus`).
+pub const MAJOR_K: f64 = 4.0;
+/// Part minimale de la longueur dans le coût de recherche d'une arête (`Problem::search_len`).
+pub const MIN_SEARCH_LEN: f64 = 0.1;
 
 #[derive(Deserialize, Clone)]
 pub struct Problem {
@@ -88,7 +95,8 @@ pub struct Problem {
     /// Points de passage obligatoires (T34, api.md v1.5) : nœuds que la boucle doit toucher.
     #[serde(default)]
     pub via: Vec<usize>,
-    /// Préférence de type de voie : par arête, longueur (m) hors du type voulu. Vide : indifférent.
+    /// Par arête, longueur (m) « hors type » pondérée : hors du type de voie voulu, plus `MAJOR_K`
+    /// fois la longueur sur grand axe (D50). Vide : rien à pénaliser.
     #[serde(default)]
     pub off: Vec<f64>,
     /// Mode max : valeur (m de D+) d'un mètre sur le type voulu.
@@ -133,7 +141,17 @@ impl Problem {
     /// n'atteindrait pas Lmin). Mode cible : coût par mètre hors type.
     pub fn search_bonus(&self) -> Option<Vec<f64>> {
         if self.min_distance() {
-            return self.climb_bonus();
+            // grands axes : coût en D+ au prix moyen D/L de la sortie cherchée (λ des faces)
+            if self.off.is_empty() {
+                return self.climb_bonus();
+            }
+            let c = self.d.unwrap_or(0.0) / self.l.max(1.0);
+            let b = self.climb_bonus();
+            return Some(
+                (0..self.n_edges())
+                    .map(|e| b.as_ref().map_or(0.0, |b| b[e]) - c * self.off[e])
+                    .collect(),
+            );
         }
         if self.off.is_empty() {
             return None;
@@ -150,6 +168,15 @@ impl Problem {
                 })
                 .collect(),
         )
+    }
+
+    /// Longueur de RECHERCHE de l'arête e (plus courts chemins du recuit) : longueur plus le
+    /// « hors type » (`off`, négatif pour un bonus d'étiquette), jamais sous `MIN_SEARCH_LEN` ×
+    /// la longueur, quels que soient les poids : un coût négatif faisait boucler Dijkstra sans fin
+    /// (mémoire sans borne, gel du poste le 2026-10-07 avec des poids d'étiquettes ×5).
+    pub fn search_len(&self, e: usize) -> f64 {
+        let off = self.off.get(e).copied().unwrap_or(0.0);
+        (self.len[e] + off).max(MIN_SEARCH_LEN * self.len[e])
     }
 
     /// Longueur hors du type de voie voulu (0 sans préférence).
@@ -357,7 +384,7 @@ impl Problem {
         if self.min_distance() {
             let x = self.d.unwrap();
             let (miss, over) = ((x - dplus).max(0.0), (length - self.lmax).max(0.0));
-            let sc = -length - MD_MISS * miss - MD_OVER * over;
+            let sc = -length - self.off_len(ids) - MD_MISS * miss - MD_OVER * over;
             return (sc, length, dplus, miss == 0.0 && over == 0.0);
         }
         let feas = self.lmin <= length && length <= self.lmax;
@@ -548,4 +575,24 @@ pub fn knapsack_ub(len: &[f64], w: &[f64], cap: f64) -> f64 {
         }
     }
     ub
+}
+
+#[cfg(test)]
+mod tests {
+    /// Poids d'étiquettes extrêmes (bonus > longueur) : la longueur de recherche reste ≥ 10 % de
+    /// la longueur (gel du poste, 2026-10-07).
+    #[test]
+    fn search_len_stays_positive() {
+        let mut p: super::Problem = serde_json::from_str(
+            r#"{"version": 2, "mode": "target", "L": 1000, "Lmin": 700, "Lmax": 1300, "D": 50,
+                "s": 0, "node_simple": false, "xy": [[0,0],[1,0]], "far": [], "u": [0, 0],
+                "v": [1, 1], "len": [100, 200], "w": [1, 1], "ang_u": [0, 1], "ang_v": [0, 1],
+                "parallel": []}"#,
+        )
+        .unwrap();
+        assert_eq!(p.search_len(1), 200.0);
+        p.off = vec![-5000.0, 30.0];
+        assert_eq!(p.search_len(0), 10.0);
+        assert_eq!(p.search_len(1), 230.0);
+    }
 }

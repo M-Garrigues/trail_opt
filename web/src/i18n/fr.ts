@@ -58,17 +58,26 @@ export const fr = {
   },
   surface: {
     label: 'Type de voie',
-    trail: 'Chemins au max',
-    any: 'Indifférent',
-    road: 'Routes au max',
+    trail: 'Chemins',
+    any: 'Tout',
+    road: 'Route',
     help: {
       trail: 'Sentiers et chemins d’abord ; une route quand il n’y a pas mieux.',
       any: 'Chemins et routes, sans préférence.',
-      road: 'Routes d’abord ; un chemin quand il n’y a pas mieux.',
+      road: 'Voies revêtues uniquement (bitume, béton, pavés) ; jamais un chemin de terre.',
     },
     share: (p: P) => `${p.trail} % chemin · ${p.road} % route`,
+    // trois classes (api.md v1.8) : chemin naturel, intermédiaire (allées, voies piétonnes, escaliers), route
+    parts: { trail: 'chemin', mixed: 'intermédiaire', road: 'route' },
     lowTrail: (p: P) => `Seulement ${p.pct} % de chemins ici : peu de sentiers autour de ce départ.`,
-    lowRoad: (p: P) => `Seulement ${p.pct} % de routes ici : peu de routes autour de ce départ.`,
+  },
+  // étiquettes des dalles (api.md v1.8) : calme (IGN), balisage et eau (OSM)
+  labels: {
+    title: 'Agrément',
+    calm: (p: P) => `${p.pct} % au calme`,
+    hike: (p: P) => `${p.km} balisés`,
+    water: (p: P) => `${p.km} au bord de l’eau`,
+    osm: '© les contributeurs d’OpenStreetMap',
   },
   more: {
     title: 'Plus d’options',
@@ -236,6 +245,9 @@ export const fr = {
     outside_coverage: () => 'Pas encore de données ici.',
     no_way_in_zone: () => 'Aucune voie praticable ici.',
     no_loop_of_distance: () => 'Aucune sortie de cette longueur depuis ce départ.',
+    paved_network_major_roads: () =>
+      'Peu de routes revêtues calmes autour de ce départ : la sortie suivrait surtout de grands axes. Essaie un autre départ ou le type de voie « Tout ».',
+    paved_network_too_short: () => 'Pas assez de voies revêtues autour de ce départ pour cette sortie : essaie « Tout ».',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible : il faut au moins ${p.min_km} km.` : 'Pas assez de relief ici.',
     zone_invalid: () => 'Zone invalide : 3 à 50 points.',

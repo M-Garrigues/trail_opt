@@ -68,28 +68,30 @@ test('première visite : Cible présélectionné (10 km, +300 m), en tête des t
 test('type de voie : trois choix, part de chemin affichée, avertissement sous 50 %', async ({ page }) => {
   const t = T();
   await setup(page);
-  const body = (f: number) => { const p = JSON.parse(plan1); p.candidates[0].trail_frac = f; p.warnings = [{ code: 'low_surface_share', params: { pct: 38 } }]; return JSON.stringify(p); };
+  // « Chemins » : trois parts (api.md v1.8) ; « Route » : ancienne réponse sans `surface_share` (deux parts)
+  const body = (f: number, parts?: number[]) => { const p = JSON.parse(plan1); p.candidates[0].trail_frac = f; if (parts) p.candidates[0].surface_share = parts; p.warnings = [{ code: 'low_surface_share', params: { pct: 38 } }]; return JSON.stringify(p); };
   const calls = await mockPlan(page, async (route, url) => {
-    await route.fulfill({ contentType: 'application/json', body: body(url.searchParams.get('surface') === 'road' ? 0.2 : 0.38) });
+    const road = url.searchParams.get('surface') === 'road';
+    await route.fulfill({ contentType: 'application/json', body: road ? body(0.2) : body(0.38, [0.3, 0.16, 0.54]) });
     return true;
   });
   await page.goto('/');
   await placeStart(page);
   await openOptions(page);
   const seg = page.locator('#surface');
-  await expect(seg.locator('label')).toHaveText(isFr() ? ['Chemins au max', 'Indifférent', 'Routes au max'] : ['Mostly trails', 'No preference', 'Mostly roads']);
-  await expect(seg.locator('label.on')).toHaveText(isFr() ? 'Chemins au max' : 'Mostly trails');
+  await expect(seg.locator('label')).toHaveText(isFr() ? ['Chemins', 'Tout', 'Route'] : ['Trails', 'Any', 'Roads']);
+  await expect(seg.locator('label.on')).toHaveText(isFr() ? 'Chemins' : 'Trails');
   await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[0].searchParams.get('surface')).toBe('trail');
   expect(calls[0].searchParams.has('roads')).toBe(false);
   const low = isFr() ? 'Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.' : 'Only 38% trails here: few paths around this start.';
-  const share = isFr() ? '38 % chemin · 62 % route' : '38% trail · 62% road';
+  const share = isFr() ? '30 % chemin · 16 % intermédiaire · 54 % route' : '30% trail · 16% mixed · 54% road';
   await expect(page.getByText(share).first()).toBeVisible();
   await expect(page.locator('.warnings').first()).toHaveText(low); // une seule ligne : celle de la sortie affichée
   await expect(page.getByRole('alertdialog')).toHaveCount(0); // discret : pas de popup
-  // « Routes au max » : 80 % de route, plus d'avertissement
+  // « Route » : 80 % de route, jamais d'avertissement (D53 : revêtu par construction)
   await page.goBack();
   await openOptions(page);
   await seg.locator('label').nth(2).click();

@@ -149,7 +149,10 @@ pub(crate) fn shortest(
             {
                 continue;
             }
-            let nd = d + cost(e);
+            // garde : un coût négatif (ou NaN) bouclerait sans fin sur l'arête (cycle négatif) et
+            // ferait grossir la file sans borne (gel du poste, 2026-10-07) ; compté 0
+            let c = cost(e);
+            let nd = d + if c > 0.0 { c } else { 0.0 };
             if nd < dist[nb] {
                 dist[nb] = nd;
                 prev[nb] = (e, x);
@@ -1159,7 +1162,13 @@ impl<'a> FaceSearch<'a> {
             }
             // de plus en plus loin des boucles gardées : 40, 70 puis 100 % de leur D+ retiré
             let cut = (0.4 + 0.3 * forced as f64).min(1.0);
-            let (w_eff, wb_eff) = weights(&kept, cut, cut * fee);
+            let (w_eff, mut wb_eff) = weights(&kept, cut, cut * fee);
+            // mode max : sans la prime de type de voie ni le coût des grands axes (D50), qui
+            // enferment la recherche dans les mêmes vallées (Bourg 12 km : 2 à 3 boucles sur 4) ;
+            // le choix parmi la réserve reste au score complet
+            if !p.target() && !p.min_distance() {
+                wb_eff = None;
+            }
             let res: Vec<_> = (0..2usize)
                 .into_par_iter()
                 .map(|i| {
@@ -1188,5 +1197,35 @@ impl<'a> FaceSearch<'a> {
             }
         }
         (out, iters - left + extra)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::cell::Cell;
+
+    /// Gel du poste (2026-10-07) : des coûts négatifs faisaient relâcher Dijkstra sans fin (file
+    /// sans borne). Coût négatif, nul ou NaN compté 0 : la recherche termine. Le compteur arrête
+    /// le test bien avant toute explosion de mémoire si la garde disparaît.
+    #[test]
+    fn shortest_terminates_with_negative_costs() {
+        // triangle 0-1-2 et arête 2-3
+        let adj = vec![
+            vec![(0, 1), (2, 2)],
+            vec![(0, 0), (1, 2)],
+            vec![(1, 1), (2, 0), (3, 3)],
+            vec![(3, 2)],
+        ];
+        for c in [-5.0, f64::NAN, 0.0] {
+            let calls = Cell::new(0u32);
+            let cost = |_| {
+                calls.set(calls.get() + 1);
+                assert!(calls.get() < 1000, "Dijkstra ne termine pas");
+                c
+            };
+            let (d, _) = shortest(&adj, cost, 0, None, None, None);
+            assert!(d.iter().all(|&x| x == 0.0), "{c} {d:?}");
+        }
     }
 }

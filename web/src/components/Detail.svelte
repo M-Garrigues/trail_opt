@@ -6,7 +6,7 @@
   import { durationMin, lowSurface } from '../lib/settings';
   import { saveGpx, canShareGpx } from '../lib/gpx';
   import { i18n, t } from '../i18n/i18n.svelte';
-  import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText } from '../i18n/format';
+  import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText, labelsText } from '../i18n/format';
   import Profile, { profileMarks } from './Profile.svelte';
 
   let { embedded = false }: { embedded?: boolean } = $props();
@@ -18,6 +18,7 @@
   const warnings = $derived([...res.warnings.filter((w) => !isImportant(w.code) && w.code !== 'low_surface_share').map((w) => warningText(L, w.code, w.params ?? {})),
     lowSurfaceText(lowSurface(c, app.request), L)].filter(Boolean));
   const surface = $derived(surfaceText(c, L));
+  const labels = $derived(labelsText(c, L));
 
   // D34 : tronçons départ → points de passage → arrivée (seulement s'il y a des points)
   const vi = $derived(viaIdx(c));
@@ -58,6 +59,10 @@
   {#if surface}
     <h3>{t().surface.label}</h3>
     <p class="climbs" data-testid="surface-detail">{surface}</p>
+  {/if}
+  {#if labels.text}
+    <h3>{t().labels.title}</h3>
+    <p class="climbs" data-testid="labels-detail">{labels.text}{#if labels.osm}<br /><span class="muted">{t().labels.osm}</span>{/if}</p>
   {/if}
   {#if c.climbs}
     <h3>{t().detail.climbs}</h3>

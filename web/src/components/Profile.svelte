@@ -1,12 +1,13 @@
 <script lang="ts" module>
   import type { Candidate as C } from '../lib/types';
-  import { idxAt } from '../lib/geo';
-  export type Mark = { idx: number; label: string; kind: 'via' | 'col' | 'summit' };
+  import { idxAt, placeLabels, markPrio } from '../lib/geo';
+  export type Mark = { idx: number; label: string; kind: 'via' | 'col' | 'summit'; ele?: number | null };
   /** Repères du profil (D34) : points de passage numérotés (ordre de visite), cols et sommets. */
   export function profileMarks(c: C, via: number[]): Mark[] {
     return [...[...via].sort((a, b) => a - b).map((idx, k) => ({ idx, label: `P${k + 1}`, kind: 'via' as const })),
-      ...(c.landmarks ?? []).map((l) => ({ idx: idxAt(c, l.dist_m), label: l.name, kind: l.kind }))];
+      ...(c.landmarks ?? []).map((l) => ({ idx: idxAt(c, l.dist_m), label: l.name, kind: l.kind, ele: l.ele_m }))];
   }
+
 </script>
 
 <script lang="ts">
@@ -19,6 +20,8 @@
   let { cand, cursor = $bindable(-1), height = 130, onpick, marks = [] }: { cand: Candidate; cursor?: number; height?: number; onpick?: (i: number) => void; marks?: Mark[] } = $props();
 
   const PAD = { l: 46, r: 12, t: 22, b: 22 };
+  const ROW = 14; // hauteur d'une rangée d'étiquettes de repères
+  let top = $state(PAD.t); // marge haute : une rangée de plus si des noms y ont été décalés
   // Dégradé selon la pente absolue : vert à plat, rouge sombre à 40 % et plus.
   const STOPS = [[0, 76, 175, 80], [5, 205, 220, 57], [10, 255, 193, 7], [18, 244, 81, 30], [28, 198, 40, 40], [40, 93, 15, 15]];
   function slopeColor(g: number) {
@@ -42,7 +45,7 @@
     return { zmin, zmax };
   });
   const X = (d: number) => PAD.l + ((w - PAD.l - PAD.r) * d) / dmax;
-  const Y = (z: number) => PAD.t + (height - PAD.t - PAD.b) * (1 - (z - zr.zmin) / (zr.zmax - zr.zmin));
+  const Y = (z: number) => top + (height - top - PAD.b) * (1 - (z - zr.zmin) / (zr.zmax - zr.zmin));
   const label = $derived(t().detail.profile({
     km: num(i18n.lang, dmax / 1000, 1), min: num(i18n.lang, zr.zmin), max: num(i18n.lang, zr.zmax),
   }));
@@ -83,24 +86,38 @@
     c.strokeStyle = text; c.lineWidth = 1.5; c.stroke();
     // repères : trait pointillé + étiquette (points de passage en pastille, cols/sommets en triangle)
     c.font = 'bold 11px system-ui, sans-serif';
-    for (const m of marks) {
-      if (m.idx < 0 || m.idx >= n) continue;
-      const x = X(D.dist[m.idx]), y = Y(D.ele[m.idx]);
+    const ms = marks.filter((m) => m.idx >= 0 && m.idx < n);
+    const xs = ms.map((m) => X(D.dist[m.idx]));
+    // boîte de chaque étiquette : pastille (point de passage) ou triangle + nom, côté intérieur du profil
+    const boxes = ms.map((m, k): [number, number] => {
+      const x = xs[k];
+      if (m.kind === 'via') return [x - 9, x + 9];
+      const tw = c.measureText(m.label).width;
+      return x > w / 2 ? [x - 8 - tw, x + 5] : [x - 5, x + 8 + tw];
+    });
+    const rows = placeLabels(boxes, ms.map((m) => markPrio(m, D.ele[m.idx])));
+    const t0 = PAD.t + (rows.some((r) => r > 0) ? ROW : 0);
+    if (t0 !== top) { top = t0; return; } // redessin avec la nouvelle marge
+    for (const [k, m] of ms.entries()) {
+      const x = xs[k], y = Y(D.ele[m.idx]), base0 = top - (rows[k] > 0 ? rows[k] * ROW : 0);
       c.strokeStyle = text; c.lineWidth = 1; c.setLineDash([2, 3]);
-      c.beginPath(); c.moveTo(x, PAD.t - 4); c.lineTo(x, y); c.stroke(); c.setLineDash([]);
+      c.beginPath(); c.moveTo(x, top - 4); c.lineTo(x, y); c.stroke(); c.setLineDash([]);
       c.fillStyle = text; c.textAlign = 'center';
       if (m.kind === 'via') {
-        c.beginPath(); c.arc(x, PAD.t - 11, 9, 0, 6.3); c.fill();
-        c.fillStyle = bg; c.fillText(m.label, x, PAD.t - 7);
+        c.beginPath(); c.arc(x, top - 11, 9, 0, 6.3); c.fill();
+        c.fillStyle = bg; c.fillText(m.label, x, top - 7);
       } else {
-        c.textAlign = x > w / 2 ? 'right' : 'left'; c.fillText(m.label, x + (x > w / 2 ? -8 : 8), PAD.t - 6); c.textAlign = 'center';
-        c.beginPath(); c.moveTo(x - 5, PAD.t - 5); c.lineTo(x + 5, PAD.t - 5); c.lineTo(x, PAD.t - 14); c.closePath(); c.fill();
+        // triangle toujours à sa place ; le nom sur sa rangée, masqué s'il n'y a pas de place (rangée −1)
+        c.beginPath(); c.moveTo(x - 5, top - 5); c.lineTo(x + 5, top - 5); c.lineTo(x, top - 14); c.closePath(); c.fill();
+        if (rows[k] >= 0) {
+          c.textAlign = x > w / 2 ? 'right' : 'left'; c.fillText(m.label, x + (x > w / 2 ? -8 : 8), base0 - 6); c.textAlign = 'center';
+        }
       }
     }
     if (cur >= 0 && cur < n) {
       const x = X(D.dist[cur]), left = x > w / 2;
       c.strokeStyle = text; c.lineWidth = 1;
-      c.beginPath(); c.moveTo(x, PAD.t); c.lineTo(x, base); c.stroke();
+      c.beginPath(); c.moveTo(x, top); c.lineTo(x, base); c.stroke();
       c.fillStyle = text; c.beginPath(); c.arc(x, Y(D.ele[cur]), 4, 0, 6.3); c.fill();
       c.font = 'bold 13px system-ui, sans-serif';
       const txt = bubble(cur), tw = c.measureText(txt).width + 8, tx = Math.max(0, left ? x - 8 - tw : x + 8);

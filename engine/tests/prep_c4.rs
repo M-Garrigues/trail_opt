@@ -3,7 +3,7 @@
 //! test_revisit.py, test_ign.py, test_large.py).
 use engine::Code;
 use engine::l93::{self, Frame};
-use engine::plan::{Request, keep_mask, plan_with, trail_mask};
+use engine::plan::{Request, class_mask, keep_mask, paved_mask, plan_with};
 use engine::prep::{Net, Region, disk};
 use engine::tiles::Troncons;
 use geo::MultiPolygon;
@@ -186,6 +186,250 @@ fn free_radius_dead_end_start_allows_out_and_back() {
     }
 }
 
+/// Passages uniques (2026-10-07) : deux carrés reliés par un seul sentier de 600 m, loin du
+/// départ. La boucle de 3,6 km doit faire l'aller-retour sur ce sentier, y compris en carrefours
+/// uniques ; sans la copie, seul le premier carré (1,2 km) est bouclable.
+#[test]
+fn unique_passage_far_from_start_is_doubled() {
+    for node_simple in [false, true] {
+        let mut w = World::new();
+        let p = |x: f64, y: f64| [x, y];
+        let ring = |w: &mut World, pts: &[[f64; 2]]| {
+            for k in 0..pts.len() {
+                w.trail(&[pts[k], pts[(k + 1) % pts.len()]]);
+            }
+        };
+        ring(
+            &mut w,
+            &[
+                p(0.0, 0.0),
+                p(300.0, 0.0),
+                p(300.0, 150.0),
+                p(300.0, 300.0),
+                p(0.0, 300.0),
+            ],
+        );
+        w.trail(&[p(300.0, 150.0), p(600.0, 150.0), p(900.0, 150.0)]);
+        ring(
+            &mut w,
+            &[
+                p(900.0, 150.0),
+                p(900.0, 0.0),
+                p(1200.0, 0.0),
+                p(1200.0, 300.0),
+                p(900.0, 300.0),
+            ],
+        );
+        let out = w
+            .run(
+                json!({"distance_km": 3.6, "node_simple": node_simple}),
+                false,
+            )
+            .unwrap();
+        let a = &out["debug"]["attempts"][0];
+        assert_eq!(a["edges_doubled_near_start"], 0);
+        assert_eq!(a["edges_doubled"], 1, "{a}");
+        assert_eq!(out["candidates"][0]["feasible"], true, "{node_simple}");
+        check_track(&out["candidates"][0]);
+        let l = out["candidates"][0]["length_m"].as_f64().unwrap();
+        assert!((3400.0..=3800.0).contains(&l), "{l}");
+    }
+}
+
+/// Repli découpé (plan.rs, Chartreuse) : le départ est sur un petit carré relié au grand réseau
+/// voisin seulement par deux longs détours. Réseau du départ trop court, la composante entière
+/// aussi depuis ce point : on écarte le petit réseau et on reprend sur le reste, au point le plus
+/// proche (départ déplacé d'environ 300 m), au lieu d'échouer.
+#[test]
+fn short_repli_is_split_and_start_moved() {
+    let mut w = World::new();
+    let ring = |w: &mut World, pts: &[[f64; 2]]| {
+        for k in 0..pts.len() {
+            w.trail(&[pts[k], pts[(k + 1) % pts.len()]]);
+        }
+    };
+    ring(
+        &mut w,
+        &[[0.0, 0.0], [100.0, 0.0], [100.0, 100.0], [0.0, 100.0]],
+    );
+    ring(
+        &mut w,
+        &[
+            [300.0, -250.0],
+            [550.0, -250.0],
+            [800.0, -250.0],
+            [800.0, 250.0],
+            [550.0, 250.0],
+            [300.0, 250.0],
+        ],
+    );
+    // détours de ~1,9 km au nord et au sud, dans le disque de 1 km
+    w.trail(&[[0.0, 100.0], [0.0, 900.0], [550.0, 750.0], [550.0, 250.0]]);
+    w.trail(&[[0.0, 0.0], [0.0, -900.0], [550.0, -750.0], [550.0, -250.0]]);
+    let out = w.run(json!({"distance_km": 2.0}), false).unwrap();
+    let st: Vec<&str> = out["debug"]["attempts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["status"].as_str().unwrap_or("ok"))
+        .collect();
+    assert_eq!(
+        st[..2],
+        ["network_too_short", "network_too_short"],
+        "{st:?}"
+    );
+    assert_eq!(out["effective_start"]["kind"], "moved", "{st:?}");
+    let moved = out["effective_start"]["moved_m"].as_f64().unwrap();
+    assert!((250.0..=350.0).contains(&moved), "{moved}");
+    let lp = &out["candidates"][0];
+    assert_eq!(lp["feasible"], true);
+    check_track(lp);
+}
+
+/// D50 : grand axe (importance 1 à 3) fortement pénalisé dans toutes les préférences, jamais
+/// exclu. Carré de 1,6 km par le départ dont le côté sud est une nationale de 400 m, doublée par
+/// une petite route parallèle de 500 m : la sortie prend la petite route ; sans elle, la nationale.
+#[test]
+fn major_roads_avoided_unless_needed() {
+    let road = |w: &mut World, pts: &[[f64; 2]], imp: u8| {
+        w.line_full(pts, "Route à 1 chaussée", imp, OK, &[]);
+    };
+    for alt in [true, false] {
+        for surface in ["trail", "any", "road"] {
+            let mut w = World::new();
+            w.z = |_, y| 100.0 + 0.1 * y.max(0.0);
+            road(&mut w, &[[0.0, 0.0], [400.0, 0.0]], 2);
+            road(&mut w, &[[400.0, 0.0], [400.0, 400.0]], 5);
+            road(&mut w, &[[400.0, 400.0], [0.0, 400.0]], 5);
+            road(&mut w, &[[0.0, 400.0], [0.0, 0.0]], 5);
+            if alt {
+                road(
+                    &mut w,
+                    &[[0.0, 0.0], [0.0, -50.0], [400.0, -50.0], [400.0, 0.0]],
+                    5,
+                );
+            }
+            let out = w
+                .run(json!({"distance_km": 1.65, "surface": surface}), false)
+                .unwrap();
+            let lp = &out["candidates"][0];
+            assert_eq!(lp["feasible"], true, "{alt} {surface}");
+            let south = lp["lat"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x.as_f64().unwrap() < LAT - 0.0003);
+            assert_eq!(south, alt, "{alt} {surface} : petite route au sud");
+        }
+    }
+}
+
+/// Garde de distance (bug Massy 50 km + 2 buttes : sortie de 111 km) : deux points de passage
+/// chacun joignable (lobe de 1,6 km), mais la sortie qui touche les deux fait 3,2 km pour 2 km
+/// demandés. Erreur `no_loop_of_distance` au lieu d'une sortie au-delà de la distance maximale.
+#[test]
+fn via_points_never_give_a_loop_over_max_distance() {
+    let make = || {
+        let mut w = World::new();
+        for sg in [1.0, -1.0] {
+            let p = |x: f64, y: f64| [sg * x, y];
+            let pts = [
+                (0.0, 0.0),
+                (400.0, 0.0),
+                (400.0, 100.0),
+                (600.0, 100.0),
+                (600.0, -100.0),
+                (400.0, -100.0),
+            ];
+            for (a, b) in [(0, 1), (1, 2), (2, 3), (3, 4), (4, 5), (5, 1)] {
+                w.trail(&[p(pts[a].0, pts[a].1), p(pts[b].0, pts[b].1)]);
+            }
+        }
+        w
+    };
+    let w = make();
+    let via = |x: f64| {
+        let (lon, lat) = l93::inverse(w.x0 + x, w.y0);
+        [lat, lon]
+    };
+    let (e, o) = (via(600.0), via(-600.0));
+    let out = w
+        .run(json!({"distance_km": 2.0, "via": [e]}), false)
+        .unwrap();
+    assert!(out["candidates"][0]["length_m"].as_f64().unwrap() <= 2100.0);
+    let r = make().run(json!({"distance_km": 2.0, "via": [e, o]}), false);
+    assert_eq!(r.err().map(|m| m.code), Some(Code::NoLoopOfDistance));
+}
+
+/// Étiquettes (demande 4) : même carré que pour les grands axes, le côté sud doublé par un sentier
+/// parallèle plus long. Le côté sud (300 m) est bruyant (calme 0) ; la variante longe l'eau, ou
+/// est balisée. En « Chemins » et « Tout » la sortie prend la variante. Parts rendues seulement si
+/// la colonne existe.
+#[test]
+fn labels_soft_preferences() {
+    use engine::tiles::{HAS_CALM, HAS_HIKE, HAS_WATER};
+    for (water, hike) in [(15u8, 0u8), (0, 1)] {
+        for surface in ["trail", "any"] {
+            let mut w = World::new();
+            w.z = |_, y| 100.0 + 0.1 * y.max(0.0);
+            let a = w.trail(&[[0.0, 0.0], [400.0, 0.0]]);
+            w.trail(&[[400.0, 0.0], [400.0, 400.0]]);
+            w.trail(&[[400.0, 400.0], [0.0, 400.0]]);
+            w.trail(&[[0.0, 400.0], [0.0, 0.0]]);
+            let b = w.trail(&[[0.0, 0.0], [0.0, -30.0], [400.0, -30.0], [400.0, 0.0]]);
+            let (a, b) = (a as usize - 1, b as usize - 1);
+            w.t.calm[a] = 0;
+            (w.t.water[b], w.t.hike[b]) = (water, hike);
+            w.t.has = HAS_CALM | HAS_HIKE | HAS_WATER;
+            let out = w
+                .run(json!({"distance_km": 1.65, "surface": surface}), false)
+                .unwrap();
+            let lp = &out["candidates"][0];
+            let s = lp["lat"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|x| x.as_f64().unwrap() < LAT - 0.0002);
+            assert!(s, "{surface} eau {water} balisé {hike}");
+            assert!(lp["calm_frac"].as_f64().unwrap() > 0.99);
+            assert!(
+                (lp["water_m"].as_f64().unwrap() - if water > 0 { 460.0 } else { 0.0 }).abs() < 5.0
+            );
+            assert!(
+                (lp["hike_m"].as_f64().unwrap() - if hike > 0 { 460.0 } else { 0.0 }).abs() < 5.0
+            );
+        }
+    }
+    // sans les colonnes : rien de rendu
+    let mut w = World::new();
+    w.square(0.0, 0.0, 400.0);
+    let out = w.run(json!({"distance_km": 1.6}), false).unwrap();
+    let lp = &out["candidates"][0];
+    assert!(
+        lp.get("calm_frac").is_none() && lp.get("hike_m").is_none() && lp.get("water_m").is_none()
+    );
+}
+
+/// D54 : en « Route », une sortie à plus de 25 % sur grands axes n'est pas rendue ; seule
+/// possibilité = un carré dont deux côtés sur quatre sont une nationale : erreur explicite.
+/// Avec un seul côté (25 %), la sortie est rendue.
+#[test]
+fn road_with_mostly_major_roads_is_refused() {
+    for (n_major, ok) in [(1, true), (2, false)] {
+        let mut w = World::new();
+        let c = [[0.0, 0.0], [400.0, 0.0], [400.0, 400.0], [0.0, 400.0]];
+        for k in 0..4 {
+            let imp = if k < n_major { 2 } else { 5 };
+            w.line_full(&[c[k], c[(k + 1) % 4]], "Route à 1 chaussée", imp, OK, &[]);
+        }
+        let r = w.run(json!({"distance_km": 1.6, "surface": "road"}), false);
+        assert_eq!(r.is_ok(), ok, "{n_major}");
+        if !ok {
+            assert_eq!(r.err().map(|m| m.code), Some(Code::PavedNetworkMajorRoads));
+        }
+    }
+}
+
 /// Sur une grille (aucun accès obligé), rien n'est doublé près du départ.
 #[test]
 fn no_out_and_back_farming_near_start() {
@@ -203,7 +447,9 @@ fn no_out_and_back_farming_near_start() {
 }
 
 /// Réseau bouclable à 600 m, relié au point cliqué par une route hors type de voies : la boucle
-/// part du point cliqué avec un aller-retour sur cette route (toutes classes de voies, D9).
+/// part du point cliqué avec un aller-retour sur cette route (toutes classes de voies, D9). Depuis
+/// les passages uniques (2026-10-07), la route est un isthme doublé dans le réseau même : plus
+/// besoin du chemin d'accès (départ « clicked », sans avertissement d'accès).
 #[test]
 fn access_out_and_back_keeps_clicked_start() {
     let mut w = World::new();
@@ -216,9 +462,8 @@ fn access_out_and_back_keeps_clicked_start() {
         &[],
     );
     let out = w.run(json!({"distance_km": 2.7}), false).unwrap();
-    assert_eq!(out["effective_start"]["kind"], "access");
-    assert_eq!(out["effective_start"]["access_m"], 600.0);
-    assert!(codes(&out).contains(&"access_round_trip".to_string()));
+    assert_eq!(out["effective_start"]["kind"], "clicked");
+    assert_eq!(out["debug"]["attempts"][0]["edges_doubled"], 1);
     let lp = &out["candidates"][0];
     let p0 = (
         lp["lon"][0].as_f64().unwrap(),
@@ -400,30 +645,109 @@ fn no_loop_anywhere() {
 // Types de voies, contraction, découpe, parallèles, pente
 // ---------------------------------------------------------------------------
 
-/// Voies gardées (toutes les voies praticables, quel que soit le type préféré) et classement
-/// chemin / route (api.md v1.7).
+/// Voies gardées (toutes les voies praticables, quel que soit le type préféré), classe de voie
+/// (0 chemin naturel, 1 intermédiaire, 2 route, 3 grand axe = route d'importance 1 à 3, D50) et
+/// revêtement selon la nature IGN quand OSM ne dit rien (D53).
 #[test]
 fn keep_mask_and_trail_class() {
-    // (nature, importance, drapeaux, gardé, chemin)
-    let cases: [(&str, u8, u8, bool, bool); 11] = [
-        ("Sentier", 6, OK, true, true),
-        ("Chemin", 6, OK, true, true),
-        ("Route empierrée", 5, OK, true, true),
-        ("Escalier", 6, OK, true, true),
-        ("Piste cyclable", 6, OK, true, false),
-        ("Route à 1 chaussée", 3, OK, true, false),
-        ("Route à 2 chaussées", 2, OK, true, false),
-        ("Type autoroutier", 1, OK, false, false),
-        ("Bac ou liaison maritime", 1, OK, false, false),
-        ("?", 5, OK, false, false),
-        ("Sentier", 6, 0, false, true), // privé, ayants droit ou hors service
+    // (nature, importance, drapeaux, gardé, classe, revêtu)
+    let cases: [(&str, u8, u8, bool, u8, bool); 13] = [
+        ("Sentier", 6, OK, true, 0, false),
+        ("Chemin", 6, OK, true, 0, false),
+        ("Route empierrée", 5, OK, true, 0, false),
+        ("Escalier", 6, OK, true, 1, false),
+        ("Piste cyclable", 6, OK, true, 1, true),
+        ("Piste cyclable", 2, OK, true, 1, true),
+        ("Route à 1 chaussée", 4, OK, true, 2, true),
+        ("Route à 1 chaussée", 3, OK, true, 3, true),
+        ("Route à 2 chaussées", 2, OK, true, 3, true),
+        ("Type autoroutier", 1, OK, false, 3, false),
+        ("Bac ou liaison maritime", 1, OK, false, 3, false),
+        ("?", 5, OK, false, 2, false),
+        ("Sentier", 6, 0, false, 0, false), // privé, ayants droit ou hors service
     ];
-    for (nature, imp, flags, kept, trail) in cases {
+    for (nature, imp, flags, kept, cls, paved) in cases {
         let mut t = Troncons::new();
         let n = if nature == "?" { 255 } else { code(nature) };
         t.push(1, &[[0, 0], [100, 0]], |_, _| 0.0, n, imp, flags, &[]);
         assert_eq!(!keep_mask(&t, &natures()).is_empty(), kept, "{nature}");
-        assert_eq!(trail_mask(&t, &natures()), [trail], "{nature}");
+        assert_eq!(class_mask(&t, &natures()), [cls], "{nature} {imp}");
+        assert_eq!(paved_mask(&t, &natures()), [paved], "{nature}");
+    }
+}
+
+/// Étiquettes OSM des dalles (tiles.md) : `osm_class` l'emporte sur la nature IGN, `osm_surface`
+/// (déjà traduit en `SURF_*` au chargement) sur le revêtement IGN ; bois revêtu sur un pont seulement.
+#[test]
+fn osm_class_and_surface_override_ign() {
+    use engine::tiles::{SURF_PAVED, SURF_UNPAVED, SURF_WOOD};
+    // (nature, drapeaux, osm_class, revêtement, classe, revêtu)
+    let cases = [
+        ("Chemin", OK, 1, SURF_PAVED, 1, true), // allée de parc goudronnée
+        ("Route à 1 chaussée", OK, 0, SURF_UNPAVED, 0, false), // route en terre
+        ("Escalier", OK, 255, SURF_PAVED, 1, true),
+        ("Sentier", OK | FLAT, 255, SURF_WOOD, 0, true), // passerelle en bois
+        ("Sentier", OK, 255, SURF_WOOD, 0, false),       // caillebotis
+    ];
+    for (nature, flags, oc, sf, cls, paved) in cases {
+        let mut t = Troncons::new();
+        t.push(
+            1,
+            &[[0, 0], [100, 0]],
+            |_, _| 0.0,
+            code(nature),
+            5,
+            flags,
+            &[],
+        );
+        (t.osm_class[0], t.surf[0]) = (oc, sf);
+        assert_eq!(class_mask(&t, &natures()), [cls], "{nature}");
+        assert_eq!(paved_mask(&t, &natures()), [paved], "{nature} {sf}");
+    }
+}
+
+/// D53 : « Route » = voies revêtues seulement. Un carré de sentiers et un carré de routes par le
+/// départ : la sortie ne prend que les routes ; sans routes, erreur `paved_network_too_short`
+/// (aucun repli sur les sentiers). « Chemins » et « Tout » restent des préférences.
+#[test]
+fn road_is_paved_only() {
+    let make = |roads: bool| {
+        let mut w = World::new();
+        w.square(-400.0, 0.0, 400.0);
+        if roads {
+            for (a, b) in [
+                ([0.0, 0.0], [400.0, 0.0]),
+                ([400.0, 0.0], [400.0, 400.0]),
+                ([400.0, 400.0], [0.0, 400.0]),
+                ([0.0, 400.0], [0.0, 0.0]),
+            ] {
+                w.line_full(&[a, b], "Route à 1 chaussée", 5, OK, &[]);
+            }
+        }
+        w
+    };
+    let out = make(true)
+        .run(json!({"distance_km": 1.6, "surface": "road"}), false)
+        .unwrap();
+    let lp = &out["candidates"][0];
+    assert_eq!(lp["surface_share"], json!([0.0, 0.0, 1.0]), "{lp}");
+    assert!(
+        lp["lon"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|x| x.as_f64().unwrap() > LON - 0.0005)
+    );
+    let r = make(false).run(json!({"distance_km": 1.6, "surface": "road"}), false);
+    assert_eq!(r.err().map(|m| m.code), Some(Code::PavedNetworkTooShort));
+    for surface in ["trail", "any"] {
+        let out = make(false)
+            .run(json!({"distance_km": 1.6, "surface": surface}), false)
+            .unwrap();
+        assert_eq!(
+            out["candidates"][0]["surface_share"],
+            json!([1.0, 0.0, 0.0])
+        );
     }
 }
 

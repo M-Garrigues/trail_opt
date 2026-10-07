@@ -64,6 +64,9 @@ pub enum Code {
     FewerLoops,
     // Type de voie (api.md v1.7)
     LowSurfaceShare,
+    // « Route » = voies revêtues seulement (D53, api.md v1.8)
+    PavedNetworkTooShort,
+    PavedNetworkMajorRoads,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,7 +77,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 44] = {
+    pub const ALL: [Code; 46] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -121,6 +124,8 @@ impl Code {
             TargetNotReached,
             FewerLoops,
             LowSurfaceShare,
+            PavedNetworkTooShort,
+            PavedNetworkMajorRoads,
         ]
     };
 
@@ -132,11 +137,28 @@ impl Code {
             DistanceOutOfRange => (Error, &["min_km", "max_km"]),
             TimeOutOfRange => (Error, &["min_s", "max_s"]),
             ZoneTooLarge => (Error, &["area_km2", "max_km2"]),
-            ZoneInvalid | StartOutsideZone | ModeUnknown | RoadsUnknown | TargetDplusRequired
-            | ToleranceOutOfRange | MaxGradeInvalid | NoWayInZone | NoLoopOfDistance
-            | InvalidProblem | NoLoopFound | InvariantViolated | InvalidRequest
-            | OutsideCoverage | Busy | Timeout | BotCheckFailed | ServicePaused | ClimbsUnknown
-            | LoopNotFound => (Error, &[]),
+            ZoneInvalid
+            | StartOutsideZone
+            | ModeUnknown
+            | RoadsUnknown
+            | TargetDplusRequired
+            | ToleranceOutOfRange
+            | MaxGradeInvalid
+            | NoWayInZone
+            | NoLoopOfDistance
+            | InvalidProblem
+            | NoLoopFound
+            | InvariantViolated
+            | InvalidRequest
+            | OutsideCoverage
+            | Busy
+            | Timeout
+            | BotCheckFailed
+            | ServicePaused
+            | ClimbsUnknown
+            | LoopNotFound
+            | PavedNetworkTooShort
+            | PavedNetworkMajorRoads => (Error, &[]),
             DplusOutOfRange => (Error, &["min_m", "max_m"]),
             // min_km : null quand Σw du graphe < D+ (aucune distance ne suffit)
             DplusUnreachableProven => (Error, &["dplus_m", "min_km"]),

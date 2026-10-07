@@ -58,17 +58,24 @@ export const en: Dict = {
   },
   surface: {
     label: 'Surface',
-    trail: 'Mostly trails',
-    any: 'No preference',
-    road: 'Mostly roads',
+    trail: 'Trails',
+    any: 'Any',
+    road: 'Roads',
     help: {
       trail: 'Trails and paths first; a road when there is nothing better.',
       any: 'Trails and roads, no preference.',
-      road: 'Roads first; a trail when there is nothing better.',
+      road: 'Paved ways only (asphalt, concrete, paving); never a dirt track.',
     },
     share: (p: P) => `${p.trail}% trail · ${p.road}% road`,
+    parts: { trail: 'trail', mixed: 'mixed', road: 'road' },
     lowTrail: (p: P) => `Only ${p.pct}% trails here: few paths around this start.`,
-    lowRoad: (p: P) => `Only ${p.pct}% roads here: few roads around this start.`,
+  },
+  labels: {
+    title: 'Setting',
+    calm: (p: P) => `${p.pct}% quiet`,
+    hike: (p: P) => `${p.km} waymarked`,
+    water: (p: P) => `${p.km} by the water`,
+    osm: '© OpenStreetMap contributors',
   },
   more: {
     title: 'More options',
@@ -234,6 +241,9 @@ export const en: Dict = {
     outside_coverage: () => 'No data here yet.',
     no_way_in_zone: () => 'No usable path here.',
     no_loop_of_distance: () => 'No run of this length from this start.',
+    paved_network_major_roads: () =>
+      'Few quiet paved roads around this start: the run would mostly follow major roads. Try another start or the “Any” surface.',
+    paved_network_too_short: () => 'Not enough paved ways around this start for this run: try “Any”.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible: needs at least ${p.min_km} km.` : 'Not enough relief here.',
     zone_invalid: () => 'Invalid area: 3 to 50 points.',

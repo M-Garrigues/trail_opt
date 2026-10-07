@@ -60,17 +60,39 @@ export function warningText(lang: Lang, code: string, params?: Params): string {
 }
 
 /** api.md v1.7 : « 72 % chemin · 28 % route » (vide si le serveur n'a pas renvoyé `trail_frac`). */
-export function surfaceText(c: { trail_frac?: number }, lang: Lang): string {
+export function surfaceText(c: { trail_frac?: number; surface_share?: number[] }, lang: Lang): string {
+  const s = dicts[lang].surface;
+  if (c.surface_share?.length === 3) {
+    // api.md v1.8 : trois parts arrondies à 100 % (plus forts restes), les parts nulles omises
+    const raw = c.surface_share.map((x) => 100 * x);
+    const pct = raw.map(Math.floor);
+    const order = raw.map((x, i) => [x - pct[i], i]).sort((a, b) => b[0] - a[0]);
+    for (let k = 0; k < 100 - pct.reduce((a, b) => a + b, 0) && k < 3; k++) pct[order[k][1]]++;
+    const names = [s.parts.trail, s.parts.mixed, s.parts.road];
+    const sep = lang === 'fr' ? ' % ' : '% ';
+    return pct.map((p, i) => (p ? `${p}${sep}${names[i]}` : '')).filter(Boolean).join(' · ');
+  }
   if (c.trail_frac == null) return '';
   const trail = Math.round(100 * c.trail_frac);
   return dicts[lang].surface.share({ trail: String(trail), road: String(100 - trail) });
 }
 
+/** Étiquettes (api.md v1.8) : « 82 % au calme · 3,4 km balisés · 1,2 km au bord de l'eau » ; `osm` si une part vient
+ *  d'OpenStreetMap (mention obligatoire). Balisage et eau absents ou nuls : rien (0 = rien de connu). */
+export function labelsText(c: { calm_frac?: number; hike_m?: number; water_m?: number }, lang: Lang): { text: string; osm: boolean } {
+  const l = dicts[lang].labels;
+  const hike = (c.hike_m ?? 0) >= 50, water = (c.water_m ?? 0) >= 50;
+  const parts = [
+    c.calm_frac != null ? l.calm({ pct: String(Math.round(100 * c.calm_frac)) }) : '',
+    hike ? l.hike({ km: km(lang, c.hike_m!) }) : '',
+    water ? l.water({ km: km(lang, c.water_m!) }) : '',
+  ].filter(Boolean);
+  return { text: parts.join(' · '), osm: hike || water };
+}
+
 /** Avertissement « peu de chemins / de routes » de la sortie affichée (`lowSurface`), '' sinon. */
-export function lowSurfaceText(low: { surface: 'trail' | 'road'; share: number } | null, lang: Lang): string {
-  if (!low) return '';
-  const pct = String(Math.round(100 * low.share));
-  return low.surface === 'trail' ? dicts[lang].surface.lowTrail({ pct }) : dicts[lang].surface.lowRoad({ pct });
+export function lowSurfaceText(low: { share: number } | null, lang: Lang): string {
+  return low ? dicts[lang].surface.lowTrail({ pct: String(Math.round(100 * low.share)) }) : '';
 }
 
 /** D33 : « N montées · la plus longue G m sur ℓ km » (vide si le serveur n'a pas renvoyé `climbs`). */

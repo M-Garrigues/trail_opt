@@ -28,8 +28,11 @@ test('repères : liste, clic centre la carte', async ({ page }, info) => {
   const before = await page.evaluate(() => (window as any).tmap.map.getCenter().toArray().join());
   await row.click();
   await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getCenter().toArray().join()), { timeout: 15_000 }).not.toBe(before);
-  // le repère sur la carte est cliquable aussi
-  await page.evaluate(() => (window as any).tmap.map.jumpTo({ center: [2.0, 48.0] }));
-  await page.locator('.landmark.col').last().click();
+  // le repère sur la carte (couche sous les libellés du fond, demande 5) est cliquable aussi
+  await page.evaluate(([lo, la]) => (window as any).tmap.map.jumpTo({ center: [lo + 0.01, la] }), [c.lon[i], c.lat[i]]);
+  await expect.poll(() => page.evaluate(() => (window as any).tmap.map.queryRenderedFeatures({ layers: ['landmarks'] }).length)).toBe(1);
+  const xy = await page.evaluate(([lo, la]) => (window as any).tmap.map.project([lo, la]), [c.lon[i], c.lat[i]]);
+  const box = (await page.locator('.maplibregl-canvas').boundingBox())!;
+  await page.mouse.click(box.x + xy.x, box.y + xy.y);
   await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getCenter().lng), { timeout: 15_000 }).toBeCloseTo(c.lon[i], 2);
 });

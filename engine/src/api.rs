@@ -59,6 +59,8 @@ pub fn http_status(code: Code) -> u16 {
         OutsideCoverage
         | NoWayInZone
         | NoLoopOfDistance
+        | PavedNetworkTooShort
+        | PavedNetworkMajorRoads
         | DplusUnreachableProven
         | ViaUnreachable => 422,
         Busy | ServicePaused => 503,
@@ -131,12 +133,13 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         ));
     }
     // v1.7 : `surface` (préférence) ; l'ancien filtre `roads` (liens partagés, historique) est
-    // encore lu et traduit, `surface` l'emporte
+    // encore lu et traduit, `surface` l'emporte. Comme la migration des réglages du front : seul
+    // « toutes routes » (choisi exprès) devient `any`, l'ancien défaut `minor` devient `trail`.
     let surface = match (s("surface"), s("roads")) {
         (Some(x @ ("trail" | "any" | "road")), _) => x,
         (None, None) => "trail",
-        (None, Some("unpaved" | "pedestrian")) => "trail",
-        (None, Some("minor" | "all")) => "any",
+        (None, Some("unpaved" | "pedestrian" | "minor")) => "trail",
+        (None, Some("all")) => "any",
         (x, y) => return Err(Msg::error(Code::RoadsUnknown, x.or(y).unwrap_or(""))),
     };
     let grade = match num("max_grade_pct")?.unwrap_or(DEFAULT_GRADE_PCT) {

@@ -47,7 +47,6 @@ export class TrailMap {
   private draped = (on: boolean) => { for (const l of ['loops-casing', 'loops-sel']) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none'); };
   private trail3d = new Trail3D(LOOP_COLORS[0], EXAG, (shown) => { if (this.is3d) this.draped(!shown); });
   private viaMarkers: maplibregl.Marker[] = [];
-  private marks: maplibregl.Marker[] = [];
   private coverageBounds: LngLatBoundsLike = COVERAGE_BOUNDS;
   /** Clics carte ignorés (zone en cours : terra-draw les prend). */
   drawing = false;
@@ -59,7 +58,8 @@ export class TrailMap {
       style: PLAN_IGN_STYLE,
       ...(view ? { center: [view.lon, view.lat] as [number, number], zoom: 12 } : { bounds: COVERAGE_BOUNDS }),
       maxZoom: 18.5,
-      attributionControl: { compact: true, customAttribution: '© IGN' },
+      // demande 4 : étiquettes de balisage et d'eau tirées d'OpenStreetMap (ODbL)
+      attributionControl: { compact: true, customAttribution: ['© IGN', '<a href="https://www.openstreetmap.org/copyright">© les contributeurs d’OpenStreetMap</a>'] },
       dragRotate: false,
       pitchWithRotate: false,
     });
@@ -70,6 +70,8 @@ export class TrailMap {
     this.ready = new Promise((ok) => this.map.once('style.load', () => { this.setup(); ok(); }));
     this.map.on('click', (e) => {
       if (this.drawing) return;
+      const lm = this.map.getLayer('landmarks') && this.map.queryRenderedFeatures(e.point, { layers: ['landmarks'] })[0];
+      if (lm?.geometry.type === 'Point') { this.map.easeTo({ center: lm.geometry.coordinates as [number, number], duration: 400 }); return; }
       const f = this.map.getLayer('loops-hit') && this.map.queryRenderedFeatures(e.point, { layers: ['loops-hit'] })[0];
       if (f) this.h.onLoopClick(Number(f.properties?.idx));
       else this.h.onClick({ lat: e.lngLat.lat, lon: e.lngLat.lng });
@@ -79,7 +81,12 @@ export class TrailMap {
 
   private setup() {
     const m = this.map;
-    const firstSymbol = m.getStyle().layers.find((l) => l.type === 'symbol')?.id;
+    const layers = m.getStyle().layers;
+    const firstSymbol = layers.find((l) => l.type === 'symbol')?.id;
+    // demande 5 : nos couches (zone, sorties, repères, curseur) sous les libellés du fond (villes, cols, sommets, lieux-
+    // dits), au-dessus de tous ses traits et pictogrammes : 1er libellé texte après le dernier calque non symbole
+    const lastShape = layers.length - 1 - [...layers].reverse().findIndex((l) => l.type !== 'symbol');
+    const labels = layers.find((l, i) => i > lastShape && l.type === 'symbol' && (l.layout as Record<string, unknown> | undefined)?.['text-field'])?.id;
     // toponymes orographiques du Plan IGN (cols, sommets, lieux-dits de relief) : plus contrastés, halo large
     for (const l of m.getStyle().layers) {
       if (l.type === 'symbol' && l.id.startsWith('toponyme - oro ')) {
@@ -94,18 +101,25 @@ export class TrailMap {
     m.addSource('outside', { type: 'geojson', data: empty() });
     m.addLayer({ id: 'outside', type: 'fill', source: 'outside', paint: { 'fill-color': '#455a64', 'fill-opacity': 0.35 } }, firstSymbol);
     m.addSource('zone', { type: 'geojson', data: empty() });
-    m.addLayer({ id: 'zone', type: 'line', source: 'zone', paint: { 'line-color': '#37474f', 'line-width': 2, 'line-dasharray': [2, 2] } });
+    m.addLayer({ id: 'zone', type: 'line', source: 'zone', paint: { 'line-color': '#37474f', 'line-width': 2, 'line-dasharray': [2, 2] } }, labels);
     m.addSource('loops', { type: 'geojson', data: empty() });
     m.addLayer({ id: 'loops-other', type: 'line', source: 'loops', filter: ['!', ['get', 'sel']],
-      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#757575', 'line-width': 3, 'line-opacity': 0.85 } });
+      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#757575', 'line-width': 3, 'line-opacity': 0.85 } }, labels);
     m.addLayer({ id: 'loops-casing', type: 'line', source: 'loops', filter: ['get', 'sel'],
-      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9 } });
+      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9 } }, labels);
     m.addLayer({ id: 'loops-sel', type: 'line', source: 'loops', filter: ['get', 'sel'],
-      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 5 } });
-    m.addLayer({ id: 'loops-hit', type: 'line', source: 'loops', paint: { 'line-color': '#000', 'line-width': 24, 'line-opacity': 0 } });
+      layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': ['get', 'color'], 'line-width': 5 } }, labels);
+    m.addLayer({ id: 'loops-hit', type: 'line', source: 'loops', paint: { 'line-color': '#000', 'line-width': 24, 'line-opacity': 0 } }, labels);
+    // cols et sommets traversés : pastilles en couche (sous les libellés du fond, contrairement aux marqueurs DOM)
+    for (const k of ['summit', 'col'] as const) if (!m.hasImage(`lm-${k}`)) m.addImage(`lm-${k}`, landmarkImage(k), { pixelRatio: 2 });
+    m.addSource('landmarks', { type: 'geojson', data: empty() });
+    m.addLayer({ id: 'landmarks', type: 'symbol', source: 'landmarks',
+      layout: { 'icon-image': ['concat', 'lm-', ['get', 'kind']], 'icon-allow-overlap': true, 'icon-ignore-placement': true } }, labels);
     m.addSource('cursor', { type: 'geojson', data: empty() });
     m.addLayer({ id: 'cursor', type: 'circle', source: 'cursor',
-      paint: { 'circle-radius': 7, 'circle-color': '#d62728', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } });
+      paint: { 'circle-radius': 7, 'circle-color': '#d62728', 'circle-stroke-color': '#fff', 'circle-stroke-width': 2 } }, labels);
+    m.on('mouseenter', 'landmarks', () => { m.getCanvas().style.cursor = 'pointer'; });
+    m.on('mouseleave', 'landmarks', () => { m.getCanvas().style.cursor = ''; });
     m.on('mousemove', 'loops-hit', (e) => {
       const f = e.features?.[0];
       if (f && f.properties?.sel) this.h.onLoopHover(Number(f.properties.idx), e.lngLat);
@@ -199,7 +213,7 @@ export class TrailMap {
     m.setTerrain(on ? { source: 'dem', exaggeration: EXAG } : null);
     // tracé choisi : ligne drapée en 2D ; en 3D, ruban surélevé dès que le relief est chargé (trail3d.ts)
     if (!on) this.draped(true);
-    if (on && !m.getLayer(this.trail3d.id)) m.addLayer(this.trail3d, 'cursor');
+    if (on && !m.getLayer(this.trail3d.id)) m.addLayer(this.trail3d, 'landmarks');
     if (!on && m.getLayer(this.trail3d.id)) m.removeLayer(this.trail3d.id);
     if (on) { m.dragRotate.enable(); m.touchZoomRotate.enableRotation(); m.touchPitch.enable(); }
     else { m.dragRotate.disable(); m.touchZoomRotate.disableRotation(); m.touchPitch.disable(); }
@@ -229,23 +243,14 @@ export class TrailMap {
     });
   }
 
-  /** Cols et sommets traversés (repères, D34). */
-  setLandmarks(c: Candidate | null) {
-    this.marks.forEach((mk) => mk.remove());
-    this.marks = (c?.landmarks ?? []).map((l) => {
-      const el = document.createElement('div');
+  /** Cols et sommets traversés (repères, D34) : couche `landmarks` ; au clavier, la liste du détail centre la carte. */
+  async setLandmarks(c: Candidate | null) {
+    await this.ready;
+    const features = (c?.landmarks ?? []).map((l) => {
       const i = idxAt(c!, l.dist_m);
-      el.className = `landmark ${l.kind}`;
-      el.innerHTML = `<svg viewBox="0 0 20 20" width="18" height="18" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="${LM_PATH[l.kind]}" /></svg>`;
-      el.title = l.name + (l.ele_m != null ? ` · ≈ ${Math.round(l.ele_m / 10) * 10} m` : '');
-      el.setAttribute('role', 'button');
-      el.setAttribute('aria-label', el.title);
-      el.tabIndex = 0;
-      const go = () => this.map.easeTo({ center: [c!.lon[i], c!.lat[i]], duration: 400 });
-      el.addEventListener('click', (ev) => { ev.stopPropagation(); go(); });
-      el.addEventListener('keydown', (ev) => { if (ev.key === 'Enter') go(); });
-      return new maplibregl.Marker({ element: el }).setLngLat([c!.lon[i], c!.lat[i]]).addTo(this.map);
+      return { type: 'Feature' as const, properties: { kind: l.kind, name: l.name }, geometry: { type: 'Point' as const, coordinates: [c!.lon[i], c!.lat[i]] } };
     });
+    (this.map.getSource('landmarks') as GeoJSONSource).setData({ type: 'FeatureCollection', features });
   }
 
   fitCoverage() {
@@ -265,4 +270,18 @@ export function faceBearing(c: Candidate, cap: 'centroid' | 'km1' = 'centroid'):
   }
   const k = Math.cos((c.lat[0] * Math.PI) / 180);
   return (Math.atan2((lon - c.lon[0]) * k, lat - c.lat[0]) * 180) / Math.PI;
+}
+
+/** Pastille de repère (carte toujours claire) : disque papier bordé, pictogramme au trait, 2× pour l'écran Retina. */
+function landmarkImage(kind: keyof typeof LM_PATH): ImageData {
+  const n = 52, c = document.createElement('canvas');
+  c.width = c.height = n;
+  const g = c.getContext('2d')!;
+  const ink = kind === 'col' ? '#6b6b6b' : '#1d1d1d';
+  g.beginPath(); g.arc(n / 2, n / 2, n / 2 - 3, 0, 2 * Math.PI);
+  g.fillStyle = '#ffffff'; g.fill(); g.lineWidth = 3; g.strokeStyle = ink; g.stroke();
+  g.translate(n / 2 - 18, n / 2 - 18); g.scale(1.8, 1.8);
+  g.lineWidth = 1.8; g.lineCap = 'round'; g.lineJoin = 'round'; g.strokeStyle = ink;
+  g.stroke(new Path2D(LM_PATH[kind]));
+  return g.getImageData(0, 0, n, n);
 }

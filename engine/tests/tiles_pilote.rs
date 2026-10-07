@@ -252,7 +252,11 @@ fn landmarks_within_distance() {
 /// types de sortie, le nombre demandé de boucles est rendu, sans erreur ni message « demande non
 /// atteinte » ; la part de chemin de la première boucle va dans le sens de la préférence ;
 /// « chemins » ne coûte pas plus de 15 % de D+ (mode max) ; la cible reste tenue sur la distance
-/// et le D+ RÉELS (5 %) ; `low_surface_share` si et seulement si la part voulue est sous 50 %.
+/// et le D+ RÉELS (5 %) ; `low_surface_share` si et seulement si la part de chemin est sous 50 % en
+/// « Chemins », jamais en min_distance (la préférence n'y agit pas, revue f54746a). « Route » (D53)
+/// est un filtre : voies revêtues seulement (aucun chemin naturel), le nombre de boucles et la cible
+/// peuvent alors manquer (réseau réduit) ou la demande être refusée (D54 : plus de 25 % de grands
+/// axes), jamais d'avertissement de part.
 #[test]
 fn surface_preference_never_rejects() {
     for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 500.0)] {
@@ -261,13 +265,29 @@ fn surface_preference_never_rejects() {
         };
         for mode in ["max", "target", "min_distance"] {
             let run = |surface: &str| {
-                let out = plan(
-                    &store,
+                let req: engine::plan::Request = serde_json::from_value(
                     serde_json::json!({"lat": site.0, "lon": site.1, "mode": mode, "distance_km": km,
                         "target_dplus": if mode == "max" { None } else { Some(dplus) },
                         "surface": surface, "n_candidates": 3, "node_simple": true,
                         "max_grade": 0.6, "enforce_limits": true}),
-                );
+                )
+                .unwrap();
+                let out = match engine::plan::plan(&store, &req, false) {
+                    Ok(o) => o,
+                    // D53/D54 : « Route » peut refuser (réseau revêtu trop court ou surtout grands axes)
+                    Err(m) if surface == "road" => {
+                        assert!(
+                            matches!(
+                                m.code,
+                                engine::Code::PavedNetworkMajorRoads
+                                    | engine::Code::PavedNetworkTooShort
+                            ),
+                            "{site:?} {mode} : {m:?}"
+                        );
+                        return (0.0, 0.0);
+                    }
+                    Err(m) => panic!("{site:?} {mode} {surface} : {m:?}"),
+                };
                 let w: Vec<&str> = out["warnings"]
                     .as_array()
                     .unwrap()
@@ -275,6 +295,16 @@ fn surface_preference_never_rejects() {
                     .map(|x| x["code"].as_str().unwrap())
                     .collect();
                 let c = out["candidates"].as_array().unwrap();
+                if surface == "road" {
+                    assert!(
+                        c.iter().all(|x| x["surface_share"][0] == 0.0),
+                        "{site:?} {mode}"
+                    );
+                    return (
+                        c[0]["dplus_m"].as_f64().unwrap(),
+                        c[0]["trail_frac"].as_f64().unwrap(),
+                    );
+                }
                 assert_eq!(c.len(), 3, "{site:?} {mode} {surface}");
                 assert!(
                     !w.contains(&"target_not_reached") && !w.contains(&"fewer_loops"),
@@ -293,8 +323,7 @@ fn surface_preference_never_rejects() {
                     );
                 }
                 let share = match surface {
-                    "trail" => f,
-                    "road" => 1.0 - f,
+                    "trail" if mode != "min_distance" => f,
                     _ => 1.0,
                 };
                 assert_eq!(w.contains(&"low_surface_share"), share < 0.5, "{w:?}");

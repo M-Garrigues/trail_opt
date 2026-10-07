@@ -93,6 +93,8 @@ fn search(p: &Problem, b: &Budget, seed: u64, use_anneal: bool) -> Found {
     // Type de voie en mode max : `SURF_FIRST` des itérations sans la prime, pour partir de la boucle
     // de plus fort D+ et l'amener vers le bon type (une seule recherche avec la prime, lancée de la
     // face du départ, reste parfois sur des chemins plats : Massy, 136 m de D+ au lieu de 380).
+    // Pareil en min_distance avec les grands axes (D50) : Massy X = 250, 5 graines, 9,0–9,4 km et
+    // 0–97 m de grand axe, contre 9,1–11,7 km et 97–438 m d'une seule recherche avec le coût.
     let mut iters = b.iters;
     if !p.off.is_empty() && !p.target() {
         let plain = Problem {
@@ -227,11 +229,9 @@ fn optimize_on(p: &Problem, b: &Budget) -> Result<Output, Msg> {
                 .map_err(|e| Msg::error(Code::InvariantViolated, e))?;
             alternatives.push(a);
         }
-        // Triées par D+ (min_distance : par longueur ; cible : par erreur) ; la principale reste
-        // en tête.
-        if p.min_distance() {
-            alternatives.sort_by(|x, y| p.stats(x).0.total_cmp(&p.stats(y).0));
-        } else if p.target() {
+        // Triées par D+ (min_distance et cible : par score, grands axes compris) ; la principale
+        // reste en tête.
+        if p.min_distance() || p.target() {
             alternatives.sort_by(|x, y| p.score(y).0.total_cmp(&p.score(x).0));
         } else {
             alternatives.sort_by(|x, y| p.stats(y).1.total_cmp(&p.stats(x).1));

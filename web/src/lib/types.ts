@@ -10,6 +10,12 @@ export type Candidate = {
   max_grade_pct: number;
   /** api.md v1.7 : part (0–1) de la longueur sur chemin (le reste : route) ; absente des sorties plus anciennes */
   trail_frac?: number;
+  /** api.md v1.8 : parts (0–1) chemin naturel, intermédiaire, route ; absentes des sorties plus anciennes */
+  surface_share?: [number, number, number];
+  /** api.md v1.8 : part au calme, mètres balisés et au bord de l'eau (absents sans la colonne des dalles) */
+  calm_frac?: number;
+  hike_m?: number;
+  water_m?: number;
   target_gap: { distance_m: number; dplus_m: number } | null;
   climbs?: { count: number; longest_gain_m: number; longest_len_m: number; gbar_m: number; mean_grade_pct: number };
   lat: number[];

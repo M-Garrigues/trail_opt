@@ -101,10 +101,12 @@ test('parcours principal', async ({ page }) => {
   await expect(page.getByRole('button', { name: t.find })).toBeVisible();
 });
 
-test('GPX téléchargé depuis le résultat (AC14, D27 : plus d’envoi montre)', async ({ page }) => {
+test('GPX téléchargé depuis le résultat (AC14, D27 : plus d’envoi montre)', async ({ page }, info) => {
   const t = T();
   await setup(page);
-  await page.addInitScript(() => { Object.defineProperty(navigator, 'canShare', { value: undefined }); }); // branche téléchargement
+  // ordinateur : téléchargement direct, même si le navigateur sait partager (Safari sur Mac) ; mobile : branche téléchargement forcée
+  if (info.project.use.isMobile) await page.addInitScript(() => { Object.defineProperty(navigator, 'canShare', { value: undefined }); });
+  else await page.addInitScript(() => { Object.defineProperty(navigator, 'canShare', { value: () => true }); Object.defineProperty(navigator, 'share', { value: async () => { throw new Error('partage appelé sur ordinateur'); } }); });
   await mockPlan(page);
   await page.goto('/');
   await placeStart(page);
@@ -120,7 +122,8 @@ test('GPX téléchargé depuis le résultat (AC14, D27 : plus d’envoi montre)'
   expect(gpx).toContain('© IGN');
 });
 
-test('GPX partagé quand le système sait partager un fichier (canShare)', async ({ page }) => {
+test('GPX partagé quand le système sait partager un fichier (canShare, écran tactile)', async ({ page }, info) => {
+  test.skip(!info.project.use.isMobile, 'partage de fichier : écran tactile seulement');
   const t = T();
   await setup(page);
   await page.addInitScript(() => {
@@ -136,6 +139,26 @@ test('GPX partagé quand le système sait partager un fichier (canShare)', async
   await page.getByRole('button', { name: isFr() ? 'Télécharger le GPX' : 'Download GPX' }).click();
   await expect.poll(() => page.evaluate(() => (window as unknown as { shared: { name: string } | null }).shared?.name)).toBe('optrail-10.5km-424m.gpx');
   expect(await page.evaluate(() => (window as unknown as { shared: { text: string } }).shared.text)).toContain('<trk>');
+});
+
+test('GPX : partage refusé par le système (type, certificat local) → téléchargement', async ({ page }, info) => {
+  test.skip(!info.project.use.isMobile, 'partage de fichier : écran tactile seulement');
+  const t = T();
+  await setup(page);
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator, 'canShare', { value: () => true });
+    Object.defineProperty(navigator, 'share', { value: async () => { throw new DOMException('refusé', 'NotAllowedError'); } });
+  });
+  await mockPlan(page);
+  await page.goto('/');
+  await placeStart(page);
+  await page.getByRole('button', { name: t.find }).click();
+  const dl = page.waitForEvent('download');
+  await page.getByRole('button', { name: t.download }).click();
+  const d = await dl;
+  expect(d.suggestedFilename()).toBe('optrail-10.5km-424m.gpx');
+  const gpx = Buffer.concat(await (await d.createReadStream()).toArray()).toString();
+  expect(gpx).toMatch(/^<\?xml[\s\S]*<trkpt lat="[\d.]+" lon="[\d.]+"><ele>/);
 });
 
 test.describe('sombre', () => {
