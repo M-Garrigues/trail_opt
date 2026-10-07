@@ -182,6 +182,7 @@ def test_osm_ways_points_and_forest(tiles, tmp_path):
     assert not f["osm_flags"][PETITE_ROUTE] & F_DRINK                                       # eau non potable
     assert f["osm_flags"][SENTIER_LOIN] & F_VIEW and not f["osm_flags"][SENTIER_PRES] & F_VIEW
     assert f["osm_forest"][SENTIER_LOIN] in (7, 8) and f["osm_forest"][SENTIER_PRES] == 0      # moitié sous la forêt
+    assert SURFACES[m["columns"]["osm_surface"]["paved"][0]] == "asphalt" and SURFACES.index("rock") not in m["columns"]["osm_surface"]["paved"]
     assert m["columns"]["osm_highway"]["codes"][1] == "path" and m["tiles"][A]["osm_forest_km"] > 0
     assert check(tiles) == []
 
