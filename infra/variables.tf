@@ -90,7 +90,7 @@ variable "duration_alert_s" {
 variable "budget_usd" {
   description = "Seuils Budgets en USD, coût brut hors crédits (M5 : ≈ 1 $) : chacun met l'API en pause, reprise manuelle."
   type        = list(number)
-  default     = [1, 5]
+  default     = [1, 5, 10, 20, 50] # chaque palier remet la pause (revue infra H2) ; limite = max
 }
 
 variable "enable_custom_domain" {

@@ -25,8 +25,8 @@
 # FORCE_TURNSTILE et TURNSTILE_DISABLED (ignorés/refusés en release, T28). Signature des boucles :
 # clé aléatoire à chaque démarrage si LOOP_SIGNING_KEY est absent.
 #
-# Admin (contracts/admin.md) : http://localhost:$WEB_PORT/admin, clé locale ADMIN_KEY (défaut `123`, acceptée
-# par le seul build de développement). /api/admin/stats lit le VRAI groupe de journaux de prod en lecture
+# Admin (contracts/admin.md) : http://localhost:$WEB_PORT/admin, clé locale ADMIN_KEY (défaut : aléatoire,
+# affichée au démarrage ; ADMIN_KEY=123 pour une clé fixe ; clé courte acceptée par le seul build de développement). /api/admin/stats lit le VRAI groupe de journaux de prod en lecture
 # seule via l'AWS CLI du profil AWS_PROFILE (défaut optrail) ; session expirée : aws login --profile optrail.
 #
 # Prérequis : cargo-lambda (`pip install cargo-lambda`, zig inclus) dans le PATH.
@@ -41,11 +41,13 @@ TILES_DIR=$(cd "$TILES_DIR" && pwd) # chemin absolu (cargo lambda change de doss
 TURNSTILE_SECRET=${TURNSTILE_SECRET:-1x0000000000000000000000000000000AA}
 FORCE_TURNSTILE=${FORCE_TURNSTILE:-0}
 SHARE_DIR=${SHARE_DIR:-$ROOT/engine/target/shared}
-ADMIN_KEY=${ADMIN_KEY:-123}
+# clé admin locale : aléatoire par défaut (revue infra M1), affichée ci-dessous ; ADMIN_KEY=123 la fixe
+ADMIN_KEY=${ADMIN_KEY:-$(openssl rand -hex 16)}
 
 command -v cargo-lambda >/dev/null || { echo "cargo-lambda introuvable : pip install cargo-lambda" >&2; exit 1; }
 test -f "$TILES_DIR/manifest.json" || { echo "pas de manifest.json dans $TILES_DIR" >&2; exit 1; }
 
+echo "Admin : http://localhost:$WEB_PORT/admin  (clé locale : $ADMIN_KEY)"
 echo "API : http://127.0.0.1:$API_PORT/lambda-url/lambda/api/plan  (dalles : $TILES_DIR, partage : $SHARE_DIR, FORCE_TURNSTILE=$FORCE_TURNSTILE)"
 if [ "${WEB:-1}" = 1 ] && [ -d "$ROOT/web/node_modules" ]; then
   # LAN=1 : écoute sur le réseau local en HTTPS auto-signé (test sur téléphone)
