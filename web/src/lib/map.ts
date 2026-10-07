@@ -21,9 +21,11 @@ const SHADOW =
 const DEM = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
 const DEM_ATTR = '<a href="https://mapterhorn.com/attribution/">© Mapterhorn</a> · MNT © IGN';
 const EXAG = 1.25;
+/** Caméra 3D (D57) : inclinaison. */
+const PITCH_3D = 68;
 
-/** Couverture v1 (IdF + Isère) : cadrage initial avant chargement de coverage.geojson. */
-export const COVERAGE_BOUNDS: LngLatBoundsLike = [[1.4, 44.65], [6.4, 49.25]];
+/** Couverture (France métropolitaine, D42) : cadrage initial avant chargement de coverage.geojson. */
+export const COVERAGE_BOUNDS: LngLatBoundsLike = [[-5.2, 41.3], [9.6, 51.1]];
 const WORLD: GeoJSON.Position[] = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
 // n°1 = accent de l'interface (D34) ; carte toujours claire → valeur claire fixe. Ni vert ni brun clair (forêts, courbes IGN).
 export const ACCENT = '#a8441c';
@@ -58,6 +60,7 @@ export class TrailMap {
       style: PLAN_IGN_STYLE,
       ...(view ? { center: [view.lon, view.lat] as [number, number], zoom: 12 } : { bounds: COVERAGE_BOUNDS }),
       maxZoom: 18.5,
+      maxPitch: 75, // D57 : caméra 3D inclinée à PITCH_3D (60 par défaut dans MapLibre)
       // demande 4 : étiquettes de balisage et d'eau tirées d'OpenStreetMap (ODbL)
       attributionControl: { compact: true, customAttribution: ['© IGN', '<a href="https://www.openstreetmap.org/copyright">© les contributeurs d’OpenStreetMap</a>'] },
       dragRotate: false,
@@ -183,10 +186,47 @@ export class TrailMap {
     (this.map.getSource('cursor') as GeoJSONSource).setData(data);
   }
 
-  fitLoop(c: Candidate, padding: maplibregl.PaddingOptions) {
+  fitLoop(c: Candidate, padding: maplibregl.PaddingOptions, duration = 600) {
     const b = new maplibregl.LngLatBounds();
     c.lon.forEach((lo, i) => b.extend([lo, c.lat[i]]));
-    this.map.fitBounds(b, { padding, maxZoom: 16, duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : 600 });
+    this.map.fitBounds(b, { padding, maxZoom: 16, duration: matchMedia('(prefers-reduced-motion: reduce)').matches ? 0 : duration });
+  }
+
+  /** Cadre la sortie c (choix d'une variante, D57) : en 2D comme en 3D, avec la marge, animation courte. */
+  frameLoop(c: Candidate, padding: maplibregl.PaddingOptions, cap: 'centroid' | 'km1' = 'centroid') {
+    if (this.is3d) this.camera3D(c, padding, cap, 500);
+    else this.fitLoop(c, padding, 400);
+  }
+
+  /** Caméra 3D sur c (D57 : plus près et plus inclinée qu'un simple cadrage, l'itinéraire remplit l'écran). */
+  private camera3D(c: Candidate, padding: maplibregl.PaddingOptions, cap: 'centroid' | 'km1', duration: number) {
+    const m = this.map, still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const bearing = faceBearing(c, cap);
+    const b = new maplibregl.LngLatBounds();
+    c.lon.forEach((lo, i) => b.extend([lo, c.lat[i]]));
+    const cam = m.cameraForBounds(b, { padding, bearing });
+    if (!cam) return;
+    // cadrage en perspective : `cameraForBounds` cadre vu de dessus ; inclinée, la sortie ne remplissait plus
+    // qu'un cinquième de l'écran. On essaie la vue inclinée (sans l'afficher), on mesure l'emprise projetée
+    // de la sortie dans la zone utile (hors marges) et on corrige le zoom pour qu'elle la remplisse (D57).
+    let center = maplibregl.LngLat.convert(cam.center ?? m.getCenter()), zoom = cam.zoom ?? 13;
+    const start = { center: m.getCenter(), zoom: m.getZoom(), bearing: m.getBearing(), pitch: m.getPitch(), padding: m.getPadding() };
+    const cv = m.getCanvas().getBoundingClientRect();
+    const w = Math.max(cv.width - (padding.left ?? 0) - (padding.right ?? 0), 50);
+    const h = Math.max(cv.height - (padding.top ?? 0) - (padding.bottom ?? 0), 50);
+    const step = Math.max(1, Math.floor(c.lat.length / 300));
+    for (let k = 0; k < 4; k++) {
+      m.jumpTo({ center, zoom, bearing, pitch: PITCH_3D, padding });
+      const ps = c.lat.filter((_, i) => i % step === 0).map((la, i) => m.project([c.lon[i * step], la]));
+      const x0 = Math.min(...ps.map((p) => p.x)), x1 = Math.max(...ps.map((p) => p.x));
+      const y0 = Math.min(...ps.map((p) => p.y)), y1 = Math.max(...ps.map((p) => p.y));
+      // centre de l'emprise projetée → centre de la zone utile (en perspective, le cadrage vu de dessus la
+      // poussait hors de l'écran sur téléphone), puis échelle avec 10 % de marge, pas borné
+      center = m.unproject([(x0 + x1) / 2, (y0 + y1) / 2]);
+      zoom += Math.max(-1, Math.min(1, Math.log2(0.9 * Math.min(w / Math.max(x1 - x0, 1), h / Math.max(y1 - y0, 1)))));
+    }
+    m.jumpTo(start);
+    m.easeTo({ center, zoom: Math.min(zoom, 17), bearing, pitch: PITCH_3D, padding, duration: still ? 0 : duration });
   }
 
   /** Centre sur p ; offsetY > 0 remonte le point (au-dessus de la bottom sheet). */
@@ -219,13 +259,8 @@ export class TrailMap {
     else { m.dragRotate.disable(); m.touchZoomRotate.disableRotation(); m.touchPitch.disable(); }
     const duration = still ? 0 : 1200;
     if (!on) { m.easeTo({ pitch: 0, bearing: 0, duration }); return; }
-    if (!c) { m.easeTo({ pitch: 60, duration }); return; }
-    const bearing = faceBearing(c, cap);
-    const b = new maplibregl.LngLatBounds();
-    c.lon.forEach((lo, i) => b.extend([lo, c.lat[i]]));
-    const cam = m.cameraForBounds(b, { padding, bearing });
-    // même zoom qu'en 2D : en perspective l'avant grossit, le fond rapetisse, la boucle reste dans le cadre
-    if (cam) m.easeTo({ center: cam.center, zoom: cam.zoom ?? 13, bearing, pitch: 60, padding, duration });
+    if (!c) { m.easeTo({ pitch: PITCH_3D, duration }); return; }
+    this.camera3D(c, padding, cap, duration);
   }
 
   /** Points de passage : repères numérotés déplaçables (D34). */

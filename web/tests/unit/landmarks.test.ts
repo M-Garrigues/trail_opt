@@ -13,23 +13,15 @@ describe('repères (api.md v1.5)', () => {
   });
 });
 
-import { placeLabels, markPrio } from '../../src/lib/geo';
+import { nearestMark } from '../../src/lib/geo';
 
-describe('noms des repères du profil sans chevauchement (2026-10-07)', () => {
-  it('rangée libre la plus basse, sinon masqué, par priorité', () => {
-    // a et b se chevauchent, c est à part ; b prioritaire (sommet plus haut)
-    expect(placeLabels([[0, 50], [40, 90], [100, 140]], [1, 2, 0])).toEqual([1, 0, 0]);
-    // trois noms au même endroit sur deux rangées : le moins prioritaire masqué
-    expect(placeLabels([[0, 50], [0, 50], [0, 50]], [3, 1, 2])).toEqual([0, -1, 1]);
-    // marge de 4 px entre deux noms
-    expect(placeLabels([[0, 50], [52, 90]], [1, 0], 1)).toEqual([0, -1]);
-    expect(placeLabels([[0, 50], [54, 90]], [1, 0], 1)).toEqual([0, 0]);
-  });
-  it('priorité : point de passage, puis sommet avant col, puis le plus haut', () => {
-    const m = (kind: 'via' | 'col' | 'summit', ele: number | null) => markPrio({ kind, ele }, 500);
-    expect(m('via', null)).toBeGreaterThan(m('summit', 3000));
-    expect(m('summit', 800)).toBeGreaterThan(m('col', 2000));
-    expect(m('col', 1300)).toBeGreaterThan(m('col', 1200));
-    expect(m('col', null)).toBe(500); // altitude inconnue : celle du profil
+describe('symboles des repères du profil (retour du fondateur, 2026-10-07)', () => {
+  it('le pointeur prend le symbole le plus proche, dans la tolérance', () => {
+    expect(nearestMark([100, 108, 200], 106)).toBe(1); // symboles qui se chevauchent : le plus proche
+    expect(nearestMark([100, 108, 200], 103)).toBe(0);
+    expect(nearestMark([100, 200], 150)).toBe(-1); // entre deux, trop loin des deux
+    expect(nearestMark([100], 118, 20)).toBe(0); // toucher : tolérance plus large
+    expect(nearestMark([100], 118, 12)).toBe(-1); // souris
+    expect(nearestMark([], 10)).toBe(-1);
   });
 });

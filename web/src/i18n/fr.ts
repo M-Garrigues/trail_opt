@@ -68,7 +68,7 @@ export const fr = {
     },
     share: (p: P) => `${p.trail} % chemin · ${p.road} % route`,
     // trois classes (api.md v1.8) : chemin naturel, intermédiaire (allées, voies piétonnes, escaliers), route
-    parts: { trail: 'chemin', mixed: 'intermédiaire', road: 'route' },
+    parts: { trail: 'chemin', mixed: 'aménagé', road: 'route' },
     lowTrail: (p: P) => `Seulement ${p.pct} % de chemins ici : peu de sentiers autour de ce départ.`,
   },
   // étiquettes des dalles (api.md v1.8) : calme (IGN), balisage et eau (OSM)
@@ -87,6 +87,11 @@ export const fr = {
     pace: 'Allure',
     paceUnit: 'min/km-effort',
     loops: 'Sorties proposées',
+    smooth: 'Sorties plus fluides',
+    smoothAuto: 'Selon le type (par défaut)',
+    smoothOn: 'Oui',
+    smoothOff: 'Non',
+    smoothHelp: 'Moins de lacets inutiles, explore plus de reliefs ; un peu plus lent.',
   },
   estimate: 'Durée estimée',
   options: { title: 'Options', done: 'Terminé' },
@@ -269,7 +274,7 @@ export const fr = {
     long_distance: () => '', // D34 : pas de conseils (la distance est déjà affichée)
     zone_reduced: (p: P) => `Zone réduite à ${p.radius_km} km autour du départ.`,
     access_round_trip: (p: P) => `Inclut un aller-retour d’accès de ${p.access_m} m.`,
-    start_moved: (p: P) => `Départ déplacé de ${p.distance_m} m.`,
+    start_moved: (p: P) => `Départ déplacé de ${p.distance_m} m vers le chemin le plus proche.`,
     start_far_from_network: (p: P) => `Départ à ${p.distance_m} m du premier chemin.`,
     distance_out_of_tolerance: () => 'Rien à ±5 % : voici la plus proche.',
     target_dplus_above_bound: (p: P) => `Au plus ~${p.max_dplus_m} m de D+ en ${p.max_km} km ici.`,

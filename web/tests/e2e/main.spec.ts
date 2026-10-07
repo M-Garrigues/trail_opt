@@ -75,7 +75,7 @@ test('parcours principal', async ({ page }) => {
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toHaveText('+424 m');
   const q = calls[0].searchParams;
-  expect([...q.keys()].every((k) => ['lat', 'lon', 'goal', 'distance_km', 'dplus_m', 'max_distance_km', 'climbs', 'max_grade_pct', 'surface', 'no_repeat_junction', 'n_candidates', 'polygon', 'seed'].includes(k))).toBe(true);
+  expect([...q.keys()].every((k) => ['lat', 'lon', 'goal', 'distance_km', 'dplus_m', 'max_distance_km', 'climbs', 'max_grade_pct', 'surface', 'no_repeat_junction', 'smooth', 'n_candidates', 'polygon', 'seed'].includes(k))).toBe(true);
   expect(q.get('n_candidates')).toBe('1');
   expect(q.get('climbs')).toBe('short');
   expect(await axe(page), 'axe E6').toEqual([]);

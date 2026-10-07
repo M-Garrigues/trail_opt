@@ -76,7 +76,7 @@ describe('requête', () => {
     expect(surfaceText({ trail_frac: 0.724 }, 'fr')).toBe('72 % chemin · 28 % route');
     expect(surfaceText({}, 'fr')).toBe('');
     // trois classes (v1.8) : arrondi à 100 %, parts nulles omises ; `trail_frac` des anciennes sorties sinon
-    expect(surfaceText({ trail_frac: 0.6, surface_share: [0.555, 0.105, 0.34] }, 'fr')).toBe('56 % chemin · 10 % intermédiaire · 34 % route');
+    expect(surfaceText({ trail_frac: 0.6, surface_share: [0.555, 0.105, 0.34] }, 'fr')).toBe('56 % chemin · 10 % aménagé · 34 % route');
     expect(surfaceText({ surface_share: [0.333, 0.333, 0.334] }, 'en')).toBe('33% trail · 33% mixed · 34% road');
     expect(surfaceText({ surface_share: [0, 0.004, 0.996] }, 'fr')).toBe('100 % route');
     expect(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' })).toEqual({ share: 0.38 });
@@ -95,6 +95,19 @@ describe('requête', () => {
     expect(labelsText({ calm_frac: 0.823, hike_m: 3400, water_m: 1200 }, 'fr')).toEqual({ text: '82 % au calme · 3,4 km balisés · 1,2 km au bord de l’eau', osm: true });
     expect(labelsText({ calm_frac: 0.5, hike_m: 0, water_m: 20 }, 'en')).toEqual({ text: '50% quiet', osm: false });
     expect(labelsText({}, 'fr')).toEqual({ text: '', osm: false });
+  });
+  it('« Sorties plus fluides » (D62) : rien d’envoyé par défaut, forcé sinon, relu depuis un lien, mémorisé', () => {
+    const s = defaultSettings();
+    expect(s.smooth).toBe('auto');
+    const q = (x: typeof s) => buildQuery(x, { lat: 45, lon: 5 }, { n: 1, seed: 0 });
+    expect(q(s).has('smooth')).toBe(false);
+    expect(q({ ...s, smooth: 'on' }).get('smooth')).toBe('true');
+    expect(q({ ...s, smooth: 'off' }).get('smooth')).toBe('false');
+    expect(settingsFromRequest({ goal: 'target', smooth: 'true' }, s).smooth).toBe('on');
+    expect(settingsFromRequest({ goal: 'target', smooth: '0' }, s).smooth).toBe('off');
+    expect(settingsFromRequest({ goal: 'target' }, { ...s, smooth: 'on' }).smooth).toBe('auto');
+    expect(mergeSettings({ smooth: 'off' }).smooth).toBe('off');
+    expect(mergeSettings({ smooth: 'maybe' }).smooth).toBe('auto');
   });
   it('réglages mémorisés corrompus → défauts', () => {
     expect(mergeSettings('x').typeId).toBe('target');

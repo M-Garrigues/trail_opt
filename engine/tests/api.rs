@@ -36,6 +36,15 @@ fn validation_stricte() {
     assert_eq!(code(&format!("{ok}&goal=fast")), Code::ModeUnknown);
     assert_eq!(code(&format!("{ok}&roads=x")), Code::RoadsUnknown);
     assert_eq!(code(&format!("{ok}&surface=x")), Code::RoadsUnknown);
+    // D62 : `smooth` booléen facultatif ; absent = défaut du mode (cible actif, max coupé)
+    assert_eq!(code(&format!("{ok}&smooth=2")), Code::InvalidRequest);
+    let sm = |s: &str| parse(&q(&format!("{ok}{s}"))).unwrap().0;
+    assert_eq!(sm("").smooth, None);
+    assert_eq!(sm("&smooth=1").smooth, Some(true));
+    assert_eq!(sm("&smooth=false").smooth, Some(false));
+    assert!(!sm("").smooth_on());
+    assert!(sm("&goal=target&dplus_m=300").smooth_on());
+    assert!(!sm("&goal=target&dplus_m=300&smooth=0").smooth_on());
     // v1.7 : `surface` ; l'ancien `roads` (liens partagés, historique) est traduit, `surface` l'emporte
     let surf = |s: &str| parse(&q(&format!("{ok}{s}"))).unwrap().0.surface;
     assert_eq!(surf(""), "trail");
@@ -452,6 +461,69 @@ fn partage_schema_strict() {
 /// Boucle partagée avant la v1.7 (sans `trail_frac`) : sa signature, calculée comme l'ancien
 /// binaire (HMAC du JSON brut, sans passer par le schéma actuel), reste valable ; une part de
 /// chemin ajoutée après coup ne l'est pas (champ signé), une part signée l'est.
+/// M1 (revue sécu 2026-10-07) : aucun nombre de la requête ne fait paniquer le moteur ni ne lance
+/// de calcul : NaN, infini, 1e308 ou négatif → erreur 4xx avant Turnstile, pour chaque paramètre.
+#[test]
+fn nombres_hors_bornes_refuses_sans_panique() {
+    let Some((_, store)) = common::tiles(&[common::MASSY]) else {
+        return;
+    };
+    let key = key();
+    let never = |_: &str| -> Result<bool, String> { panic!("Turnstile ne doit pas être appelé") };
+    let base = [
+        ("lat", "48.7309"),
+        ("lon", "2.2713"),
+        ("goal", "target"),
+        ("distance_km", "10"),
+        ("dplus_m", "300"),
+        ("max_grade_pct", "60"),
+        ("n_candidates", "1"),
+        ("seed", "0"),
+        ("via", "48.74,2.28"),
+    ];
+    let params = [
+        "lat",
+        "lon",
+        "distance_km",
+        "dplus_m",
+        "max_grade_pct",
+        "n_candidates",
+        "seed",
+        "max_distance_km",
+    ];
+    for p in params {
+        for bad in ["NaN", "inf", "-inf", "1e308", "-1e308", "-1"] {
+            let mut kv: Vec<(String, String)> = base
+                .iter()
+                .filter(|(k, _)| *k != p)
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect();
+            if p == "max_distance_km" {
+                kv.retain(|(k, _)| k != "goal");
+                kv.push(("goal".into(), "min_distance".into()));
+            }
+            kv.push((p.into(), bad.into()));
+            let r = handle(&kv, None, false, &store, &key, never);
+            assert!(
+                (400..=422).contains(&r.status),
+                "{p}={bad} : {} {}",
+                r.status,
+                r.body
+            );
+        }
+    }
+    // le cas de la revue : distance_km=1e308 avec un point de passage
+    let r = handle(
+        &q("lat=45.18&lon=5.72&distance_km=1e308&via=45.19,5.73"),
+        None,
+        false,
+        &store,
+        &key,
+        never,
+    );
+    assert!((400..=422).contains(&r.status), "{}", r.body);
+}
+
 #[test]
 fn partage_ancienne_boucle_sans_trail_frac() {
     let hmac_raw = |v: &Value| {

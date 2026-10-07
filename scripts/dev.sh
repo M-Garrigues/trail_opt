@@ -51,7 +51,9 @@ if [ "${WEB:-1}" = 1 ] && [ -d "$ROOT/web/node_modules" ]; then
   [ "${LAN:-0}" = 1 ] && echo "Réseau local : $scheme://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | cut -d' ' -f1):$WEB_PORT"
 fi
 cd "$ROOT/engine"
-cargo lambda watch --profile local --bin lambda --invoke-port "$API_PORT" \
+# H1 (revue sécu 2026-10-07) : API sur la boucle locale seulement (sinon tout le réseau Wi-Fi peut lancer des
+# calculs sans Turnstile) ; le mode LAN passe par Vite (:$WEB_PORT), qui relaie /api vers 127.0.0.1
+cargo lambda watch --profile local --bin lambda --invoke-address 127.0.0.1 --invoke-port "$API_PORT" \
   --env-var "TILES_DIR=$TILES_DIR" \
   --env-var "TURNSTILE_SECRET=$TURNSTILE_SECRET" \
   --env-var "FORCE_TURNSTILE=$FORCE_TURNSTILE" \

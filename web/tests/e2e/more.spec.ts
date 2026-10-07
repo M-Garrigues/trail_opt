@@ -87,7 +87,7 @@ test('type de voie : trois choix, part de chemin affichée, avertissement sous 5
   expect(calls[0].searchParams.get('surface')).toBe('trail');
   expect(calls[0].searchParams.has('roads')).toBe(false);
   const low = isFr() ? 'Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.' : 'Only 38% trails here: few paths around this start.';
-  const share = isFr() ? '30 % chemin · 16 % intermédiaire · 54 % route' : '30% trail · 16% mixed · 54% road';
+  const share = isFr() ? '30 % chemin · 16 % aménagé · 54 % route' : '30% trail · 16% mixed · 54% road';
   await expect(page.getByText(share).first()).toBeVisible();
   await expect(page.locator('.warnings').first()).toHaveText(low); // une seule ligne : celle de la sortie affichée
   await expect(page.getByRole('alertdialog')).toHaveCount(0); // discret : pas de popup
@@ -162,4 +162,29 @@ test('partage : confirmation, lien copié, /b/<id> sans calcul (AC12, AC13)', as
   expect(await page.evaluate(() => (window as unknown as { copied: string }).copied)).toMatch(/\/b\/ZkD5HAVbAzLl$/);
   await page.goto('/b/nope000000');
   await expect(page.getByRole('alert')).toContainText(isFr() ? 'expiré' : 'expired');
+});
+
+// D62 : « Sorties plus fluides » en bas des Options : rien d'envoyé tant qu'on n'y touche pas ; forcé, envoyé et mémorisé.
+test('option « Sorties plus fluides » : défaut du mode, puis forcée et mémorisée', async ({ page }) => {
+  await setup(page);
+  const calls = await mockPlan(page);
+  await page.goto('/');
+  await placeStart(page);
+  await page.getByRole('button', { name: T().find }).click();
+  await expect(page.getByTestId('headline')).toBeVisible();
+  expect(calls[0].searchParams.has('smooth')).toBe(false);
+  await page.goBack();
+  await openOptions(page);
+  const sel = page.locator('#smooth');
+  await expect(sel).toHaveValue('auto');
+  await expect(page.locator('#smooth-help')).toHaveText(isFr() ? 'Moins de lacets inutiles, explore plus de reliefs ; un peu plus lent.' : 'Fewer pointless zigzags, explores more terrain; a little slower.');
+  await sel.selectOption('on');
+  await closeOptions(page);
+  if (await page.locator('.sheet').count()) await expect(page.locator('.bar .btn.ico .dot')).toBeVisible(); // pastille du bouton Options
+  await page.getByRole('button', { name: T().find }).click();
+  await expect(page.getByTestId('headline')).toBeVisible();
+  expect(calls[1].searchParams.get('smooth')).toBe('true');
+  await page.reload();
+  await openOptions(page);
+  await expect(page.locator('#smooth')).toHaveValue('on'); // mémorisé
 });

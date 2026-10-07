@@ -63,7 +63,8 @@ export const app = $state({
 
 /** Avertissements « demande non atteinte » (api.md v1.5 § Messages importants). Les anciens codes ne comptent que sans `target_not_reached`. */
 const LEGACY = ['distance_out_of_tolerance', 'target_dplus_above_bound', 'target_dplus_probably_unreachable', 'dplus_not_reached'];
-const NOT_MET = ['target_not_reached', 'fewer_loops', 'via_missed', 'start_moved', ...LEGACY];
+// (un simple départ déplacé n'est pas un écart à la demande : ligne d'information dans le résultat, 2026-10-07)
+const NOT_MET = ['target_not_reached', 'fewer_loops', 'via_missed', ...LEGACY];
 export const isImportant = (code: string) => NOT_MET.includes(code);
 
 function setNotice(res: PlanResponse, q: URLSearchParams) {

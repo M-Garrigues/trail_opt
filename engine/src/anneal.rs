@@ -12,23 +12,26 @@ pub struct Annealer<'a> {
     p: &'a Problem,
     pub rng: Rng,
     /// Pente normalisée par arête (w / l rapporté au 95e centile).
-    gn: Vec<f64>,
+    pub gn: Vec<f64>,
     adj: Vec<Vec<(usize, usize)>>,
     dist_s: Vec<f64>,
     /// Mode carrefours uniques : nœuds à ne traverser qu'une fois.
     far: Option<Vec<bool>>,
     par: Vec<Vec<usize>>,
     /// α < 0 pousse vers le plat : utile en mode cible quand le D+ est trop haut.
-    alpha_lo: f64,
+    pub alpha_lo: f64,
     pub iterations: u64,
     pub deadline: Option<Instant>,
 }
+
+/// Borne haute de α (réduction de pente du coût de parcours), tirée uniformément dans [`alpha_lo`, `ALPHA_HI`].
+pub const ALPHA_HI: f64 = 0.95;
 
 /// Coût de parcours : longueur de recherche (`Problem::search_len`, hors type compris) réduite
 /// sur les arêtes pentues (α), bruitée (σ). Le bruit d'une
 /// arête est tiré d'un hachage (sel, arête) : calculé seulement pour les arêtes que Dijkstra
 /// regarde, et identique à chaque fois pendant un même appel.
-fn cost<'b>(
+pub fn cost<'b>(
     p: &'b Problem,
     gn: &'b [f64],
     alpha: f64,
@@ -146,7 +149,7 @@ impl<'a> Annealer<'a> {
         if self.rng.random() < 0.5 {
             wps.reverse();
         }
-        let a = self.rng.uniform(self.alpha_lo, 0.95);
+        let a = self.rng.uniform(self.alpha_lo, ALPHA_HI);
         let cost = cost(p, &self.gn, a, 0.3, self.rng.next_u64());
         let (mut route, mut used, mut cur) = (Vec::new(), vec![false; p.n_edges()], p.s);
         let mut visited = vec![false; n];
@@ -209,7 +212,7 @@ impl<'a> Annealer<'a> {
                 .for_each(|&x| b[x] = true);
             b
         });
-        let alpha = self.rng.uniform(self.alpha_lo, 0.95);
+        let alpha = self.rng.uniform(self.alpha_lo, ALPHA_HI);
         let sigma = self.rng.uniform(0.0, 0.5);
         let salt = self.rng.next_u64();
         let (lo, hi) = if p.target() {

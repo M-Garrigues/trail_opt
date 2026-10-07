@@ -32,6 +32,11 @@ const LAM0: f64 = 0.02;
 /// D40 : prix du mètre au-delà de la distance demandée, en multiples de λ (mode max). Plaine : la
 /// boucle revient à la distance demandée (+0 % au lieu de +4,9 %) pour −3 à −6 % de D+.
 const LEN_PRICE: f64 = 4.0;
+/// D52 : nombre de boucles « pétales » proposées comme départs (`FaceSearch::petals`).
+const PETALS: usize = 3;
+/// D52 : poids de la direction dans l'ordre des départs d'`alternates` (180° d'écart avec les sorties
+/// gardées valent DIR_W de recouvrement en moins).
+const DIR_W: f64 = 0.3;
 /// Points de passage (T34) : pénalité de score par point manqué pendant le recuit.
 const VIA_PEN: f64 = 2000.0;
 
@@ -502,6 +507,124 @@ impl<'a> FaceSearch<'a> {
         p.parallel_ok(&ids).then_some(ids)
     }
 
+    /// D52 : boucles « pétales » départ → A → B → départ, A et B deux cibles de relief
+    /// (`relief_targets` : cellules denses en D+ à >= 3 km l'une de l'autre, donc deux reliefs),
+    /// écartées de 40 à 120° vues du départ, de longueur routée dans [0,85 ; 1,10] × L (le recuit
+    /// par faces est local : une graine hors tolérance n'est pas rattrapée). Paires présélectionnées
+    /// sur une longueur estimée (d(s,A) + 1,3·|AB| + d(B,s)), au plus `PETAL_TRIES` routées ; à défaut de
+    /// seconde cible, B = le nœud de 40 à 120° de A qui donne la meilleure longueur estimée. Triées :
+    /// cible = erreur croissante, sinon D+ décroissant ; au plus `k`.
+    pub fn petals(&self, k: usize) -> Vec<Vec<usize>> {
+        const ANG: (f64, f64) = (40.0, 120.0);
+        const LEN: (f64, f64) = (0.85, 1.10);
+        const PETAL_TRIES: usize = 8;
+        let p = self.p;
+        let ts = self.relief_targets(8);
+        if ts.len() < 2 {
+            return Vec::new();
+        }
+        // distances réelles (estimation de longueur), bornées > 0
+        let (d, _) = shortest(&self.adj, |e| p.len[e].max(1.0), p.s, None, None, None);
+        let c = p.xy[p.s];
+        let bear = |n: usize| (p.xy[n][1] - c[1]).atan2(p.xy[n][0] - c[0]).to_degrees();
+        let gap = |a: usize, b: usize| (p.xy[a][0] - p.xy[b][0]).hypot(p.xy[a][1] - p.xy[b][1]);
+        let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
+        for (i, &a) in ts.iter().enumerate() {
+            for &b in &ts[i + 1..] {
+                let ang = ((bear(a) - bear(b)).rem_euclid(360.0) + 180.0).rem_euclid(360.0) - 180.0;
+                if (ANG.0..=ANG.1).contains(&ang.abs()) {
+                    let est = d[a] + 1.3 * gap(a, b) + d[b];
+                    pairs.push(((est - p.l).abs(), a, b));
+                }
+            }
+        }
+        // et, pour chaque cible A, le nœud B de part et d'autre (40 à 120° de A) dont la longueur
+        // estimée colle le mieux à L : un pétale existe même sans seconde cible à la bonne distance
+        for &a in ts.iter().take(4) {
+            for side in [-1.0, 1.0] {
+                let best = (0..p.n_nodes())
+                    .filter(|&b| d[b].is_finite() && b != p.s)
+                    .filter(|&b| {
+                        let ang = side
+                            * (((bear(b) - bear(a)).rem_euclid(360.0) + 180.0).rem_euclid(360.0)
+                                - 180.0);
+                        (ANG.0..=ANG.1).contains(&ang)
+                    })
+                    .map(|b| ((d[a] + 1.3 * gap(a, b) + d[b] - p.l).abs(), b))
+                    .min_by(|x, y| x.0.total_cmp(&y.0));
+                if let Some((err, b)) = best {
+                    pairs.push((err, a, b));
+                }
+            }
+        }
+        pairs.sort_by(|x, y| x.0.total_cmp(&y.0));
+        let mut out: Vec<(f64, Vec<usize>)> = Vec::new();
+        for &(_, a, b) in pairs.iter().take(PETAL_TRIES) {
+            let Some(ids) = self.route_through(&[a, b]) else {
+                continue;
+            };
+            let (l, w) = p.stats(&ids);
+            if l < LEN.0 * p.l || l > LEN.1 * p.l {
+                continue;
+            }
+            let key = if p.target() {
+                let dt = p.d.unwrap_or(1.0);
+                -((l - p.l).abs() / p.l + (w - dt).abs() / dt)
+            } else {
+                w
+            };
+            out.push((key, ids));
+        }
+        out.sort_by(|x, y| y.0.total_cmp(&x.0));
+        out.into_iter().take(k).map(|x| x.1).collect()
+    }
+
+    /// D52 : direction (radians) d'une boucle vue du départ : barycentre des milieux d'arêtes
+    /// pondéré par la longueur.
+    pub fn bearing(&self, ids: &[usize]) -> f64 {
+        let (p, c) = (self.p, self.p.xy[self.p.s]);
+        let (mut x, mut y) = (0.0, 0.0);
+        for &e in ids {
+            let (a, b) = (p.xy[p.u[e]], p.xy[p.v[e]]);
+            x += p.len[e] * ((a[0] + b[0]) / 2.0 - c[0]);
+            y += p.len[e] * ((a[1] + b[1]) / 2.0 - c[1]);
+        }
+        y.atan2(x)
+    }
+
+    /// Boucle départ → wps… → départ par plus courts chemins (`search_len`, toujours > 0), sans
+    /// arête répétée ni couloir parallèle repris, ni (carrefours uniques) nœud lointain repassé.
+    fn route_through(&self, wps: &[usize]) -> Option<Vec<usize>> {
+        let p = self.p;
+        let mut used = vec![false; p.n_edges()];
+        let mut visited = vec![false; p.n_nodes()];
+        let (mut cur, mut ids) = (p.s, Vec::new());
+        for &t in wps.iter().chain([&p.s]) {
+            let bn = self.far.as_ref().map(|_| visited.as_slice());
+            let (dist, prev) = shortest(
+                &self.adj,
+                |e| p.search_len(e),
+                cur,
+                Some(t),
+                Some(&used),
+                bn,
+            );
+            if dist[t] == INF {
+                return None;
+            }
+            for (e, _, b) in path_from(&prev, cur, t) {
+                used[e] = true;
+                self.par[e].iter().for_each(|&q| used[q] = true);
+                if self.far.as_ref().is_some_and(|f| f[b]) {
+                    visited[b] = true;
+                }
+                ids.push(e);
+            }
+            cur = t;
+        }
+        p.parallel_ok(&ids).then_some(ids)
+    }
+
     // ------------------------------------------------------------ recherche locale
     /// Recuit depuis la boucle `init` (ids d'arêtes), `iters` itérations. Renvoie (ids de la
     /// meilleure boucle dans les bornes, ou de la dernière ; λ final ; itérations faites).
@@ -553,13 +676,15 @@ impl<'a> FaceSearch<'a> {
             crate::problem::SURF_TARGET_BAND
         };
         let (m, n) = (p.n_edges(), p.n_nodes());
+        // coût aux nœuds de degré 2 de la boucle : T24 « longues » (max) et D52 virages (max, cible)
+        let nodes_on = p.node_mu != 0.0 || p.turn_mu != 0.0;
         let mut st = Loop {
             inx: vec![false; m],
             pos: vec![0; m],
             x: Vec::new(),
             deg: vec![0; n],
-            inc: vec![Vec::new(); if p.node_mu != 0.0 { n } else { 0 }],
-            track: p.node_mu != 0.0,
+            inc: vec![Vec::new(); if nodes_on { n } else { 0 }],
+            track: nodes_on,
         };
         let (mut cur_l, mut cur_w, mut cur_b) = (0.0, 0.0, 0.0);
         for &e in init {
@@ -573,12 +698,28 @@ impl<'a> FaceSearch<'a> {
             cur_l += ln[e];
             cur_w += w[e];
         }
-        // T24 « longues » : coût par montée aux nœuds (extrema entre deux arêtes consécutives),
-        // compté dans B ; modes max seulement (search_problem le pose).
-        let nterm = p.node_mu != 0.0 && !md && !target;
+        // T24 « longues » (extrema entre deux arêtes consécutives, max seulement : search_problem le
+        // pose) et D52 virages aux carrefours (max et cible) : compté dans B ; jamais en min_distance
+        let nterm = nodes_on && !md;
+        let junction: Vec<bool> = if nterm {
+            p.degrees().iter().map(|&d| d >= 3).collect()
+        } else {
+            Vec::new()
+        };
         if nterm {
-            cur_b -= p.node_mu * p.node_climbs(&st.x);
+            cur_b -= p.node_costs(&st.x);
         }
+        // coût courant de chaque nœud de la boucle (évite de recalculer « avant » à chaque mouvement)
+        // (extremum, virage) non pondérés, sommés à part : sans virage, calculs bit à bit d'avant D52
+        let mut ncost = vec![[0.0; 2]; if nterm { n } else { 0 }];
+        if nterm {
+            for (a, es) in st.inc.iter().enumerate() {
+                if es.len() == 2 {
+                    ncost[a] = p.node_terms(a, es[0], es[1], junction[a]);
+                }
+            }
+        }
+        let mut aft: Vec<(usize, [f64; 2])> = Vec::new();
         let (mut mark_t, mut stamp_t) = (vec![0u64; if nterm { m } else { 0 }], 0u64);
         // points de passage : nœuds marqués, nombre de points que la boucle ne touche pas
         let mut is_via = vec![false; if p.via.is_empty() { 0 } else { n }];
@@ -687,7 +828,11 @@ impl<'a> FaceSearch<'a> {
                 }
                 // extremum en a avant / après bascule (après = arêtes gardées + arêtes de la face
                 // en a qui entrent) ; ignoré si le degré n'est pas 2
+                // coût du nœud a APRÈS bascule (avant : `ncost`, tenu à jour à chaque mouvement accepté)
                 let ext = |a: usize, fa: [usize; 2], after: bool| {
+                    if p.node_mu == 0.0 && !junction[a] {
+                        return [0.0; 2]; // virage seul : rien hors carrefour
+                    }
                     let (mut es, mut k) = ([usize::MAX; 2], 0);
                     let kept = st.inc[a]
                         .iter()
@@ -701,19 +846,22 @@ impl<'a> FaceSearch<'a> {
                         k += 1;
                     }
                     if k == 2 {
-                        p.node_ext(a, es[0], es[1])
+                        p.node_terms(a, es[0], es[1], junction[a])
                     } else {
-                        0.0
+                        [0.0; 2]
                     }
                 };
                 let nf = f.len();
-                let dk: f64 = (0..nf)
-                    .map(|i| {
-                        let fa = [f[(i + nf - 1) % nf].0, f[i].0];
-                        ext(f[i].1, fa, true) - ext(f[i].1, fa, false)
-                    })
-                    .sum();
-                db -= p.node_mu * dk;
+                aft.clear();
+                let (mut dk, mut dt) = (0.0, 0.0);
+                for i in 0..nf {
+                    let a = f[i].1;
+                    let c = ext(a, [f[(i + nf - 1) % nf].0, f[i].0], true);
+                    dk += c[0] - ncost[a][0];
+                    dt += c[1] - ncost[a][1];
+                    aft.push((a, c));
+                }
+                db -= p.node_mu * dk + p.turn_mu * dt;
             }
             let mut dm = 0i64;
             if !is_via.is_empty() {
@@ -778,6 +926,9 @@ impl<'a> FaceSearch<'a> {
             cur_b += db;
             cur_m += dm;
             cur = new;
+            if nterm {
+                aft.iter().for_each(|&(a, c)| ncost[a] = c);
+            }
             if md {
                 if md_ok(cur_l, cur_w, cur_m) {
                     let better = best_l == INF
@@ -844,6 +995,13 @@ impl<'a> FaceSearch<'a> {
             if let Some(c) = self.corridor(t) {
                 let d = (p.xy[t][0] - p.xy[p.s][0]).hypot(p.xy[t][1] - p.xy[p.s][1]);
                 inits.push((format!("couloir {:.1} km", d / 1000.0), c));
+            }
+        }
+        // D52 : pétales sur deux reliefs voisins (les sondes les départagent par `p.score`, qui
+        // compte les virages : un pétale lisse l'emporte à erreur égale)
+        if p.smooth {
+            for (i, x) in self.petals(PETALS).into_iter().enumerate() {
+                inits.push((format!("pétale {}", i + 1), x));
             }
         }
         if inits.is_empty() {
@@ -975,6 +1133,9 @@ impl<'a> FaceSearch<'a> {
         let p = self.p;
         let mut inits: Vec<Vec<usize>> = Vec::new();
         inits.extend(self.start_face());
+        if p.smooth {
+            inits.extend(self.petals(PETALS));
+        }
         inits.extend(
             self.relief_targets(8)
                 .into_iter()
@@ -1100,7 +1261,21 @@ impl<'a> FaceSearch<'a> {
             }
             let (w_eff, wb_eff) = weights(&kept, 1.0 - DISCOUNT[level], 0.0);
             let ov = |x: &[usize]| kept.iter().map(|k| self.overlap(x, k)).fold(0.0, f64::max);
-            inits.sort_by(|x, y| ov(x).total_cmp(&ov(y)));
+            // D52 : à recouvrement égal, partir de la direction la plus éloignée des sorties gardées
+            // (écart angulaire min, 0 à 1 pour 0 à 180° ; 180° valent DIR_W de recouvrement)
+            let kb: Vec<f64> = kept.iter().map(|k| self.bearing(k)).collect();
+            let sep = |x: &[usize]| {
+                let b = self.bearing(x);
+                kb.iter()
+                    .map(|&k| (b - k).sin().atan2((b - k).cos()).abs() / std::f64::consts::PI)
+                    .fold(1.0, f64::min)
+            };
+            if p.smooth {
+                let key = |x: &[usize]| ov(x) - DIR_W * sep(x);
+                inits.sort_by(|x, y| key(x).total_cmp(&key(y)));
+            } else {
+                inits.sort_by(|x, y| ov(x).total_cmp(&ov(y)));
+            }
             // Deux départs par tour : un seul donne un résultat très variable.
             let tries: Vec<Vec<usize>> = inits.drain(..inits.len().min(2)).collect();
             // on garde du budget pour les tours suivants (palier relâché) tant qu'il en reste

@@ -12,6 +12,7 @@ pub mod share;
 pub mod solve;
 pub mod tiles;
 pub mod utm;
+pub mod weights;
 
 pub use anneal::Annealer;
 pub use codes::{Code, Msg};

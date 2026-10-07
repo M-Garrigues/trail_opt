@@ -28,7 +28,7 @@
 
   // Options hors défaut : pastille sur le bouton « Options » (mobile)
   const D = defaultSettings();
-  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== D.maxGrade || s.surface !== D.surface || s.noRepeat !== D.noRepeat);
+  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== D.maxGrade || s.surface !== D.surface || s.noRepeat !== D.noRepeat || s.smooth !== D.smooth);
   // mobile : valeur en cours de saisie au pavé (couche `pad` : le bouton Retour annule) ; le pavé reprend la hauteur
   // qu'avait le contenu de la feuille, pour que ni la feuille ni la carte ne bougent
   let editing = $state<Field | null>(null);
@@ -113,6 +113,16 @@
       <select id="pace" bind:value={app.settings.paceS}>
         {#each PACES as p}<option value={p}>{pace(p)}</option>{/each}
       </select>
+    </div>
+    <!-- D62 : en bas des Options ; « selon le type » = rien d'envoyé, le moteur applique le défaut du mode -->
+    <div class="field">
+      <label for="smooth">{t().more.smooth}</label>
+      <select id="smooth" bind:value={app.settings.smooth} aria-describedby="smooth-help">
+        <option value="auto">{t().more.smoothAuto}</option>
+        <option value="on">{t().more.smoothOn}</option>
+        <option value="off">{t().more.smoothOff}</option>
+      </select>
+      <p id="smooth-help" class="note">{t().more.smoothHelp}</p>
     </div>
   {/snippet}
   {#if desktop}

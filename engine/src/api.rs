@@ -24,7 +24,7 @@ pub const DEFAULT_GRADE_PCT: f64 = 60.0;
 pub const TARGET_DPLUS_M: (f64, f64) = (10.0, 5000.0);
 /// Simplification Douglas–Peucker en plan (m).
 pub const SIMPLIFY_M: f64 = 1.0;
-const KNOWN: [&str; 16] = [
+const KNOWN: [&str; 17] = [
     "lat",
     "lon",
     "goal",
@@ -41,6 +41,7 @@ const KNOWN: [&str; 16] = [
     "seed",
     "debug",
     "via",
+    "smooth",
 ];
 
 pub struct Reply {
@@ -178,8 +179,12 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         "enforce_limits": true,
         "max_compute_s": MAX_COMPUTE_S,
         "via": via,
+        // D62 : absent = défaut du mode
+        "smooth": s("smooth").map(|_| flag("smooth", false)).transpose()?,
     });
     let req: Request = serde_json::from_value(req).map_err(|e| bad(e.to_string()))?;
+    // M1 : bornes du contrat vérifiées ici, avant la couverture, les points de passage et Turnstile
+    plan::check(&req)?;
     Ok((req, flag("debug", false)?))
 }
 
@@ -361,7 +366,6 @@ pub fn handle(
     let mut log = json!({
         "msg": "plan", "start_l93_km": km(store, get("lat"), get("lon")),
         "zone": store.zone(get("lat"), get("lon")).name,
-        "goal": query.iter().find(|x| x.0 == "goal").map(|x| x.1.clone()),
         "distance_km": get("distance_km").is_finite().then(|| get("distance_km")),
         "dplus_m": get("dplus_m").is_finite().then(|| get("dplus_m")),
         "internal": internal, "accepted": false,
@@ -371,7 +375,12 @@ pub fn handle(
         let status = http_status(m.code);
         log["status"] = json!(status);
         log["code"] = json!(m.code);
-        log["detail"] = json!(m.detail);
+        // D61 : `detail` (texte de la requête possible) tronqué à 100 caractères dans les journaux
+        log["detail"] = json!(
+            m.detail
+                .as_deref()
+                .map(|d| d.chars().take(100).collect::<String>())
+        );
         log["compute_s"] = json!(t0.elapsed().as_secs_f64());
         Reply {
             status,
@@ -399,8 +408,17 @@ pub fn handle(
         Ok(x) => x,
         Err(m) => return fail(m, log),
     };
+    // D61 : champs texte journalisés seulement une fois validés (`parse` → `plan::check`)
+    log["goal"] = json!(
+        query
+            .iter()
+            .find(|x| x.0 == "goal")
+            .map_or("max_dplus", |x| x.1.as_str())
+    );
     log["climbs"] = json!(req.climbs);
+    log["surface"] = json!(req.surface);
     log["n_candidates"] = json!(req.n_candidates);
+    log["smooth"] = json!(req.smooth_on());
     if !covered(store, req.lat, req.lon) {
         return fail(
             Msg::error(Code::OutsideCoverage, "start outside the tiles"),
@@ -464,7 +482,10 @@ pub fn handle(
     }
     // surcoût des dalles (téléchargement S3 à froid compris) : suivi dans les logs
     log["tiles_load_s"] = out["debug"]["tiles_load_s"].clone();
-    if !debug && let Some(o) = out.as_object_mut() {
+    // F4 : `debug=1` seulement en build local (debug_assertions), jamais en prod
+    if !(debug && cfg!(debug_assertions))
+        && let Some(o) = out.as_object_mut()
+    {
         o.remove("debug");
     }
     let c0 = &out["candidates"][0];

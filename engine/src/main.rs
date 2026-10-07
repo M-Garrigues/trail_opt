@@ -1,6 +1,7 @@
 //! CLI du moteur.
 //!   engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K]
 //!   engine plan --tiles DIR --request req.json [--prep-only]   boucles depuis les dalles tiles/1
+//!   engine weights …   export des pondérations par arête (D55, .team/contracts/weights.md)
 //!   engine codes          liste des codes d'erreur et d'avertissement (JSON)
 //! `solve` écrit le résultat en JSON sur la sortie standard ; en cas d'échec
 //! {"error": {"code", "params", "detail"}} et code de sortie 1.
@@ -11,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use engine::{Budget, Code, Msg, Problem, codes, optimize};
 
-const USAGE: &str = "usage : engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K] | engine plan --tiles DIR --request req.json [--prep-only] | engine codes";
+const USAGE: &str = "usage : engine solve --problem f.json [--time S] [--iters N] [--anneal-iters M] [--seed S] [--candidates K] | engine plan --tiles DIR --request req.json [--prep-only] | engine weights --tiles DIR (--center LAT,LON --radius-km R | --bbox …) --goal G --surface S --out DIR | engine codes";
 
 fn fail(msg: Msg) -> ! {
     println!("{}", serde_json::json!({ "error": msg }));
@@ -35,7 +36,11 @@ fn main() {
         }
         Some("solve") => {}
         Some("plan") => plan(&args[1..]),
-        _ => usage("commande attendue : solve, plan ou codes".into()),
+        Some("weights") => {
+            engine::weights::cli(&args[1..]).unwrap_or_else(|e| usage(e));
+            return;
+        }
+        _ => usage("commande attendue : solve, plan, weights ou codes".into()),
     }
     let (mut path, mut time, mut iters, mut anneal_iters, mut seed, mut candidates) =
         (None, None, None, None, 0u64, 1usize);

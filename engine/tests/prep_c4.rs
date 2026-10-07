@@ -288,7 +288,9 @@ fn short_repli_is_split_and_start_moved() {
 
 /// D50 : grand axe (importance 1 à 3) fortement pénalisé dans toutes les préférences, jamais
 /// exclu. Carré de 1,6 km par le départ dont le côté sud est une nationale de 400 m, doublée par
-/// une petite route parallèle de 500 m : la sortie prend la petite route ; sans elle, la nationale.
+/// une petite route parallèle de 450 m : la sortie prend la petite route ; sans elle, la nationale.
+/// En Cible (`MAJOR_K` m de distance par mètre de grand axe). Mode max : prix du grand axe retiré
+/// le 07/10 (critère D52 sur la 2e sortie de Massy), il n'y coûte que la préférence de type.
 #[test]
 fn major_roads_avoided_unless_needed() {
     let road = |w: &mut World, pts: &[[f64; 2]], imp: u8| {
@@ -305,12 +307,16 @@ fn major_roads_avoided_unless_needed() {
             if alt {
                 road(
                     &mut w,
-                    &[[0.0, 0.0], [0.0, -50.0], [400.0, -50.0], [400.0, 0.0]],
+                    &[[0.0, 0.0], [0.0, -25.0], [400.0, -25.0], [400.0, 0.0]],
                     5,
                 );
             }
             let out = w
-                .run(json!({"distance_km": 1.65, "surface": surface}), false)
+                .run(
+                    json!({"distance_km": 1.65, "surface": surface, "mode": "target",
+                        "target_dplus": 40.0}),
+                    false,
+                )
                 .unwrap();
             let lp = &out["candidates"][0];
             assert_eq!(lp["feasible"], true, "{alt} {surface}");
@@ -318,7 +324,7 @@ fn major_roads_avoided_unless_needed() {
                 .as_array()
                 .unwrap()
                 .iter()
-                .any(|x| x.as_f64().unwrap() < LAT - 0.0003);
+                .any(|x| x.as_f64().unwrap() < LAT - 0.00015);
             assert_eq!(south, alt, "{alt} {surface} : petite route au sud");
         }
     }
@@ -364,7 +370,8 @@ fn via_points_never_give_a_loop_over_max_distance() {
 /// Étiquettes (demande 4) : même carré que pour les grands axes, le côté sud doublé par un sentier
 /// parallèle plus long. Le côté sud (300 m) est bruyant (calme 0) ; la variante longe l'eau, ou
 /// est balisée. En « Chemins » et « Tout » la sortie prend la variante. Parts rendues seulement si
-/// la colonne existe.
+/// la colonne existe. D63 : en Cible (confort fort) ; en Max le confort est léger, 60 m de plus ne
+/// s'y paient plus.
 #[test]
 fn labels_soft_preferences() {
     use engine::tiles::{HAS_CALM, HAS_HIKE, HAS_WATER};
@@ -382,7 +389,11 @@ fn labels_soft_preferences() {
             (w.t.water[b], w.t.hike[b]) = (water, hike);
             w.t.has = HAS_CALM | HAS_HIKE | HAS_WATER;
             let out = w
-                .run(json!({"distance_km": 1.65, "surface": surface}), false)
+                .run(
+                    json!({"distance_km": 1.65, "surface": surface, "mode": "target",
+                        "target_dplus": 40.0}),
+                    false,
+                )
                 .unwrap();
             let lp = &out["candidates"][0];
             let s = lp["lat"]
@@ -673,6 +684,44 @@ fn keep_mask_and_trail_class() {
         assert_eq!(!keep_mask(&t, &natures()).is_empty(), kept, "{nature}");
         assert_eq!(class_mask(&t, &natures()), [cls], "{nature} {imp}");
         assert_eq!(paved_mask(&t, &natures()), [paved], "{nature}");
+    }
+}
+
+/// D48/D50 : une via ferrata (OSM, `osm_flags` bit 1) n'entre jamais dans le réseau, quel que soit
+/// le type de voie ; les autres drapeaux (éclairé, eau potable, sommet) ne retirent rien.
+#[test]
+fn via_ferrata_never_in_network() {
+    for (flag, kept) in [
+        (0u8, true),
+        (1, false),
+        (2, true),
+        (1 | 4, false),
+        (8, true),
+    ] {
+        let mut t = Troncons::new();
+        t.push(
+            1,
+            &[[0, 0], [100, 0]],
+            |_, _| 0.0,
+            code("Sentier"),
+            6,
+            OK,
+            &[],
+        );
+        t.osm_flags[0] = flag;
+        assert_eq!(
+            !keep_mask(&t, &natures()).is_empty(),
+            kept,
+            "drapeaux {flag}"
+        );
+    }
+    // de bout en bout : un carré dont un côté est une via ferrata n'est plus bouclable
+    for surface in ["trail", "any"] {
+        let mut w = World::new();
+        w.square(0.0, 0.0, 400.0);
+        w.t.osm_flags[0] = 1;
+        let r = w.run(json!({"distance_km": 1.6, "surface": surface}), false);
+        assert!(r.is_err(), "{surface}");
     }
 }
 

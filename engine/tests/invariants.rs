@@ -84,6 +84,10 @@ fn grid(l: f64, target: Option<f64>, node_simple: bool) -> Problem {
         turn: Vec::new(),
         inner: Vec::new(),
         node_mu: 0.0,
+        turn_mu: 0.0,
+        junction: Vec::new(),
+        dir: Vec::new(),
+        smooth: false,
         via: Vec::new(),
         off: Vec::new(),
         off_price: 0.0,
@@ -238,6 +242,130 @@ fn optimize_modes_et_candidats() {
     }
     let d: Vec<f64> = o.alternatives.iter().map(|a| p.stats(a).1).collect();
     assert!(d.windows(2).all(|x| x[0] >= x[1]));
+}
+
+/// Grande grille n×n de pas h (m), relief en bosses (sommets tous les ~2,5 km), départ au centre,
+/// mode max, carrefours uniques ; `diag` : une diagonale par carré (virages serrés possibles).
+fn big_grid(n: usize, h: f64, l: f64, diag: bool) -> Problem {
+    let at = |a: usize| {
+        let c = (n / 2) as f64;
+        [((a % n) as f64 - c) * h, ((a / n) as f64 - c) * h]
+    };
+    let z = |x: f64, y: f64| 150.0 * ((x / 800.0).sin() * (y / 800.0).cos()).abs();
+    let mut e: Vec<(usize, usize)> = Vec::new();
+    for a in 0..n * n {
+        if a % n + 1 < n {
+            e.push((a, a + 1));
+        }
+        if a / n + 1 < n {
+            e.push((a, a + n));
+        }
+        if diag && a % n + 1 < n && a / n + 1 < n {
+            e.push((a, a + n + 1));
+        }
+    }
+    let xy: Vec<[f64; 2]> = (0..n * n).map(at).collect();
+    let dist = |a: usize, b: usize| (xy[a][0] - xy[b][0]).hypot(xy[a][1] - xy[b][1]);
+    let s = (n / 2) * n + n / 2;
+    let seg = |p: [f64; 2], q: [f64; 2]| {
+        let k = ((q[0] - p[0]).hypot(q[1] - p[1]) / 5.0).ceil() as usize;
+        let zz = |t: f64| z(p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]));
+        let ud: f64 = (0..k)
+            .map(|i| (zz((i + 1) as f64 / k as f64) - zz(i as f64 / k as f64)).abs())
+            .sum();
+        ud / 2.0
+    };
+    let ang = |p: [f64; 2], q: [f64; 2]| (q[1] - p[1]).atan2(q[0] - p[0]);
+    Problem {
+        u: e.iter().map(|x| x.0).collect(),
+        v: e.iter().map(|x| x.1).collect(),
+        len: e.iter().map(|&(a, b)| dist(a, b)).collect(),
+        w: e.iter().map(|&(a, b)| seg(xy[a], xy[b])).collect(),
+        ang_u: e.iter().map(|&(a, b)| ang(xy[a], xy[b])).collect(),
+        ang_v: e.iter().map(|&(a, b)| ang(xy[b], xy[a])).collect(),
+        far: (0..n * n)
+            .filter(|&q| (xy[q][0] - xy[s][0]).hypot(xy[q][1] - xy[s][1]) > 200.0)
+            .collect(),
+        parallel: Vec::new(),
+        s,
+        l,
+        lmin: 0.95 * l,
+        lmax: 1.05 * l,
+        xy,
+        ..grid(l, None, true)
+    }
+}
+
+/// D52 : pétales départ → A → B → départ : boucles valides (carrefours uniques), de longueur
+/// 0,85–1,10 L, qui touchent au moins une cible de relief (la meilleure en touche deux) ; rien sur
+/// un petit réseau (pas deux cibles).
+#[test]
+fn petales() {
+    let p = big_grid(25, 250.0, 12_000.0, false);
+    let fs = FaceSearch::new(&p);
+    let ts = fs.relief_targets(8);
+    let pet = fs.petals(3);
+    assert!(!pet.is_empty(), "aucun pétale ({} cibles)", ts.len());
+    for x in &pet {
+        p.check(x).unwrap();
+        let l = p.stats(x).0;
+        assert!((0.85 * p.l..=1.10 * p.l).contains(&l), "longueur {l}");
+        let touched = ts
+            .iter()
+            .filter(|&&t| x.iter().any(|&e| p.u[e] == t || p.v[e] == t))
+            .count();
+        assert!(touched >= 1, "aucune cible touchée");
+    }
+    let most = pet
+        .iter()
+        .map(|x| {
+            ts.iter()
+                .filter(|&&t| x.iter().any(|&e| p.u[e] == t || p.v[e] == t))
+                .count()
+        })
+        .max();
+    assert!(most >= Some(2), "aucun pétale sur deux reliefs");
+    assert!(
+        FaceSearch::new(&grid(2400.0, None, true))
+            .petals(3)
+            .is_empty()
+    );
+}
+
+/// D52 : en mode cible, le prix des virages serrés aux carrefours donne une boucle qui en fait moins
+/// (prix fort pour que la petite grille à diagonales le montre), erreur de cible bornée.
+#[test]
+fn virages_cible() {
+    let g = big_grid(9, 200.0, 4000.0, true);
+    let p0 = Problem {
+        mode: "target".into(),
+        d: Some(150.0),
+        lmin: 0.7 * g.l,
+        lmax: 1.3 * g.l,
+        ..g
+    };
+    let p1 = Problem {
+        turn_mu: 10.0 * engine::problem::TURN_TARGET,
+        ..p0.clone()
+    };
+    let unit = Problem {
+        turn_mu: 1.0,
+        ..p0.clone()
+    };
+    let (o0, o1) = (
+        optimize(&p0, &budget(1)).unwrap(),
+        optimize(&p1, &budget(1)).unwrap(),
+    );
+    p1.check(&o1.ids).unwrap();
+    let (t0, t1) = (unit.node_costs(&o0.ids), unit.node_costs(&o1.ids));
+    let err = |o: &engine::solve::Output| -p0.score(&o.ids).0;
+    assert!(t1 < t0, "virages {t1} >= {t0}");
+    assert!(
+        err(&o1) <= err(&o0) + 0.1,
+        "erreur {} > {} + 10 %",
+        err(&o1),
+        err(&o0)
+    );
 }
 
 /// D44 : le nombre de boucles ne dépend pas du temps restant. Échéance déjà passée (machine

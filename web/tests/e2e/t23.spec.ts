@@ -37,16 +37,16 @@ test('pente max : défaut 60 % non envoyé, « sans limite » = 0', async ({ pag
 
 test('hors couverture : grisé, erreur avant tout appel', async ({ page }) => {
   const t = T();
-  await setup(page, { start: { lat: 44.84, lon: -0.58 } }); // Bordeaux
+  await setup(page, { start: { lat: 41.39, lon: 2.17 } }); // Barcelone
   const calls = await mockPlan(page);
   await page.goto('/');
   await placeStart(page);
-  // couche grisée = monde troué par la couverture (2 polygones : IdF, Isère)
+  // couche grisée = monde troué par la couverture (France métropolitaine + DOM : plusieurs trous)
   await expect.poll(() => page.evaluate(() => {
     const src = (window as unknown as { tmap: { map: { getSource(id: string): { serialize(): { data: GeoJSON.Feature<GeoJSON.Polygon> } } } } })
       .tmap.map.getSource('outside');
     return src?.serialize().data.geometry?.coordinates.length ?? 0;
-  })).toBe(3);
+  })).toBeGreaterThan(1);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByRole('alert')).toContainText(isFr() ? 'Pas encore de données ici' : 'No data here yet');
   await expect(page.getByRole('button', { name: isFr() ? 'Voir la couverture' : 'See coverage' })).toBeVisible();

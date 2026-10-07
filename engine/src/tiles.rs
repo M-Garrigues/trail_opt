@@ -51,17 +51,6 @@ pub struct Manifest {
     pub columns: HashMap<String, serde_json::Value>,
 }
 
-/// D53 : valeurs OSM `surface` revêtues (bois : seulement sur un pont, voir `surface_kind`).
-const PAVED: [&str; 8] = [
-    "asphalt",
-    "paved",
-    "concrete",
-    "concrete:plates",
-    "paving_stones",
-    "sett",
-    "chipseal",
-    "metal",
-];
 /// Revêtement d'un tronçon (`Troncons::surf` après `load_in`) : inconnu (repli sur la nature
 /// IGN), revêtu, non revêtu, bois (revêtu sur un pont seulement).
 pub const SURF_UNKNOWN: u8 = 0;
@@ -91,18 +80,25 @@ impl Manifest {
     }
 
     /// Code brut `osm_surface` → `SURF_*` (table `columns.osm_surface.codes` ; 0 et hors table :
-    /// inconnu ; toute autre valeur connue hors `PAVED` : non revêtu).
+    /// inconnu ; toute autre valeur connue hors `columns.osm_surface.paved` : non revêtu).
     fn surface_kinds(&self) -> Vec<u8> {
-        let codes = self
-            .columns
-            .get("osm_surface")
-            .and_then(|c| c["codes"].as_array());
+        // D53, D57 : codes revêtus = `columns.osm_surface.paved` (table du lead data : pavés, briques
+        // compris) ; bois revêtu sur un pont seulement ; sans cette liste, tout est inconnu (IGN)
+        let col = self.columns.get("osm_surface");
+        let paved: Vec<u64> = col
+            .and_then(|c| c["paved"].as_array())
+            .map(|a| a.iter().filter_map(serde_json::Value::as_u64).collect())
+            .unwrap_or_default();
         let mut k = vec![SURF_UNKNOWN; 256];
+        if paved.is_empty() {
+            return k;
+        }
+        let codes = col.and_then(|c| c["codes"].as_array());
         for (i, c) in codes.into_iter().flatten().enumerate().take(255).skip(1) {
             k[i] = match c.as_str().unwrap_or("") {
                 "" => SURF_UNKNOWN,
                 "wood" => SURF_WOOD,
-                x if PAVED.contains(&x) => SURF_PAVED,
+                _ if paved.contains(&(i as u64)) => SURF_PAVED,
                 _ => SURF_UNPAVED,
             };
         }
@@ -183,6 +179,8 @@ pub struct Troncons {
     pub surf: Vec<u8>,
     /// `osm_highway` brut, puis au chargement 1 si OSM trunk/primary (grand axe, D54), sinon 0.
     pub osm_major: Vec<u8>,
+    /// `osm_flags` brut (bit 1 via ferrata, 2 éclairé, 4 eau potable, 8 sommet/vue), 0 si absent.
+    pub osm_flags: Vec<u8>,
     pub calm: Vec<u8>,
     pub hike: Vec<u8>,
     pub water: Vec<u8>,
@@ -353,6 +351,7 @@ impl Troncons {
         self.osm_class.push(255);
         self.surf.push(SURF_UNKNOWN);
         self.osm_major.push(0);
+        self.osm_flags.push(0);
         self.calm.push(15);
         self.hike.push(0);
         self.water.push(0);
@@ -874,6 +873,7 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         opt("osm_hike")?,
         opt("osm_water")?,
         opt("osm_highway")?,
+        opt("osm_flags")?,
     ];
     let mut col = |name: &str| -> Result<Vec<i64>, String> {
         let file = z
@@ -932,6 +932,7 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         t.hike.push(lab(3, 0));
         t.water.push(lab(4, 0));
         t.osm_major.push(lab(5, 0));
+        t.osm_flags.push(lab(6, 0));
         let (mut x, mut y) = (ox, oy);
         for j in 0..geom_n[i] as usize {
             x += gx[gk + j];
@@ -973,7 +974,8 @@ mod tests {
     fn surface_kinds_from_manifest() {
         let m: Manifest = serde_json::from_str(
             r#"{"format": "tiles/1", "tiles": {}, "columns": {"osm_surface": {"codes":
-                ["", "asphalt", "paved", "cobblestone", "wood", "gravel", "sett"]}}}"#,
+                ["", "asphalt", "paved", "cobblestone", "wood", "gravel", "sett"],
+                "paved": [1, 2, 3, 4, 6]}}}"#,
         )
         .unwrap();
         let k = m.surface_kinds();
@@ -983,7 +985,7 @@ mod tests {
                 SURF_UNKNOWN,
                 SURF_PAVED,
                 SURF_PAVED,
-                SURF_UNPAVED,
+                SURF_PAVED, // pavés : revêtus (D57)
                 SURF_WOOD,
                 SURF_UNPAVED,
                 SURF_PAVED,

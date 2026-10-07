@@ -27,21 +27,44 @@ pub const TARGET_TOL: f64 = 0.08;
 /// Préférence de type de voie (api.md v1.7, `surface`) : jamais un filtre, un prix sur la longueur
 /// parcourue hors du type voulu (`Problem::off`). Les contraintes restent sur les valeurs réelles.
 /// Pas en mode min_distance : la boucle la plus courte prime.
-/// Mode max : un mètre sur le bon type vaut `off_price` m de D+ (posé par `plan`) = `SURF_MAX` ×
-/// la densité de D+ des meilleures arêtes de la zone (borne du sac à dos / Lmax, ≈ 2 × la densité
-/// de la meilleure boucle, en ville comme en montagne).
-pub const SURF_MAX: f64 = 0.6;
-/// Mode cible : sous `SURF_TARGET_BAND` d'erreur relative (distance + D+), la cible est tenue et le
-/// type de voie départage ; une boucle entièrement hors type « coûte » `SURF_TARGET` d'erreur.
+/// D63 : poids de CONFORT par mode (modes.md § Confort). Unité commune : le « mètre de confort »
+/// (`Problem::off` hors grands axes : mètre hors du type voulu, étiquettes) ; chaque mode lui donne
+/// un prix dans son objectif, comparé par C = part de l'objectif que coûte une sortie entièrement
+/// hors confort. Max D+ et Le plus court : performance, confort LÉGER ; Cible : confort FORT.
+/// Mode max : un mètre de confort vaut `off_price` m de D+ (posé par `plan`) = `SURF_MAX` × la
+/// densité de D+ des meilleures arêtes de la zone (borne du sac à dos / Lmax, ≈ 2 × la densité de
+/// la meilleure boucle) : C ≈ 2 × `SURF_MAX`. (0,6 avant D63 : C ≈ 120 %.)
+pub const SURF_MAX: f64 = 0.1;
+/// Mode cible : la distance et le D+ restent tenus (sous `SURF_TARGET_BAND` d'erreur relative,
+/// distance + D+, l'erreur ne compte plus) ; le confort compte toujours, en plus : une boucle
+/// entièrement hors confort « coûte » `SURF_TARGET` d'erreur (C ; 3 % avant D63).
 pub const SURF_TARGET_BAND: f64 = 0.02;
-pub const SURF_TARGET: f64 = 0.03;
+pub const SURF_TARGET: f64 = 0.15;
+/// Le plus court (D63 : « un peu » de préférence, 0 avant) : un mètre de confort vaut
+/// `COMFORT_MD` m de longueur (C).
+pub const COMFORT_MD: f64 = 0.05;
+/// D57 : prix d'un mètre de grand axe en mode max, en multiples de la densité de D+ de la borne du
+/// sac à dos (0,6 = poids 1 de D57). RETIRÉ du mode max (0) le 07/10 : la 2e sortie de Massy 10 km
+/// perdait 3 à 9 % de D+ selon le prix (0,1 à 0,6 ; médianes sur 8 graines, critère D52 : ≤ 3 % par
+/// rang contre 290e2c7) ; sans lui +0,4 %. En max, un grand axe ne coûte donc que la préférence de
+/// type (route) ; il reste fortement pénalisé en Cible et en Le plus court (`MAJOR_K`).
+pub const MAJOR_PRICE_MAX: f64 = 0.0;
 /// D50 (fondateur, 2026-10-07) : un mètre sur grand axe (route d'importance 1 à 3) compte `MAJOR_K`
 /// mètres « hors type » de plus, dans tous les modes et toutes les préférences : emprunté
 /// seulement s'il est indispensable (pont, liaison courte sans autre voie). Jamais un filtre.
 /// En min_distance, c'est `MAJOR_K` mètres de longueur en plus (`score`, `search_bonus`).
 pub const MAJOR_K: f64 = 4.0;
+/// D57 : en mode max, poids du grand axe réduit (perte de D+ ≤ 3 % à Massy contre aucune pénalité).
+pub const MAJOR_K_MAX: f64 = 1.0;
 /// Part minimale de la longueur dans le coût de recherche d'une arête (`Problem::search_len`).
 pub const MIN_SEARCH_LEN: f64 = 0.1;
+/// Élégance (D52) : prix d'un demi-tour à un carrefour (voir `turn_cost`). Cible : en unités du score
+/// des faces (`TARGET_SCALE` = 100 % d'erreur) : 1 = 0,1 % d'erreur, ne départage que dans la bande.
+/// Banc du 07/10 (cible, médianes) : 1 → virages aux carrefours −58 % plaine / −47 % montagne, chemin
+/// −2,4 pts ; 2 → −4,9 pts de chemin ; 5 (version douce) → −14 pts.
+pub const TURN_TARGET: f64 = 1.0;
+/// Mode max : prix d'un demi-tour = TURN_MAX_FRAC × densité de D+ de la borne sac à dos × 100 m.
+pub const TURN_MAX_FRAC: f64 = 0.3;
 
 #[derive(Deserialize, Clone)]
 pub struct Problem {
@@ -92,6 +115,20 @@ pub struct Problem {
     /// Coût par montée (m de D+) du problème de RECHERCHE (posé par `search_problem`), 0 sinon.
     #[serde(skip)]
     pub node_mu: f64,
+    /// D52 : prix d'un virage aux carrefours (`turn_cost`), posé par `plan::to_problem`, 0 sinon.
+    /// Terme du score seulement, jamais dans un coût de chemin (`search_len` reste > 0).
+    #[serde(skip)]
+    pub turn_mu: f64,
+    /// Carrefours (degré >= 3) pour `node_costs`, posé avec `turn_mu` ; vide = recalculé.
+    #[serde(skip)]
+    pub junction: Vec<bool>,
+    /// Directions (cos, sin) au départ de u puis de v, pour `turn_cost` ; vide = calculées.
+    #[serde(skip)]
+    pub dir: Vec<[f64; 4]>,
+    /// D62 : paquet « élégance » (virages, pétales, une direction par sortie) actif. Faux : le
+    /// moteur se comporte exactement comme avant D52 (`enable_smooth`).
+    #[serde(skip)]
+    pub smooth: bool,
     /// Points de passage obligatoires (T34, api.md v1.5) : nœuds que la boucle doit toucher.
     #[serde(default)]
     pub via: Vec<usize>,
@@ -205,7 +242,7 @@ impl Problem {
             p.w.iter_mut().zip(b).for_each(|(w, b)| *w += b);
         }
         if mu != 0.0 {
-            // montées intérieures aux arêtes : coût additif ; aux nœuds : `node_climbs`
+            // montées intérieures aux arêtes : coût additif ; aux nœuds : `node_costs`
             p.w.iter_mut()
                 .zip(&self.inner)
                 .for_each(|(w, c)| *w -= mu * c);
@@ -233,13 +270,110 @@ impl Problem {
         if s1 != 0 && s1 == s2 { 0.5 } else { 0.0 }
     }
 
-    /// T24 : Σ `node_ext` sur les nœuds de degré 2 de la boucle (≈ montées qui changent aux nœuds).
-    pub fn node_climbs(&self, ids: &[usize]) -> f64 {
-        let mut inc = vec![(0u8, usize::MAX, usize::MAX); self.n_nodes()];
+    /// D52 : coût de virage au nœud a entre les arêtes e1, e2 de la boucle : seuls les virages
+    /// SERRÉS (plus de 90°) coûtent, de 0 à angle droit à 1 au demi-tour : cos de l'angle entre les
+    /// deux directions de départ (`ang_u`/`ang_v`), borné à 0. Banc du 07/10 : la version douce
+    /// ((1 + cos)/2, angle droit = ½) faisait perdre 14 pts de chemin en cible (virages à angle
+    /// droit des sentiers comptés).
+    #[inline]
+    pub fn turn_cost(&self, a: usize, e1: usize, e2: usize) -> f64 {
+        // cos de la différence = produit scalaire des directions (précalculées : pas de trigonométrie
+        // par mouvement du recuit, −30 % de temps)
+        let dir = |e: usize| {
+            let k = if self.u[e] == a { 0 } else { 2 };
+            if self.dir.len() == self.n_edges() {
+                [self.dir[e][k], self.dir[e][k + 1]]
+            } else {
+                let t = if k == 0 { self.ang_u[e] } else { self.ang_v[e] };
+                [t.cos(), t.sin()]
+            }
+        };
+        let (d1, d2) = (dir(e1), dir(e2));
+        (d1[0] * d2[0] + d1[1] * d2[1]).max(0.0)
+    }
+
+    /// D62 : active le paquet « élégance » : prix des virages serrés selon le mode (cible : départage
+    /// dans la bande ; max : en m de D+ ; min_distance : aucun), pétales et directions (`FaceSearch`).
+    pub fn enable_smooth(&mut self) {
+        self.smooth = true;
+        self.turn_mu = match self.mode.as_str() {
+            "target" => TURN_TARGET,
+            "max" => TURN_MAX_FRAC * self.dplus_upper_bound() / self.l.max(1.0) * 100.0,
+            _ => 0.0,
+        };
+        self.prepare_turns();
+    }
+
+    /// Pose les caches du terme de virage (`junction`, `dir`) ; à appeler après avoir fixé `turn_mu`.
+    pub fn prepare_turns(&mut self) {
+        if self.turn_mu == 0.0 {
+            return;
+        }
+        self.junction = self.degrees().iter().map(|&d| d >= 3).collect();
+        self.dir = (0..self.n_edges())
+            .map(|e| {
+                let (u, v) = (self.ang_u[e], self.ang_v[e]);
+                [u.cos(), u.sin(), v.cos(), v.sin()]
+            })
+            .collect();
+    }
+
+    /// Coût d'un nœud de degré 2 de la boucle (arêtes e1, e2) : montées « longues » (T24) + virage
+    /// (D52, seulement aux carrefours du graphe : `junction` = degré >= 3 ; un nœud de degré 2 du
+    /// graphe est un raccord sans choix d'itinéraire).
+    #[inline]
+    pub fn node_cost(&self, a: usize, e1: usize, e2: usize, junction: bool) -> f64 {
+        let t = self.node_terms(a, e1, e2, junction);
+        self.node_mu * t[0] + self.turn_mu * t[1]
+    }
+
+    /// (extremum T24, virage D52) NON pondérés au nœud a : les deux sommes restent séparées pour
+    /// que, sans virage (`turn_mu` = 0), les calculs soient bit à bit ceux d'avant D52.
+    #[inline]
+    pub fn node_terms(&self, a: usize, e1: usize, e2: usize, junction: bool) -> [f64; 2] {
+        [
+            if self.node_mu != 0.0 {
+                self.node_ext(a, e1, e2)
+            } else {
+                0.0
+            },
+            if self.turn_mu != 0.0 && junction {
+                self.turn_cost(a, e1, e2)
+            } else {
+                0.0
+            },
+        ]
+    }
+
+    /// Degré de chaque nœud dans le graphe (carrefours de `node_cost`).
+    pub fn degrees(&self) -> Vec<u32> {
+        let mut d = vec![0u32; self.n_nodes()];
+        for e in 0..self.n_edges() {
+            d[self.u[e]] += 1;
+            d[self.v[e]] += 1;
+        }
+        d
+    }
+
+    /// Σ `node_cost` sur les nœuds de degré 2 de la boucle (montées « longues » et virages).
+    pub fn node_costs(&self, ids: &[usize]) -> f64 {
+        if self.node_mu == 0.0 && self.turn_mu == 0.0 {
+            return 0.0;
+        }
+        // en O(taille de la boucle) : appelée par `score` (tri des départs et des sorties)
+        let deg;
+        let junction: &[bool] = if self.junction.len() == self.n_nodes() {
+            &self.junction
+        } else {
+            deg = self.degrees().iter().map(|&d| d >= 3).collect::<Vec<_>>();
+            &deg
+        };
+        let mut inc: std::collections::HashMap<usize, (u8, usize, usize)> =
+            std::collections::HashMap::with_capacity(2 * ids.len());
         for &e in ids {
             if self.u[e] != self.v[e] {
                 for a in [self.u[e], self.v[e]] {
-                    let t = &mut inc[a];
+                    let t = inc.entry(a).or_insert((0, usize::MAX, usize::MAX));
                     match t.0 {
                         0 => t.1 = e,
                         1 => t.2 = e,
@@ -249,11 +383,16 @@ impl Problem {
                 }
             }
         }
-        inc.iter()
-            .enumerate()
+        // sommes dans l'ordre des nœuds (comme avant D52 : même arrondi)
+        let mut v: Vec<(usize, [f64; 2])> = inc
+            .iter()
             .filter(|(_, t)| t.0 == 2)
-            .map(|(a, t)| self.node_ext(a, t.1, t.2))
-            .sum()
+            .map(|(&a, t)| (a, self.node_terms(a, t.1, t.2, junction[a])))
+            .collect();
+        v.sort_unstable_by_key(|x| x.0);
+        let ext: f64 = v.iter().map(|x| x.1[0]).sum();
+        let turn: f64 = v.iter().map(|x| x.1[1]).sum();
+        self.node_mu * ext + self.turn_mu * turn
     }
 
     /// reach[e] = d(s,u) + len[e] + d(v,s) : longueur minimale d'une boucle qui prend e.
@@ -394,14 +533,13 @@ impl Problem {
             if !self.off.is_empty() {
                 err = err.max(SURF_TARGET_BAND) + SURF_TARGET * self.off_len(ids) / self.l;
             }
-            return (-err, length, dplus, feas);
+            // D52 : virages aux carrefours, dans les unités du score des faces
+            let nc = self.node_costs(ids) / crate::faces::TARGET_SCALE;
+            return (-err - nc, length, dplus, feas);
         }
         let viol = (self.lmin - length).max(length - self.lmax).max(0.0);
-        let nc = if self.node_mu != 0.0 {
-            self.node_mu * self.node_climbs(ids)
-        } else {
-            0.0
-        };
+        // T24 montées « longues » et D52 virages (0 sans l'un ni l'autre)
+        let nc = self.node_costs(ids);
         // D40 : au-delà de la distance demandée, un mètre doit rapporter LEN_DENSITY × la densité
         // moyenne de D+ de la boucle (sinon c'est un détour)
         // type de voie : D+ plus la prime `off_price` par mètre sur le bon type (comme `search_bonus`)
@@ -594,5 +732,34 @@ mod tests {
         p.off = vec![-5000.0, 30.0];
         assert_eq!(p.search_len(0), 10.0);
         assert_eq!(p.search_len(1), 230.0);
+    }
+
+    /// D52 : virage au carrefour 0 (trois arêtes partant vers l'est, le nord-est, l'ouest) : tout droit
+    /// = 0, virage de 135° = cos 45°, demi-tour = 1 ; rien hors carrefour ni sans prix ; somme sur la
+    /// boucle.
+    #[test]
+    fn turn_cost_droit_angle_demi_tour() {
+        let mut p: super::Problem = serde_json::from_str(
+            r#"{"version": 2, "mode": "target", "L": 1000, "Lmin": 700, "Lmax": 1300, "D": 50,
+                "s": 1, "node_simple": false, "xy": [[0,0],[1,0],[0,1],[-1,0]], "far": [],
+                "u": [0, 0, 0, 1], "v": [1, 2, 3, 2], "len": [1, 1, 1, 3], "w": [1, 1, 1, 1],
+                "ang_u": [0, 0.7853981633974483, 3.141592653589793, 1.0],
+                "ang_v": [3.141592653589793, -1.5707963267948966, 0, 2.0], "parallel": []}"#,
+        )
+        .unwrap();
+        let close = |a: f64, b: f64| (a - b).abs() < 1e-9;
+        assert!(close(p.turn_cost(0, 0, 2), 0.0)); // est puis ouest : tout droit
+        assert!(close(p.turn_cost(0, 0, 1), 0.5f64.sqrt())); // virage serré de 135°
+        assert!(close(p.turn_cost(0, 0, 0), 1.0));
+        assert!(close(p.turn_cost(0, 2, 0), p.turn_cost(0, 0, 2))); // symétrique
+        assert_eq!(p.node_cost(0, 0, 1, true), 0.0); // turn_mu = 0
+        p.turn_mu = 4.0;
+        assert!(close(p.node_cost(0, 0, 1, true), 4.0 * 0.5f64.sqrt()));
+        assert_eq!(p.node_cost(0, 0, 1, false), 0.0);
+        assert_eq!(p.degrees(), vec![3, 2, 2, 1]);
+        // boucle 0-1-2-0 (arêtes 0, 3, 1) : seul le nœud 0 est un carrefour ; idem avec le cache
+        assert!(close(p.node_costs(&[0, 3, 1]), 4.0 * 0.5f64.sqrt()));
+        p.junction = vec![false; 4];
+        assert_eq!(p.node_costs(&[0, 3, 1]), 0.0);
     }
 }

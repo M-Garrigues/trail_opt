@@ -434,7 +434,14 @@ fn target_holds_real_dplus_whatever_climbs() {
                     "{site:?} {climbs} : {c:?}"
                 );
             }
-            assert!(c.windows(2).all(|w| err(&w[0]) <= err(&w[1]) + 1e-9));
+            // ordre de `plan` : erreur bornée à la bande (sous 2 % d'erreur, la cible est tenue et le
+            // type de voie puis les virages départagent, D52), plus au plus 3 % de prime de type de voie
+            let band = |x: &(f64, f64)| err(x).max(engine::problem::SURF_TARGET_BAND);
+            assert!(
+                c.windows(2)
+                    .all(|w| band(&w[0]) <= band(&w[1]) + engine::problem::SURF_TARGET + 1e-9),
+                "{site:?} {climbs} : {c:?}"
+            );
             if site == MASSY {
                 assert_eq!(c.len(), 3, "{climbs} : {c:?}");
             }
@@ -499,5 +506,56 @@ fn reduction_never_empties_network() {
             );
             assert_ne!(out["effective_start"]["kind"], "moved", "{site:?} {req}");
         }
+    }
+}
+
+/// D62 : paquet « élégance » coupé (`smooth: false`) = chemin de calcul d'avant D52. Valeurs
+/// vérifiées identiques au binaire du commit 290e2c7 (dalle de test versionnée, cible) jusqu'à D63 ;
+/// D63 change volontairement les poids de confort de la Cible : valeurs régénérées avec `smooth: false`
+/// (garde contre toute dérive du calcul sans élégance). Le défaut de la cible est actif.
+#[test]
+fn smooth_off_is_stable() {
+    let Ok(store) = engine::tiles::TileStore::open(std::path::Path::new("tests/data/tiles")) else {
+        return;
+    };
+    let cases = [
+        (
+            MASSY,
+            10.0,
+            250.0,
+            [(10011.7, 249.0), (9987.2, 245.8), (10035.3, 246.4)],
+        ),
+        (
+            BOURG,
+            12.0,
+            500.0,
+            [(11996.8, 491.5), (11984.1, 491.3), (11994.0, 490.7)],
+        ),
+    ];
+    for (site, km, dplus, want) in cases {
+        let req = |smooth: Option<bool>| {
+            serde_json::json!({"lat": site.0, "lon": site.1, "mode": "target", "distance_km": km,
+                "target_dplus": dplus, "n_candidates": 3, "node_simple": true, "max_grade": 0.6,
+                "enforce_limits": true, "smooth": smooth})
+        };
+        let got = |out: serde_json::Value| -> Vec<(f64, f64)> {
+            out["candidates"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|c| {
+                    (
+                        c["length_m"].as_f64().unwrap(),
+                        c["dplus_m"].as_f64().unwrap(),
+                    )
+                })
+                .collect()
+        };
+        assert_eq!(got(plan(&store, req(Some(false)))), want, "{site:?}");
+        assert_ne!(
+            got(plan(&store, req(None))),
+            want,
+            "{site:?} : défaut cible = actif"
+        );
     }
 }

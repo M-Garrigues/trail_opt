@@ -4,6 +4,9 @@ export type Climbs = 'short' | 'balanced' | 'long';
 /** Type de voie préféré (api.md v1.7) : jamais un filtre. */
 export type Surface = 'trail' | 'any' | 'road';
 const isSurface = (x: unknown): x is Surface => x === 'trail' || x === 'any' || x === 'road';
+/** D62 « Sorties plus fluides » : `auto` = défaut du mode (rien n'est envoyé), sinon forcé. */
+export type Smooth = 'auto' | 'on' | 'off';
+const isSmooth = (x: unknown): x is Smooth => x === 'auto' || x === 'on' || x === 'off';
 export type Settings = {
   typeId: TypeId;
   values: Record<TypeId, Values>;
@@ -12,6 +15,7 @@ export type Settings = {
   maxGrade: number;
   surface: Surface;
   noRepeat: boolean;
+  smooth: Smooth;
   paceS: number; // s par km-effort
   nLoops: number;
 };
@@ -29,6 +33,7 @@ export function defaultSettings(): Settings {
     maxGrade: MAX_GRADE_DEFAULT,
     surface: 'trail',
     noRepeat: true,
+    smooth: 'auto',
     paceS: 360,
     nLoops: 1,
   };
@@ -47,6 +52,7 @@ export function mergeSettings(saved: unknown): Settings {
   const old = saved as { maxGradeOn?: boolean };
   if (old.maxGradeOn === false || !okGrade(s.maxGrade)) s.maxGrade = MAX_GRADE_DEFAULT;
   delete (s as { maxGradeOn?: boolean }).maxGradeOn;
+  if (!isSmooth(s.smooth)) s.smooth = 'auto';
   // avant v1.7 : filtre `roads` ; seul « toutes routes » (choisi exprès) devient « indifférent »
   const roads = (s as { roads?: string }).roads;
   if (!isSurface((saved as Partial<Settings>).surface)) s.surface = roads === 'all' ? 'any' : d.surface;
@@ -71,6 +77,7 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   if (s.maxGrade !== MAX_GRADE_DEFAULT) q.set('max_grade_pct', String(s.maxGrade)); // absent = 60 (api.md v1.2)
   q.set('surface', s.surface);
   q.set('no_repeat_junction', String(s.noRepeat));
+  if (s.smooth !== 'auto') q.set('smooth', String(s.smooth === 'on')); // D62 : absent = défaut du mode
   q.set('n_candidates', String(opts.n));
   if (opts.polygon?.length) q.set('polygon', opts.polygon.map(([lo, la]) => `${lo.toFixed(5)},${la.toFixed(5)}`).join(';'));
   if (opts.via?.length) q.set('via', opts.via.map((p) => `${p.lat.toFixed(6)},${p.lon.toFixed(6)}`).join(';'));
@@ -104,6 +111,7 @@ export function settingsFromRequest(req: Record<string, string>, base: Settings)
   s.surface = requestSurface(req) ?? s.surface;
   s.maxGrade = req.max_grade_pct == null ? MAX_GRADE_DEFAULT : okGrade(+req.max_grade_pct) ? +req.max_grade_pct : s.maxGrade;
   if (req.no_repeat_junction) s.noRepeat = req.no_repeat_junction === 'true' || req.no_repeat_junction === '1';
+  s.smooth = req.smooth == null ? 'auto' : req.smooth === 'true' || req.smooth === '1' ? 'on' : 'off';
   return s;
 }
 

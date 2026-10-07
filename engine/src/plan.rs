@@ -13,7 +13,9 @@ use crate::prep::{
     self, CLS_MAJOR, CLS_MIXED, CLS_ROAD, CLS_TRAIL, Edge, FREE_RADIUS, LAB_HIKE, LAB_NOISY,
     LAB_WATER, N_CLS, N_LAB, Net, REDUCE_K, REDUCE_MIN_EDGES, Region,
 };
-use crate::problem::{MAJOR_K, SURF_TARGET, SURF_TARGET_BAND};
+use crate::problem::{
+    COMFORT_MD, MAJOR_K, MAJOR_K_MAX, MAJOR_PRICE_MAX, SURF_MAX, SURF_TARGET, SURF_TARGET_BAND,
+};
 use crate::tiles::{TileStore, Troncons};
 use crate::{Budget, Problem, optimize};
 
@@ -47,6 +49,9 @@ pub const MD_CAP_PER_KM_FLAT: f64 = 15.0;
 pub const MD_CAP_KM: (f64, f64) = (3.0, 60.0);
 /// Points de passage (T34, api.md v1.5) : au plus 5, accrochés à une voie à <= 150 m.
 pub const VIA_MAX: usize = 5;
+/// D62 : défaut du paquet « élégance » par mode (cible, max, min_distance), choisi au banc
+/// (scripts/experiments/elegance, étude .team/etudes/elegance_2026-10-07.md).
+pub const SMOOTH_DEFAULT: (bool, bool, bool) = (true, false, false);
 pub const VIA_SNAP_M: f64 = 150.0;
 /// Voies gardées (api.md v1.7) : `TRAIL_NATURES` et `ROAD_NATURES` ; classes de voie : `class_mask`,
 /// revêtement : `paved_mask`.
@@ -110,6 +115,10 @@ pub struct Request {
     /// Points de passage obligatoires [[lat, lon], …] (ordre libre), au plus `VIA_MAX`.
     #[serde(default)]
     pub via: Vec<[f64; 2]>,
+    /// D62 : paquet « élégance » (virages serrés, pétales, une direction par sortie) ; absent :
+    /// défaut du mode (`SMOOTH_DEFAULT`).
+    #[serde(default)]
+    pub smooth: Option<bool>,
     /// Zone de dalles du départ (métropole par défaut) : posée par `resolve_cap`, jamais lue du JSON.
     #[serde(skip)]
     pub zone: crate::tiles::Zone,
@@ -141,6 +150,15 @@ impl Request {
         } else {
             self.distance_km
         }
+    }
+
+    /// D62 : paquet « élégance » actif (demandé, sinon défaut du mode).
+    pub fn smooth_on(&self) -> bool {
+        self.smooth.unwrap_or(match self.mode.as_str() {
+            "target" => SMOOTH_DEFAULT.0,
+            "max" => SMOOTH_DEFAULT.1,
+            _ => SMOOTH_DEFAULT.2,
+        })
     }
 
     /// γ de la préférence de montées, None si inconnue.
@@ -179,6 +197,19 @@ pub fn suggested_time(distance_km: f64, n: usize) -> f64 {
 
 fn err(code: Code, detail: &str) -> Msg {
     Msg::error(code, detail)
+}
+
+/// Contrôle de tous les champs (nombres finis, bornes du contrat) : à appeler avant TOUT calcul (M1,
+/// revue sécu 2026-10-07 : `distance_km=1e308` faisait paniquer la vérification des points de passage).
+/// Temps de calcul absent : celui que `plan_with` prendra.
+pub fn check(r: &Request) -> Result<(), Msg> {
+    let mut r = r.clone();
+    r.time_s = r.time_s.or_else(|| {
+        r.sizing_km()
+            .is_finite()
+            .then(|| suggested_time(r.sizing_km(), r.n_candidates))
+    });
+    validate(&r)
 }
 
 fn validate(r: &Request) -> Result<(), Msg> {
@@ -297,7 +328,7 @@ pub struct ViaPt {
 }
 
 /// (L, Lmax) en m : distance qui dimensionne la zone et longueur max de boucle.
-fn lengths(r: &Request) -> (f64, f64) {
+pub fn lengths(r: &Request) -> (f64, f64) {
     let l = r.sizing_km() * 1000.0;
     let lmax = match r.mode.as_str() {
         "max" => l * (1.0 + r.tol),
@@ -368,7 +399,13 @@ pub fn keep_mask(t: &Troncons, natures: &[String]) -> Vec<usize> {
         })
     };
     (0..t.len())
-        .filter(|&i| t.flags[i] & 2 != 0 && kept(t.nature[i]) && t.n_vertices(i) >= 2)
+        // D48/D50 : via ferrata (OSM, `osm_flags` bit 1) jamais empruntées
+        .filter(|&i| {
+            t.flags[i] & 2 != 0
+                && t.osm_flags[i] & 1 == 0
+                && kept(t.nature[i])
+                && t.n_vertices(i) >= 2
+        })
         .collect()
 }
 
@@ -420,26 +457,116 @@ pub fn paved_mask(t: &Troncons, natures: &[String]) -> Vec<bool> {
 pub const NOISY_W: f64 = 0.3;
 pub const HIKE_W: f64 = 0.15;
 pub const WATER_W: f64 = 0.15;
+/// D58 : multiplicateur des étiquettes en mode cible (balayage ×1/×2/×3/×5 : en max, ×3 coûte 4–5 % de
+/// D+ à la Croix-Rousse et ×5 jusqu'à 39 % ; en cible, D+ et distance tenus jusqu'à ×5).
+pub const LABELS_K_TARGET: f64 = 3.0;
 
 /// Longueur « hors type » pondérée (m) d'un parcours (longueurs par classe `cls`, étiquettes
 /// `lab`) : la part hors du type de voie voulu (`Request::surface`, pas en min_distance), les
 /// étiquettes, plus `MAJOR_K` fois la longueur sur grand axe dans tous les modes (D50 : forte
 /// pénalité, jamais un filtre).
-fn off_len(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, md: bool) -> f64 {
-    let pref = match surface {
-        _ if md => 0.0,
-        "trail" => cls[CLS_ROAD] + cls[CLS_MAJOR] + 0.5 * cls[CLS_MIXED],
-        "road" => cls[CLS_TRAIL] + 0.5 * cls[CLS_MIXED],
-        _ => 0.0,
+fn off_len(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, goal: Goal) -> f64 {
+    off_parts(cls, lab, surface, goal).total()
+}
+
+/// Mode de calcul vu par les poids (le grand axe pèse moins en max, D57).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Goal {
+    Max,
+    Target,
+    Md,
+}
+
+impl Goal {
+    pub fn of(mode: &str) -> Goal {
+        match mode {
+            "max" => Goal::Max,
+            "min_distance" => Goal::Md,
+            _ => Goal::Target,
+        }
+    }
+}
+
+/// Termes de `off_len` séparés (m, signés : `hike` et `water` ≤ 0), pour l'audit D55 (`weights`).
+#[derive(Clone, Copy, Debug, Default)]
+pub struct OffParts {
+    pub pref: f64,
+    pub major: f64,
+    pub noisy: f64,
+    pub hike: f64,
+    pub water: f64,
+    pub len: f64,
+}
+
+impl OffParts {
+    /// Somme bornée : un bonus d'étiquette ne rend jamais une arête « gratuite » (au plus la
+    /// moitié de sa longueur).
+    pub fn total(&self) -> f64 {
+        // même ordre d'addition qu'avant l'extraction (résultats identiques au bit près)
+        (self.pref + (self.noisy + self.hike + self.water) + self.major).max(-0.5 * self.len)
+    }
+}
+
+pub fn off_parts(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, goal: Goal) -> OffParts {
+    // D63 : mètres de confort (type de voie, étiquettes), au prix du mode (`problem::SURF_MAX`,
+    // `SURF_TARGET`, `COMFORT_MD`) ; Le plus court : un peu de préférence (prix `COMFORT_MD`)
+    let ck = if goal == Goal::Md { COMFORT_MD } else { 1.0 };
+    let pref = ck
+        * match surface {
+            "trail" => cls[CLS_ROAD] + cls[CLS_MAJOR] + 0.5 * cls[CLS_MIXED],
+            "road" => cls[CLS_TRAIL] + 0.5 * cls[CLS_MIXED],
+            _ => 0.0,
+        };
+    let labels = surface != "road";
+    // D58 : en cible, la distance et le D+ sont tenus de toute façon, les étiquettes pèsent 3 fois plus
+    let lk = ck
+        * if goal == Goal::Target {
+            LABELS_K_TARGET
+        } else {
+            1.0
+        };
+    let k = |w: f64, x: f64| if labels { lk * w * x } else { 0.0 };
+    // grands axes (D50) : pénalité FORTE dans tous les modes, indépendante du prix du confort.
+    // Cible et Le plus court : `MAJOR_K` m de distance par mètre de grand axe (en cible, converti en
+    // mètres de confort au prix `SURF_TARGET` ; avant D63 il ne pesait que 1,8 % d'erreur par km) ;
+    // max : prix fixe `MAJOR_PRICE_MAX` × `MAJOR_K_MAX` (D57) converti au prix `SURF_MAX`.
+    let major_k = match goal {
+        Goal::Max => MAJOR_K_MAX * MAJOR_PRICE_MAX / SURF_MAX,
+        Goal::Target => MAJOR_K / SURF_TARGET,
+        Goal::Md => MAJOR_K,
     };
-    let labels = if md || surface == "road" {
-        0.0
-    } else {
-        NOISY_W * lab[LAB_NOISY] - HIKE_W * lab[LAB_HIKE] - WATER_W * lab[LAB_WATER]
-    };
-    // un bonus d'étiquette ne rend jamais une arête « gratuite » : au plus la moitié de sa longueur
-    let len: f64 = cls.iter().sum();
-    (pref + labels + MAJOR_K * cls[CLS_MAJOR]).max(-0.5 * len)
+    OffParts {
+        pref,
+        major: major_k * cls[CLS_MAJOR],
+        noisy: k(NOISY_W, lab[LAB_NOISY]),
+        hike: k(-HIKE_W, lab[LAB_HIKE]),
+        water: k(-WATER_W, lab[LAB_WATER]),
+        len: cls.iter().sum(),
+    }
+}
+
+/// Préférence de type de voie (mode max) : prime par mètre sur le bon type, à l'échelle de la
+/// densité moyenne de D+ du réseau de la zone (`edges`).
+pub fn off_price(net: &Net, edges: &[usize], lmax: f64) -> f64 {
+    let (pl, pw): (Vec<f64>, Vec<f64>) = edges
+        .iter()
+        .map(|&e| (net.edges[e].len, net.edges[e].w))
+        .unzip();
+    crate::problem::SURF_MAX * crate::problem::knapsack_ub(&pl, &pw, lmax) / lmax
+}
+
+/// Poids de recherche d'une arête pour la réduction aux arêtes pentues (D+ plus prime de type).
+pub fn search_weight(ed: &Edge, off_price: f64, surface: &str, goal: Goal) -> f64 {
+    ed.w + off_price * (ed.len - off_len(&ed.cls, &ed.lab, surface, goal))
+}
+
+/// Prix « hors type » dans la recherche : préférence de voie (hors min_distance) ou grands axes
+/// dans la zone (D50) ; sans l'un ni l'autre, recherche sur le seul D+ comme avant.
+pub fn off_on(net: &Net, edges: &[usize], surface: &str, goal: Goal) -> bool {
+    (surface != "any" && goal != Goal::Md)
+        || edges
+            .iter()
+            .any(|&e| off_len(&net.edges[e].cls, &net.edges[e].lab, surface, goal) != 0.0)
 }
 
 fn add<const N: usize>(a: &mut [f64; N], b: &[f64; N], k: f64) {
@@ -843,6 +970,10 @@ pub fn to_problem(
         turn,
         inner,
         node_mu: 0.0,
+        turn_mu: 0.0,
+        junction: Vec::new(),
+        dir: Vec::new(),
+        smooth: false,
         via: via.iter().map(|&n| idx[n]).collect(),
         off: Vec::new(),
         off_price: 0.0,
@@ -1243,6 +1374,7 @@ fn diagnose_with(
 /// Point d'entrée : requête + dalles → JSON de sortie (ou erreur codée D14).
 /// `prep_only` : s'arrête au premier Problem (parité de préparation, sans solveur).
 pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, Msg> {
+    check(req)?;
     let auto_cap = req.max_distance_km.is_none();
     let mut req = resolve_cap(store, req);
     check_zone(store, &req)?;
@@ -1394,6 +1526,7 @@ pub fn plan_with(
     let mut warns: Vec<Msg> = Vec::new();
     let mut dbg = serde_json::Map::new();
     let md = r.min_distance();
+    let goal = Goal::of(&r.mode);
     let gamma = r.gamma().unwrap_or(0);
     if !md && r.distance_km > LONG_KM {
         warns.push(Msg::new(Code::LongDistance, json!({"km": LONG_KM})));
@@ -1516,22 +1649,11 @@ pub fn plan_with(
     let mut best_via: Vec<ViaPt> = via.clone();
     // préférence de type de voie (mode max) : prime par mètre sur le bon type, à l'échelle de la
     // densité moyenne de D+ du réseau de la zone
-    let off_price = {
-        let (pl, pw): (Vec<f64>, Vec<f64>) = edges
-            .iter()
-            .map(|&e| (net.edges[e].len, net.edges[e].w))
-            .unzip();
-        crate::problem::SURF_MAX * crate::problem::knapsack_ub(&pl, &pw, lmax) / lmax
-    };
+    let off_price = off_price(&net, &edges, lmax);
     let surface = r.surface.clone();
-    let weight = |ed: &Edge| ed.w + off_price * (ed.len - off_len(&ed.cls, &ed.lab, &surface, md));
+    let weight = |ed: &Edge| search_weight(ed, off_price, &surface, goal);
     let weight: Option<&dyn Fn(&Edge) -> f64> = (surface != "any" && !md).then_some(&weight);
-    // prix « hors type » dans la recherche : préférence de voie (hors min_distance) ou grands axes
-    // dans la zone (D50) ; sans l'un ni l'autre, recherche sur le seul D+ comme avant
-    let off_on = (surface != "any" && !md)
-        || edges
-            .iter()
-            .any(|&e| off_len(&net.edges[e].cls, &net.edges[e].lab, &surface, md) != 0.0);
+    let off_on = off_on(&net, &edges, &surface, goal);
     let mut access_net: Option<Option<Access>> = None;
 
     // search_loop
@@ -1718,6 +1840,9 @@ pub fn plan_with(
         if let Some(lb) = c.lb {
             p.l = p.lmax.min(2.0 * lb); // indicatif : couloirs et waypoints
         }
+        if r.smooth_on() {
+            p.enable_smooth();
+        }
         // (min_distance : la sortie la plus courte prime, seuls les grands axes y sont pénalisés)
         if off_on {
             p.off = c
@@ -1726,7 +1851,7 @@ pub fn plan_with(
                 .map(|&e| {
                     let (ed, o) = (
                         &net.edges[e],
-                        off_len(&net.edges[e].cls, &net.edges[e].lab, &r.surface, md),
+                        off_len(&net.edges[e].cls, &net.edges[e].lab, &r.surface, goal),
                     );
                     // mode max : le retour d'un aller-retour (copie d'un passage unique) ne rapporte
                     // ni prime de type ni bonus, sinon la recherche « remplit » la distance d'allers-
@@ -1879,7 +2004,7 @@ pub fn plan_with(
         "max" => {
             let val = |t: &Track| {
                 if off_on {
-                    t.dplus + off_price * (t.length - off_len(&t.cls, &t.lab, &r.surface, md))
+                    t.dplus + off_price * (t.length - off_len(&t.cls, &t.lab, &r.surface, goal))
                 } else {
                     t.dplus
                 }
@@ -1889,7 +2014,7 @@ pub fn plan_with(
         // réalisables d'abord, puis par longueur croissante
         // (grands axes : comptés `MAJOR_K` fois en plus, comme dans `Problem::score`)
         "min_distance" => {
-            let len = |t: &Track| t.length + off_len(&t.cls, &t.lab, &r.surface, md);
+            let len = |t: &Track| t.length + off_len(&t.cls, &t.lab, &r.surface, goal);
             loops.sort_by(|a, b| b.feasible.cmp(&a.feasible).then(len(a).total_cmp(&len(b))))
         }
         // cible : la plus proche de la demande d'abord ; si elle la tient (à `DIAG_TOL`), celles
@@ -1901,7 +2026,7 @@ pub fn plan_with(
                 let e = ((t.length - l) / l).abs() + ((t.dplus - d) / d).abs();
                 if off_on {
                     e.max(SURF_TARGET_BAND)
-                        + SURF_TARGET * off_len(&t.cls, &t.lab, &r.surface, md) / l
+                        + SURF_TARGET * off_len(&t.cls, &t.lab, &r.surface, goal) / l
                 } else {
                     e
                 }

@@ -88,6 +88,14 @@
     if (layer !== 'zone') tmap?.setZone(used ?? own);
     else tmap?.setZone(null);
   });
+  // D57 : choix d'une autre variante → cadrage sur son itinéraire (2D ou 3D)
+  let framed: { res: unknown; sel: number } = { res: null, sel: 0 };
+  $effect(() => {
+    const res = app.result, sel = app.sel, c = current();
+    if (!tmap || !c) return;
+    if (res === framed.res && sel !== framed.sel) tmap.frameLoop(c, padding(), cap);
+    framed = { res, sel };
+  });
   // cadrage sur la boucle à chaque nouveau résultat
   $effect(() => {
     const r = app.result;
