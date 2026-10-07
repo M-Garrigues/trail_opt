@@ -41,6 +41,17 @@ variable "turnstile_secret" {
   sensitive   = true
 }
 
+variable "admin_key" {
+  description = "Clé de la page /admin (D47), ADMIN_KEY de ~/.config/optrail/private.env (≥ 32 caractères, ex. openssl rand -hex 32). Vide : admin désactivé."
+  type        = string
+  default     = ""
+  sensitive   = true
+  validation {
+    condition     = var.admin_key == "" || length(var.admin_key) >= 32
+    error_message = "admin_key : vide ou au moins 32 caractères."
+  }
+}
+
 variable "cloudfront_hostname" {
   description = "Domaine *.cloudfront.net de la distribution (sortie `url` du premier apply), accepté par Turnstile tant que le domaine perso est inactif. Vide au premier apply."
   type        = string
@@ -79,7 +90,7 @@ variable "duration_alert_s" {
 variable "budget_usd" {
   description = "Seuils Budgets en USD, coût brut hors crédits (M5 : ≈ 1 $) : chacun met l'API en pause, reprise manuelle."
   type        = list(number)
-  default     = [1, 5]
+  default     = [1, 5, 10, 20, 50] # chaque palier remet la pause (revue infra H2) ; limite = max
 }
 
 variable "enable_custom_domain" {

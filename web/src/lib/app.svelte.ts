@@ -3,6 +3,7 @@ import { load, save, remove, clearAll } from './store';
 import { type Settings, mergeSettings, buildQuery, expectedKm, computeEstimateS, settingsFromRequest, type Start } from './settings';
 import { byId } from './catalog';
 import { postLoop, getLoop, shareUrl, sharedId, type Shared } from './share';
+import { eventBody, sendEvent, type EventName } from './hit';
 import { fetchPlan, fetchDiagnose, PlanError } from './api';
 import { getToken } from './turnstile';
 import { routeGenerated } from './install.svelte';
@@ -308,12 +309,19 @@ export async function openEntry(e: hist.Entry) {
 export function dismissIntro() { app.intro = false; save('intro', true); }
 
 // ---- partage (E9, E10) ----
+/** Action suivie (D59) : réglages de la demande et stats de la sortie affichée, sans identifiant. */
+export function track(event: EventName) {
+  const c = current();
+  void sendEvent(eventBody(event, app.request, c ?? null, app.fromHistory ? null : app.sel + 1, app.result?.compute_s, i18n.lang));
+}
+
 /** Crée le lien (jeton Turnstile NEUF) puis navigator.share, sinon copie. Renvoie l'URL ou null. */
 export async function shareLoop(): Promise<string | null> {
   const c = current(), r = app.result;
   if (!c || !r || app.sharing) return null;
   app.sharing = true;
   app.error = null;
+  track('share_click');
   try {
     // Boucle ouverte par lien : on repartage son URL (GET ne rend pas `sig`, api.md v1.3).
     // Sinon tout est recopié tel quel de la même réponse /api/plan : `sig` les couvre.
@@ -321,7 +329,11 @@ export async function shareLoop(): Promise<string | null> {
       request: app.request, data_version: r.data_version, solver_version: r.solver_version,
       effective_start: r.effective_start, zone: r.zone ?? null, candidate: $state.snapshot(c) as Candidate, warnings: r.warnings,
     };
-    const id = (app.shared && sharedId()) || (await postLoop(body, await getToken()));
+    let id = app.shared ? sharedId() : null;
+    if (!id) {
+      id = await postLoop(body, await getToken());
+      track('share_created');
+    }
     const url = shareUrl(id);
     const d = dicts[i18n.lang];
     try {
@@ -352,6 +364,7 @@ export async function openShared(id: string) {
       effective_start: s.effective_start, zone: s.zone ?? null, candidates: [s.candidate], warnings: s.warnings };
     app.cands = [s.candidate]; app.sel = 0; app.fromHistory = true; app.shared = true; app.request = s.request;
     app.snap = 2;
+    track('shared_open');
   } catch (e) {
     const pe = e instanceof PlanError ? e : new PlanError('network');
     app.error = { code: pe.code, params: pe.params ?? {}, status: pe.status };

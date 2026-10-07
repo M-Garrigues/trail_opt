@@ -1,6 +1,6 @@
 <script lang="ts">
   // E6 résultat + E7 autres boucles.
-  import { isImportant, app, compute, select, open as openLayer, close, current, mapUi, debug, viaIdx } from '../lib/app.svelte';
+  import { isImportant, app, compute, select, open as openLayer, close, current, mapUi, debug, viaIdx, track } from '../lib/app.svelte';
   import { saveGpx, canShareGpx } from '../lib/gpx';
   import { byId } from '../lib/catalog';
   import { durationMin, lowSurface } from '../lib/settings';
@@ -103,7 +103,7 @@
           <span class="cap">{t().result.again}</span>
         </button>
       {/if}
-      <button class="btn primary gpx" onclick={() => saveGpx(c, res.data_version)}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
+      <button class="btn primary gpx" onclick={() => { track('gpx'); void saveGpx(c, res.data_version); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
     </div>
   {/if}
 {/if}

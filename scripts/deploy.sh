@@ -10,7 +10,8 @@
 #
 # Session : `aws login --profile optrail` (courte, aucune clé longue). Le compte est vérifié.
 # Config non secrète : infra/prod.env. Secrets : ~/.config/optrail/private.env (600) :
-#   TURNSTILE_SITEKEY, TURNSTILE_SECRET, ALERT_EMAIL [, CLOUDFLARE_API_TOKEN si ENABLE_CUSTOM_DOMAIN].
+#   TURNSTILE_SITEKEY, TURNSTILE_SECRET, ALERT_EMAIL, ADMIN_KEY (≥ 32 car., vide = admin désactivé)
+#   [, CLOUDFLARE_API_TOKEN si ENABLE_CUSTOM_DOMAIN]. Aucune n'est visible des builds (revue infra H1).
 # tofu apply demande confirmation (AUTO_APPROVE=1 pour l'éviter).
 # Prérequis : rustup, cargo-lambda (pip, zig inclus), node/npm, tofu ≥ 1.10, jq, zip, aws ≥ 2.32.
 set -euo pipefail
@@ -55,6 +56,10 @@ priv="$HOME/.config/optrail/private.env"
 # shellcheck source=/dev/null
 . "$priv"
 set +a
+# Revue infra H1 : les builds (build.rs, proc-macros, scripts npm) ne voient AUCUNE variable de private.env :
+# les noms sont relus dans le fichier (jamais les valeurs), plus la liste connue par sûreté.
+nobuild=(-u TURNSTILE_SECRET -u ALERT_EMAIL -u CLOUDFLARE_API_TOKEN -u ADMIN_KEY -u DEV_TURNSTILE_SECRET -u CLOUDFLARE_ACCOUNT_ID)
+while IFS= read -r v; do nobuild+=(-u "$v"); done < <(sed -nE 's/^(export[[:space:]]+)?([A-Za-z_][A-Za-z0-9_]*)=.*/\2/p' "$priv")
 case "${TURNSTILE_SITEKEY:-}" in "" | [123]x0000*) die "TURNSTILE_SITEKEY absente ou clé de test (private.env)" ;; esac
 [[ ${TURNSTILE_SECRET:-} && ${ALERT_EMAIL:-} && ${DATA_VERSION:-} ]] || die "TURNSTILE_SECRET, ALERT_EMAIL ou DATA_VERSION manquant"
 TILES_SOURCE=${TILES_SOURCE:-zip}
@@ -79,10 +84,10 @@ src="$work/src"
 
 # --- Build (aucun secret dans l'environnement des scripts de build, sauf la clé de site publique) --
 rustup toolchain install "$RUST_VERSION" --profile minimal -t aarch64-unknown-linux-gnu >/dev/null
-(cd "$src/engine" && env -u TURNSTILE_SECRET -u ALERT_EMAIL -u CLOUDFLARE_API_TOKEN \
+(cd "$src/engine" && env "${nobuild[@]}" \
   RUSTUP_TOOLCHAIN=$RUST_VERSION CARGO_TARGET_DIR="$repo/engine/target/deploy" \
   cargo lambda build --release --arm64 --locked --bin lambda)
-(cd "$src/web" && env -u TURNSTILE_SECRET -u ALERT_EMAIL -u CLOUDFLARE_API_TOKEN \
+(cd "$src/web" && env "${nobuild[@]}" \
   VITE_TURNSTILE_SITEKEY="$TURNSTILE_SITEKEY" sh -c 'npm ci --ignore-scripts --no-audit --no-fund && npm run build')
 
 # --- Zip vers S3 : binaire seul (TILES_SOURCE=s3, D43) ou binaire + dalles (zip, D10) -------------
@@ -105,7 +110,7 @@ export TF_VAR_lambda_s3_key="lambda/$SHA.zip" TF_VAR_alert_email="$ALERT_EMAIL" 
   TF_VAR_turnstile_secret="$TURNSTILE_SECRET" TF_VAR_cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-}" \
   TF_VAR_reserved_concurrency="$LAMBDA_RESERVED_CONCURRENCY" TF_VAR_enable_custom_domain="$ENABLE_CUSTOM_DOMAIN" \
   TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID" TF_VAR_cloudfront_hostname="$CLOUDFRONT_HOSTNAME"
-export TF_VAR_lambda_env TF_VAR_tiles_source="$TILES_SOURCE"
+export TF_VAR_lambda_env TF_VAR_tiles_source="$TILES_SOURCE" TF_VAR_admin_key="${ADMIN_KEY:-}" # vide : admin désactivé
 tf() { tofu -chdir="$src/infra" "$@"; }
 tf init -input=false -backend-config="bucket=$STATE_BUCKET" >/dev/null
 if [[ ${AUTO_APPROVE:-} == 1 ]]; then tf apply -input=false -auto-approve; else tf apply; fi

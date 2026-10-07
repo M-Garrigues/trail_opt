@@ -435,6 +435,46 @@ impl Store {
         }
     }
 
+    /// Sel quotidien des visiteurs uniques (D51) : `salt/<jour>` (32 octets aléatoires) créé par
+    /// la première instance qui le demande (écriture conditionnelle : S3 `If-None-Match: *`,
+    /// fichier `create_new`), relu sinon. Oublié après 2 jours (cycle de vie S3, infra/cdn.tf).
+    pub fn salt(&self, day: &str) -> Result<Vec<u8>, String> {
+        let mut fresh = [0u8; 32];
+        ring::rand::SecureRandom::fill(&ring::rand::SystemRandom::new(), &mut fresh)
+            .map_err(|_| "CSPRNG".to_string())?;
+        match self {
+            Store::Dir(d) => {
+                use std::io::Write;
+                let p = d.join("salt").join(day);
+                std::fs::create_dir_all(d.join("salt")).map_err(|e| e.to_string())?;
+                match std::fs::File::create_new(&p) {
+                    Ok(mut f) => f.write_all(&fresh).map(|_| fresh.to_vec()),
+                    Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => std::fs::read(&p),
+                    Err(e) => Err(e),
+                }
+                .map_err(|e| e.to_string())
+            }
+            Store::S3 { bucket, region } => {
+                let t = S3Target {
+                    bucket: bucket.clone(),
+                    region: region.clone(),
+                    endpoint: None,
+                };
+                let (creds, key) = (Creds::from_env()?, format!("salt/{day}"));
+                let put = [("if-none-match", "*".to_string())];
+                match s3_request(&t, &creds, "PUT", &key, &fresh, &put, (5, 1024))?.0 {
+                    200 => return Ok(fresh.to_vec()),
+                    412 | 409 => {} // déjà créé (409 : création concurrente en cours)
+                    s => return Err(format!("s3 put salt: HTTP {s}")),
+                }
+                match s3_request(&t, &creds, "GET", &key, &[], &[], (5, 1024))? {
+                    (200, b) if b.len() == 32 => Ok(b),
+                    (s, _) => Err(format!("s3 get salt: HTTP {s}")),
+                }
+            }
+        }
+    }
+
     /// Requête S3 signée SigV4 (identifiants temporaires du rôle Lambda).
     fn s3(&self, method: &str, id: &str, body: &[u8]) -> Result<(u16, Vec<u8>), String> {
         let Store::S3 { bucket, region } = self else {
@@ -494,6 +534,23 @@ pub fn s3_call(
     content_type: Option<&str>,
     limits: (u64, u64),
 ) -> Result<(u16, Vec<u8>), String> {
+    let extra: Vec<(&str, String)> = content_type
+        .map(|ct| ("content-type", ct.to_string()))
+        .into_iter()
+        .collect();
+    s3_request(t, creds, method, key, body, &extra, limits)
+}
+
+/// `s3_call` avec des en-têtes signés en plus (noms en minuscules).
+pub fn s3_request(
+    t: &S3Target,
+    creds: &Creds,
+    method: &str,
+    key: &str,
+    body: &[u8],
+    extra: &[(&str, String)],
+    limits: (u64, u64),
+) -> Result<(u16, Vec<u8>), String> {
     let (url, host, path) = match &t.endpoint {
         Some(e) => {
             let host = e.split("://").last().unwrap_or(e).to_string();
@@ -513,9 +570,7 @@ pub fn s3_call(
         ("x-amz-content-sha256", hash),
         ("x-amz-date", date.clone()),
     ];
-    if let Some(ct) = content_type {
-        headers.push(("content-type", ct.into()));
-    }
+    headers.extend(extra.iter().cloned());
     if let Some(tok) = &creds.token {
         headers.push(("x-amz-security-token", tok.clone()));
     }

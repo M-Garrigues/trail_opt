@@ -1,5 +1,6 @@
 //! Handler Lambda (provided.al2023, arm64) : `GET /api/plan`, `POST /api/loops`,
-//! `GET /api/loops/<id>` derrière une Function URL AWS_IAM appelée par CloudFront (OAC).
+//! `GET /api/loops/<id>`, `POST /api/hit`, `GET /api/admin/stats` (contracts/admin.md)
+//! derrière une Function URL AWS_IAM appelée par CloudFront (OAC).
 //! cargo-lambda produit l'exécutable `bootstrap`.
 //! Environnement :
 //!   TILES_S3           s3://bucket/tiles/<DATA_VERSION>/ : dalles lues à la demande (cache /tmp/tiles/<version>,
@@ -13,7 +14,12 @@
 //!                      virgules, ex. `optrail.eu` ; obligatoire en release
 //!   LOOP_SIGNING_KEY   clé HMAC des boucles rendues (≥ 32 octets, M3) ; obligatoire en release,
 //!                      aléatoire au démarrage en build debug si absente
+//!   ADMIN_KEY          clé de /api/admin/* (en-tête x-admin-key) ; vide : routes en 404 ; en release,
+//!                      moins de 32 caractères refusés au démarrage (en debug : toute clé, ex. `123`)
+//!   AWS_LAMBDA_LOG_GROUP_NAME  groupe interrogé par /api/admin/stats (posé par Lambda)
+//!   Sel des visiteurs de /api/hit : `salt/<jour>` dans SHARED_BUCKET (ou SHARE_DIR), D51.
 //!   Build debug seulement (profil `local` de scripts/dev.sh), ignorés en release :
+//!   AWS_PROFILE         /api/admin/stats passe par l'AWS CLI de ce profil (lecture seule)
 //!   TURNSTILE_DISABLED=1  désactive Turnstile
 //!   FORCE_TURNSTILE=1  traite aussi les appels sans authorizer comme externes (tester Turnstile
 //!                      de bout en bout avec `cargo lambda watch`)
@@ -23,15 +29,20 @@
 //! direct (IAM, smoke test de deploy.yml) ; via la Function URL AWS_IAM, AWS remplit toujours
 //! `authorizer.iam`, donc un client ne peut pas s'en faire passer.
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, SystemTime};
 
-use engine::api;
+use engine::admin::{self, Admin};
 use engine::share::{self, Store};
 use engine::tiles::TileStore;
+use engine::{api, hit};
 use lambda_http::request::RequestContext;
 use lambda_http::{Body, Error, Request, RequestExt, Response, run, service_fn};
 use serde_json::json;
 
+/// Plafond de lignes `hit`/`event` par IP et par heure, par instance (revue F3 : un script qui
+/// change d'User-Agent ne crée pas plus de HIT_MAX « visiteurs » par heure et par instance).
+const HIT_MAX: u32 = 60;
 const SITEVERIFY: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 fn tiles_dir() -> PathBuf {
@@ -153,6 +164,44 @@ struct Ctx {
     loops: Store,
     turnstile: Turnstile,
     key: ring::hmac::Key,
+    admin: Option<Admin>,
+    /// lignes de mesure d'audience par IP (revue F3)
+    hits: admin::Limiter,
+    /// sel du jour des visiteurs (D51), mis en cache par instance : (jour, sel)
+    salt: Mutex<Option<(String, Vec<u8>)>>,
+    log_group: String,
+}
+
+fn today() -> i64 {
+    let s = SystemTime::now()
+        .duration_since(SystemTime::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    s as i64 / 86_400
+}
+
+/// Sel du jour (`salt/<jour>` du stockage des partages), relu une fois par jour et par instance.
+fn day_salt(ctx: &Ctx) -> Option<Vec<u8>> {
+    let day = admin::day_str(today());
+    let mut c = ctx.salt.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some((d, s)) = &*c
+        && *d == day
+    {
+        return Some(s.clone());
+    }
+    match ctx.loops.salt(&day) {
+        Ok(s) => {
+            *c = Some((day, s.clone()));
+            Some(s)
+        }
+        Err(e) => {
+            println!("{}", json!({"msg": "hit_error", "detail": e}));
+            None
+        }
+    }
+}
+
+fn header<'a>(req: &'a Request, name: &str) -> Option<&'a str> {
+    req.headers().get(name).and_then(|v| v.to_str().ok())
 }
 
 async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
@@ -163,13 +212,14 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
             .header("cache-control", "no-store")
             .body(Body::from(body))
     };
-    let token = req
-        .headers()
-        .get("x-turnstile-token")
-        .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+    let token = header(&req, "x-turnstile-token").map(str::to_string);
     let internal = internal(&req);
     let ip = viewer_ip(&req);
+    // pays/région du visiteur (CloudFront), jamais l'IP ni l'UA dans une ligne `plan`
+    let geo = hit::geo(
+        header(&req, "cloudfront-viewer-country"),
+        header(&req, "cloudfront-viewer-country-region"),
+    );
     let path = req.uri().path().to_string();
     let query: Vec<(String, String)> = req
         .query_string_parameters_ref()
@@ -210,9 +260,60 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
             let id = p["/api/loops/".len()..].to_string();
             tokio::task::spawn_blocking(move || share::get(&id, |id| ctx.loops.get(id)))
         }
-        // CloudFront transmet toutes les méthodes sur /api/loops* (jeu imposé) : 405
+        // mesure d'audience (admin.md § 2, D51) : pas de Turnstile, robots filtrés par UA
+        ("POST", "/api/hit") => {
+            let body = req.body().to_vec();
+            let ua = header(&req, "user-agent").unwrap_or("").to_string();
+            let geo = geo.clone();
+            tokio::task::spawn_blocking(move || {
+                let hosts = &ctx.turnstile.hostnames;
+                let (status, mut line) =
+                    hit::hit(&body, ip.as_deref(), &ua, geo, hosts, || day_salt(&ctx));
+                // revue F3 : au plus HIT_MAX lignes par IP et par heure (par instance) ; au-delà, 204 muet
+                let who = ip.as_deref().unwrap_or("");
+                if line.is_some() && !ctx.hits.allow(who, std::time::Instant::now()) {
+                    line = None;
+                }
+                let m = engine::Msg::error(engine::Code::InvalidRequest, "invalid hit");
+                api::Reply {
+                    status,
+                    body: api::error_body(&m, status),
+                    log: line.unwrap_or_default(),
+                }
+            })
+        }
+        // admin (admin.md § 3–4) : 404 si ADMIN_KEY est absente
+        ("GET", "/api/admin/stats") if ctx.admin.is_some() => {
+            let given = header(&req, "x-admin-key").map(str::to_string);
+            tokio::task::spawn_blocking(move || {
+                let Some(adm) = &ctx.admin else {
+                    unreachable!()
+                };
+                let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into());
+                // local (build de développement + AWS_PROFILE) : AWS CLI, sinon API signée
+                let cli = cfg!(debug_assertions) && std::env::var_os("AWS_PROFILE").is_some();
+                // quotas Logs : 5 appels/s (API) ; AWS CLI : ~1 s par appel, tout en parallèle
+                let pace = if cli {
+                    (9, Duration::from_millis(300))
+                } else {
+                    (5, Duration::from_secs(1))
+                };
+                let call = |op: &str, b: &serde_json::Value| {
+                    if cli {
+                        admin::logs_cli(&region, op, b)
+                    } else {
+                        admin::logs_api(&region, op, b)
+                    }
+                };
+                let who = ip.as_deref().unwrap_or("");
+                admin::handle(adm, given.as_deref(), who, &query, today(), |f, t| {
+                    admin::run(f, t, &ctx.log_group, call, pace, admin::DEADLINE)
+                })
+            })
+        }
+        // CloudFront transmet toutes les méthodes sur /api/loops* et /api/hit (jeu imposé) : 405
         (_, p) => {
-            let status = if p.starts_with("/api/loops") {
+            let status = if p.starts_with("/api/loops") || p == "/api/hit" {
                 405
             } else {
                 404
@@ -221,9 +322,27 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
             return Ok(json_resp(status, api::error_body(&m, status).to_string())?);
         }
     };
-    let reply = task.await?;
-    println!("{}", reply.log);
-    Ok(json_resp(reply.status, reply.body.to_string())?)
+    let mut reply = task.await?;
+    if path == "/api/plan"
+        && let Some(o) = reply.log.as_object_mut()
+    {
+        o.extend(geo);
+    }
+    if !reply.log.is_null() {
+        println!("{}", reply.log);
+    }
+    if reply.status == 204 {
+        let r = Response::builder()
+            .status(204)
+            .header("cache-control", "no-store");
+        return Ok(r.body(Body::Empty)?);
+    }
+    let mut r = json_resp(reply.status, reply.body.to_string())?;
+    if path.starts_with("/api/admin/") {
+        r.headers_mut()
+            .insert("x-robots-tag", "noindex".parse().expect("en-tête"));
+    }
+    Ok(r)
 }
 
 #[tokio::main]
@@ -245,6 +364,13 @@ async fn main() -> Result<(), Error> {
     // E3, M3 : configuration de production vérifiée au démarrage (refus = pas de service)
     let turnstile = Turnstile::from_env()?;
     let key = signing_key()?;
+    // admin.md § 3 : clé courte refusée en release (démarrage en échec) ; vide = admin désactivé
+    let admin = Admin::from_key(
+        &std::env::var("ADMIN_KEY").unwrap_or_default(),
+        cfg!(debug_assertions),
+    )?;
+    let log_group = std::env::var("AWS_LAMBDA_LOG_GROUP_NAME")
+        .unwrap_or_else(|_| "/aws/lambda/optrail-api".into());
     let expected = std::env::var("DATA_VERSION").unwrap_or_default();
     println!(
         "{}",
@@ -252,13 +378,18 @@ async fn main() -> Result<(), Error> {
                "data_version_env": expected, "mismatch": !expected.is_empty() && expected != store.manifest.data_version,
                "tiles": store.manifest.tiles.len(), "solver_version": engine::solver_version(),
                "share_store": loops.describe(), "debug_build": cfg!(debug_assertions),
-               "turnstile_hostnames": turnstile.hostnames})
+               "turnstile_hostnames": turnstile.hostnames, "admin": admin.is_some(),
+               "log_group": log_group})
     );
     let ctx = Arc::new(Ctx {
         store,
         loops,
         turnstile,
         key,
+        admin,
+        salt: Mutex::new(None),
+        hits: admin::Limiter::new(HIT_MAX, Duration::from_secs(3600)),
+        log_group,
     });
     run(service_fn(move |req| handler(ctx.clone(), req))).await
 }

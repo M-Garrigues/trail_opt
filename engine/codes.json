@@ -286,5 +286,15 @@
     "code": "paved_network_major_roads",
     "kind": "error",
     "params": []
+  },
+  {
+    "code": "admin_denied",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "admin_locked",
+    "kind": "error",
+    "params": []
   }
 ]

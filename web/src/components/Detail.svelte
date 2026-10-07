@@ -1,6 +1,6 @@
 <script lang="ts">
   // E8 détail : profil coloré par pente + légende, chiffres, montées, avertissements, version des données.
-  import { isImportant, app, close, current, open as openLayer, closeTo, mapUi, viaIdx } from '../lib/app.svelte';
+  import { isImportant, app, close, current, open as openLayer, closeTo, mapUi, viaIdx, track } from '../lib/app.svelte';
   import { legs, idxAt } from '../lib/geo';
   import { LM_PATH } from '../lib/icons';
   import { durationMin, lowSurface } from '../lib/settings';
@@ -43,7 +43,7 @@
   {/if}
   {#if !app.dock}<Profile cand={c} bind:cursor={app.cursor} height={170} onpick={mapUi.center} marks={profileMarks(c, vi)} />{/if}
   <div class="actions-grid">
-    <button class="btn primary" onclick={() => saveGpx(c, res.data_version)}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
+    <button class="btn primary" onclick={() => { track('gpx'); void saveGpx(c, res.data_version); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
     {#if c.sig || app.shared}<button class="btn secondary" onclick={() => openLayer('share')} disabled={app.offline}>{t().result.share}</button>{/if}
     {#if !embedded}<button class="btn secondary" onclick={replan}>{t().detail.replan}</button>{/if}
   </div>

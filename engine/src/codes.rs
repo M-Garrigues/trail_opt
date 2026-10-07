@@ -67,6 +67,9 @@ pub enum Code {
     // « Route » = voies revêtues seulement (D53, api.md v1.8)
     PavedNetworkTooShort,
     PavedNetworkMajorRoads,
+    // Admin (contracts/admin.md, D47)
+    AdminDenied,
+    AdminLocked,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -77,7 +80,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 46] = {
+    pub const ALL: [Code; 48] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -126,6 +129,8 @@ impl Code {
             LowSurfaceShare,
             PavedNetworkTooShort,
             PavedNetworkMajorRoads,
+            AdminDenied,
+            AdminLocked,
         ]
     };
 
@@ -158,7 +163,9 @@ impl Code {
             | ClimbsUnknown
             | LoopNotFound
             | PavedNetworkTooShort
-            | PavedNetworkMajorRoads => (Error, &[]),
+            | PavedNetworkMajorRoads
+            | AdminDenied
+            | AdminLocked => (Error, &[]),
             DplusOutOfRange => (Error, &["min_m", "max_m"]),
             // min_km : null quand Σw du graphe < D+ (aucune distance ne suffit)
             DplusUnreachableProven => (Error, &["dplus_m", "min_km"]),

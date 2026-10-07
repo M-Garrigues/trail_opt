@@ -26,11 +26,23 @@ resource "aws_s3_bucket_lifecycle_configuration" "site" {
       days = 90
     }
   }
+  # salt/ : sel quotidien des visiteurs uniques (D51), oublié après 2 jours (donnée anonyme)
+  rule {
+    id     = "salt-2d"
+    status = "Enabled"
+    filter {
+      prefix = "salt/"
+    }
+    expiration {
+      days = 2
+    }
+  }
 }
 
 # ListBucket : un fichier absent rend 404 (et non 403). Pas de listing possible : CloudFront ne
 # transmet pas la query string au site (CachingOptimized, sans politique de requête d'origine).
-# shared/ (boucles partagées) n'est jamais servi en direct : seulement via GET /api/loops/<id>.
+# shared/ (boucles partagées) n'est jamais servi en direct : seulement via GET /api/loops/<id> ;
+# salt/ (sel quotidien des visiteurs, D51) jamais servi.
 resource "aws_s3_bucket_policy" "site" {
   bucket = aws_s3_bucket.site.id
   policy = jsonencode({
@@ -47,7 +59,7 @@ resource "aws_s3_bucket_policy" "site" {
         Effect    = "Deny"
         Principal = { Service = "cloudfront.amazonaws.com" }
         Action    = "s3:GetObject"
-        Resource  = "${aws_s3_bucket.site.arn}/shared/*"
+        Resource  = ["${aws_s3_bucket.site.arn}/shared/*", "${aws_s3_bucket.site.arn}/salt/*"]
       },
     ]
   })
@@ -96,12 +108,18 @@ data "aws_cloudfront_cache_policy" "disabled" {
 # Vers la Function URL : jamais Host (signature OAC). Liste fermée des en-têtes lus par le
 # handler + CloudFront-Viewer-Address (remoteip de siteverify, E3), absent de la politique gérée
 # AllViewerExceptHostHeader (allExcept host : en-têtes du visiteur seulement).
+# Admin (D47, contracts/admin.md) : pays/région du visiteur (journaux), user-agent (hachage des
+# visiteurs uniques de /api/hit), x-admin-key (Authorization est écrasé par la signature OAC).
+# Une politique de requête d'origine ne change pas la clé de cache (/api/* : CachingDisabled).
 resource "aws_cloudfront_origin_request_policy" "api" {
   name = "optrail-api"
   headers_config {
     header_behavior = "whitelist"
     headers {
-      items = ["x-turnstile-token", "content-type", "CloudFront-Viewer-Address"]
+      items = [
+        "x-turnstile-token", "content-type", "CloudFront-Viewer-Address",
+        "CloudFront-Viewer-Country", "CloudFront-Viewer-Country-Region", "user-agent", "x-admin-key",
+      ]
     }
   }
   query_strings_config {
@@ -113,8 +131,9 @@ resource "aws_cloudfront_origin_request_policy" "api" {
 }
 
 # En-têtes de sécurité (M2) : ceux de Managed-SecurityHeadersPolicy + Permissions-Policy + CSP.
-# CSP d'abord en Report-Only (violations visibles dans la console du navigateur) ; passer en
-# Content-Security-Policy (security_headers_config) une fois la console propre sur le site.
+# CSP BLOQUANTE (D61) depuis le 2026-10-07 : suite e2e complète (3 projets) sur le build servi avec ces
+# en-têtes, zéro violation ; web/tests/e2e/csp.spec.ts échoue à toute violation. Une source ajoutée au
+# front doit l'être ici aussi.
 # Origines : tuiles/style/géocodage IGN (data.geopf.fr), MNT 3D (tiles.mapterhorn.com),
 # Turnstile (challenges.cloudflare.com, script + iframe), worker MapLibre (self, blob:).
 locals {
@@ -160,17 +179,16 @@ resource "aws_cloudfront_response_headers_policy" "security" {
       mode_block = true
       override   = true
     }
+    content_security_policy {
+      content_security_policy = local.csp
+      override                = true
+    }
   }
 
   custom_headers_config {
     items {
       header   = "Permissions-Policy"
       value    = "geolocation=(self), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()"
-      override = true
-    }
-    items {
-      header   = "Content-Security-Policy-Report-Only"
-      value    = local.csp
       override = true
     }
   }
@@ -237,7 +255,22 @@ resource "aws_cloudfront_distribution" "main" {
     response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
   }
 
-  # API : GET seulement (HEAD imposé par CloudFront), jamais en cache.
+  # Mesure d'audience (POST /api/hit, D47) : même principe que /api/loops* (jeu de méthodes
+  # complet, x-amz-content-sha256 calculé par le front), jamais en cache. Avant /api/*.
+  ordered_cache_behavior {
+    path_pattern               = "/api/hit"
+    target_origin_id           = "api"
+    viewer_protocol_policy     = "https-only"
+    allowed_methods            = ["GET", "HEAD", "OPTIONS", "PUT", "POST", "PATCH", "DELETE"]
+    cached_methods             = ["GET", "HEAD"]
+    compress                   = true
+    cache_policy_id            = data.aws_cloudfront_cache_policy.disabled.id
+    origin_request_policy_id   = aws_cloudfront_origin_request_policy.api.id
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+  }
+
+  # API : GET seulement (HEAD imposé par CloudFront), jamais en cache. Couvre aussi
+  # GET /api/admin/stats (D47 : no-store posé par la Lambda, x-admin-key transmis par la politique).
   ordered_cache_behavior {
     path_pattern               = "/api/*"
     target_origin_id           = "api"

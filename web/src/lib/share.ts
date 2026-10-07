@@ -21,10 +21,14 @@ async function errorOf(res: Response): Promise<PlanError> {
   return new PlanError(`http_${res.status}`, {}, res.status);
 }
 
+/** SHA-256 hexadécimal du corps : CloudFront OAC l'exige pour un POST vers la Function URL. */
+export async function sha256hex(body: Uint8Array<ArrayBuffer>): Promise<string> {
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', body))].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
 export async function postLoop(shared: Shared, token: string | null): Promise<string> {
   const body = new TextEncoder().encode(JSON.stringify(shared));
-  // CloudFront OAC exige le SHA-256 du corps pour un POST vers la Function URL
-  const sha = [...new Uint8Array(await crypto.subtle.digest('SHA-256', body))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const sha = await sha256hex(body);
   let res: Response;
   try {
     res = await fetch('/api/loops', {

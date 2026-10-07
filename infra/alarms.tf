@@ -82,6 +82,32 @@ resource "aws_cloudwatch_metric_alarm" "duration_p95" {
   alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
+# Admin (D47, contracts/admin.md) : essais de clé refusés (ligne `admin`, outcome denied|locked).
+resource "aws_cloudwatch_log_metric_filter" "admin_denied" {
+  name           = "optrail-admin-denied"
+  log_group_name = aws_cloudwatch_log_group.api.name
+  pattern        = "{ $.msg = \"admin\" && ($.outcome = \"denied\" || $.outcome = \"locked\") }"
+  metric_transformation {
+    namespace = "optrail"
+    name      = "AdminDenied"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "admin_denied" {
+  alarm_name          = "optrail-admin-denied"
+  alarm_description   = "Plus de 10 essais de clé admin refusés en 1 h : quelqu'un cherche la clé ?"
+  namespace           = "optrail"
+  metric_name         = aws_cloudwatch_log_metric_filter.admin_denied.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 3600
+  evaluation_periods  = 1
+  threshold           = 10
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
 # --- Coupe-circuit -------------------------------------------------------------
 
 # Contrat d'exploitation avec le handler (api.md § Exploitation) : une ligne JSON par requête
@@ -213,6 +239,33 @@ data "archive_file" "killswitch" {
           log(op="pause", source=alarm, resume_at=args["ScheduleExpression"])
     PY
   }
+}
+
+# E-mail dédié quand la pause a VRAIMENT eu lieu (ligne `{"msg":"killswitch","op":"pause"}` de la
+# Lambda du coupe-circuit), sur le canal des alertes (même abonnement, adresse = var.alert_email).
+resource "aws_cloudwatch_log_metric_filter" "killswitch_pause" {
+  name           = "optrail-killswitch-pause"
+  log_group_name = aws_cloudwatch_log_group.killswitch.name
+  pattern        = "{ $.msg = \"killswitch\" && $.op = \"pause\" }"
+  metric_transformation {
+    namespace = "optrail"
+    name      = "KillswitchPause"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "killswitch_pause" {
+  alarm_name          = "optrail-killswitch-pause"
+  alarm_description   = "Pause du coupe-circuit déclenchée : API de calcul à concurrence 0 (reprise auto 1 h après une alarme, manuelle après un budget). Voir infra/README.md « Coupe-circuit »."
+  namespace           = "optrail"
+  metric_name         = aws_cloudwatch_log_metric_filter.killswitch_pause.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
 }
 
 resource "aws_iam_role" "killswitch" {

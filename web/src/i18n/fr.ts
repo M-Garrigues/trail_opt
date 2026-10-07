@@ -200,6 +200,7 @@ export const fr = {
     privacy: 'Confidentialité',
     attributions: 'Attributions',
     settings: 'Réglages',
+    stats: 'Mesure d’audience',
     forgetPosition: 'Oublier ma dernière position',
     forgotten: 'Position oubliée.',
     eraseAll: 'Effacer mes données',
@@ -210,9 +211,10 @@ export const fr = {
       'Hébergeur : Amazon Web Services EMEA SARL, 38 avenue John F. Kennedy, L-1855 Luxembourg, tél. +352 2789 0000. Serveurs dans l’Union européenne ; pages diffusées par le réseau mondial Amazon CloudFront.\n\n' +
       'Code sous licence PolyForm Noncommercial 1.0.0 ; données : voir Attributions.\n\n' +
       'Les sorties sont calculées automatiquement et proposées sans garantie : chacun reste seul juge du terrain, de la météo, des accès et de sa sécurité.',
-    privacyText: 'Responsable du traitement : l’éditeur (voir Mentions légales), contact@optrail.eu. Ni compte, ni cookie, ni mesure d’audience, ni publicité.\n\n' +
-      'Calcul : le point de départ et la zone dessinée sont envoyés au serveur au moment du calcul, pour tracer la sortie (base : fourniture du service demandé). Les journaux n’en gardent qu’une position arrondie au kilomètre, avec les réglages et le résultat, pendant 14 jours (intérêt légitime : exploitation, lutte contre les abus).\n\n' +
+    privacyText: 'Responsable du traitement : l’éditeur (voir Mentions légales), contact@optrail.eu. Ni compte, ni cookie, ni publicité.\n\n' +
+      'Calcul : le point de départ et la zone dessinée sont envoyés au serveur au moment du calcul, pour tracer la sortie (base : fourniture du service demandé). Les journaux n’en gardent qu’une position arrondie à environ 500 m, avec les réglages, le résultat et le pays ou la région déduits de l’adresse IP par l’hébergeur (l’adresse elle-même n’est pas enregistrée), pendant 13 mois (intérêt légitime : exploitation, lutte contre les abus, statistiques d’usage).\n\n' +
       'Partage : « Créer le lien » enregistre la sortie, départ exact compris, pendant 90 jours ; quiconque a le lien la voit. Pour la supprimer plus tôt, écrire à contact@optrail.eu en joignant le lien.\n\n' +
+      'Mesure d’audience : à l’ouverture du site, le navigateur signale la visite (page d’accueil ou sortie partagée, site d’où l’on vient réduit à son domaine, langue) ; lors d’un partage, d’un export GPX ou de l’ouverture d’un lien partagé, il signale aussi l’action, avec les réglages demandés et les caractéristiques de la sortie (distance par tranches de 5 km, D+ par tranches de 250 m, types de voie, rang parmi les sorties proposées, temps de calcul à la seconde), sans identifiant, ni le point de départ, la zone ou le tracé. Le serveur en tire un identifiant valable un seul jour : une empreinte chiffrée de l’adresse IP et du navigateur, calculée avec une clé aléatoire propre à chaque jour et effacée au plus tard trois jours après ; ni l’adresse IP ni le navigateur ne sont enregistrés, aucun cookie n’est déposé ni rien lu sur l’appareil. Seuls des chiffres anonymes en sont tirés (visiteurs par jour, pays ou région, type d’appareil, sites d’origine, actions selon le type de sortie), pour l’éditeur seul, jamais recoupés ni transmis à des tiers ; journaux conservés 13 mois. Mesure exemptée de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) ; pour s’y opposer : Réglages › « Mesure d’audience » ; le signal Global Privacy Control ou Do Not Track du navigateur est aussi respecté.\n\n' +
       'Sur l’appareil : langue, réglages, historique des sorties et dernière position arrondie (~1 km) restent dans la mémoire du navigateur (localStorage) et ne sont jamais envoyés ; effaçables dans Réglages. Strictement nécessaires au service demandé, ils ne requièrent pas de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) : d’où l’absence de bandeau cookies.\n\n' +
       'Adresse IP : optrail ne l’enregistre pas, mais elle est vue par Amazon Web Services (hébergement), Cloudflare (Turnstile, vérification anti-robot au calcul et au partage ; intérêt légitime : sécurité), l’IGN (fond de carte ; recherche de lieux, qui reçoit aussi le texte saisi) et Mapterhorn (relief de la vue 3D). Amazon et Cloudflare sont des sociétés américaines : transferts encadrés par le cadre UE–États-Unis de protection des données et les clauses contractuelles types.\n\n' +
       'Droits : accès, rectification, effacement, opposition et limitation, par e-mail à contact@optrail.eu ; réclamation possible auprès de la CNIL (cnil.fr). Sans compte, optrail ne peut pas relier les journaux à une personne.',
@@ -269,6 +271,8 @@ export const fr = {
     internal: (p: P) => `Erreur interne (${p.code}). Réessaie.`,
     offline: () => 'Hors ligne : vérifie ta connexion.',
     loop_not_found: () => 'Ce lien a expiré ou n’existe pas.',
+    admin_denied: () => 'Clé refusée.',
+    admin_locked: () => 'Trop d’essais, réessayer dans 15 min.',
   },
   warn: {
     long_distance: () => '', // D34 : pas de conseils (la distance est déjà affichée)
