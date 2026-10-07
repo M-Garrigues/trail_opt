@@ -30,10 +30,19 @@ test('clé, refus, rendu des vues, noindex', async ({ page }) => {
   await expect(tiles).toContainText('10,0 %'); // taux d'échec
   await expect(tiles).toContainText('4,1 / 9,6 s');
   // graphiques canvas, tableaux, carte
-  await expect(page.locator('canvas:not(.maplibregl-canvas)')).toHaveCount(5);
+  await expect(page.locator('canvas:not(.maplibregl-canvas)')).toHaveCount(6);
+  // actions (D59) : tuiles, taux par rang, combinaisons
+  await expect(tiles).toContainText('Partages');
+  await expect(tiles).toContainText('1 ouverts');
+  const rank = page.locator('table', { has: page.locator('caption', { hasText: 'Rang de la sortie' }) });
+  await expect(rank.getByRole('row', { name: /n° 1/ })).toContainText('33,3 %');
+  await expect(page.locator('table', { has: page.locator('caption', { hasText: 'Distance' }) })).toContainText('10–15 km');
+  const combos = page.locator('.card', { hasText: 'Combinaisons qui amènent' }).getByRole('row');
+  await expect(combos).toHaveCount(4);
+  await expect(combos.nth(1)).toContainText('Cible');
   await expect(page.getByRole('cell', { name: 'timeout' })).toBeVisible();
   await expect(page.getByRole('cell', { name: 'bot_check_failed' })).toBeVisible();
-  await expect(page.getByRole('cell', { name: 'Max D+' })).toBeVisible();
+  await expect(page.getByRole('cell', { name: 'Max D+' }).first()).toBeVisible();
   await expect(page.getByRole('cell', { name: '—' }).first()).toBeVisible(); // type de voie absent (journal v1)
   await expect(page.getByRole('cell', { name: 'google.com' })).toBeVisible();
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();

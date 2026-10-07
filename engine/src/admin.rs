@@ -133,9 +133,9 @@ pub fn parse_range(query: &[(String, String)], today: i64) -> Result<(i64, i64),
 /// Lignes `plan` des calculs publics (v2 : `phase` ; v1, avant D47 : sans `phase` ni `diagnose`).
 const PLAN: &str = r#"msg = "plan" and internal = 0 and accepted = 1 and (phase = "plan" or (not ispresent(phase) and not ispresent(diagnose)))"#;
 
-/// Les 9 vues (admin.md § 4), tolérantes aux lignes `plan` v1 (pas de `phase`, `length_m`,
+/// Les 11 vues (admin.md § 4, D59), tolérantes aux lignes `plan` v1 (pas de `phase`, `length_m`,
 /// `dplus_res_m`) : `calcs` regroupe par `accepted` et non `phase` (même partition).
-pub fn queries() -> [(&'static str, String); 9] {
+pub fn queries() -> [(&'static str, String); 11] {
     [
         ("visitors", r#"filter msg = "hit" | stats count_distinct(visitor) as visitors, count(*) as hits by bin(1d) as day | sort day asc"#.into()),
         ("geo", r#"filter msg = "hit" | stats count_distinct(visitor) as visitors, count(*) as hits by country, region, dev | sort hits desc | limit 1000"#.into()),
@@ -144,7 +144,10 @@ pub fn queries() -> [(&'static str, String); 9] {
         ("perf_day", format!("filter {PLAN} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n by bin(1d) as day | sort day asc")),
         ("perf", format!("filter {PLAN} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n")),
         ("mix", format!("filter {PLAN} | stats count(*) as n by goal, surface, climbs")),
-        ("hist", format!("filter {PLAN} and status = 200 | fields floor(coalesce(got_km, length_m / 1000) / 5) * 5 as km_bin, floor(coalesce(got_dplus_m, dplus_res_m) / 250) * 250 as dplus_bin | stats count(*) as n by km_bin, dplus_bin")),
+        // aussi par type, voie et nombre de sorties rendues : dénominateurs des taux d'action (D59)
+        ("hist", format!("filter {PLAN} and status = 200 | fields goal, surface, n_got, floor(coalesce(got_km, length_m / 1000) / 5) * 5 as km_bin, floor(coalesce(got_dplus_m, dplus_res_m) / 250) * 250 as dplus_bin | stats count(*) as n by goal, surface, n_got, km_bin, dplus_bin")),
+        ("events_day", r#"filter msg = "event" | stats count(*) as n by bin(1d) as day, event | sort day asc"#.into()),
+        ("events_mix", r#"filter msg = "event" and event in ["share_created", "gpx"] | fields event, goal, surface, rank, floor(got_km / 5) * 5 as km_bin, floor(got_dplus_m / 250) * 250 as dplus_bin | stats count(*) as n by event, goal, surface, rank, km_bin, dplus_bin | sort n desc | limit 1000"#.into()),
         ("starts", r#"filter msg = "plan" and ispresent(start_lat) and (phase = "plan" or code = "outside_coverage") | stats count(*) as n by start_lat, start_lon, code | sort n desc | limit 10000"#.into()),
     ]
 }
@@ -172,6 +175,43 @@ fn sum_by(rows: &[Row], key: impl Fn(&Row) -> String, val: &str, name: &str) -> 
     v.sort_by(|a, b| b.1.total_cmp(&a.1));
     v.into_iter()
         .map(|(k, x)| json!({name: k, val: x}))
+        .collect()
+}
+
+/// Taux d'action par clé : actions (`ev`, rangées par `key`) rapportées aux calculs réussis
+/// (`base` : `calcs(ligne, clé)` = effectif de la ligne si elle compte pour cette clé).
+/// `[{key, calcs, share, gpx, share_rate, gpx_rate}]`, clés numériques triées, sinon par calculs.
+fn rates(
+    ev: &[Row],
+    base: &[Row],
+    key: impl Fn(&Row) -> String,
+    calcs: impl Fn(&Row, &str) -> Option<f64>,
+) -> Value {
+    let mut keys: BTreeMap<String, [f64; 2]> = BTreeMap::new();
+    for r in ev {
+        keys.entry(key(r)).or_default()[usize::from(s(r, "event") == "gpx")] += n(r, "n");
+    }
+    for r in base {
+        keys.entry(key(r)).or_default();
+    }
+    let mut out: Vec<(String, f64, [f64; 2])> = keys
+        .into_iter()
+        .map(|(k, a)| {
+            let c: f64 = base.iter().filter_map(|r| calcs(r, &k)).sum();
+            (k, c, a)
+        })
+        .filter(|(_, c, a)| *c > 0.0 || a[0] + a[1] > 0.0)
+        .collect();
+    out.sort_by(|a, b| match (a.0.parse::<f64>(), b.0.parse::<f64>()) {
+        (Ok(x), Ok(y)) => x.total_cmp(&y),
+        _ => b.1.total_cmp(&a.1),
+    });
+    let rate = |a: f64, c: f64| (c > 0.0).then(|| (a / c * 1000.0).round() / 1000.0);
+    out.into_iter()
+        .map(|(k, c, [sh, gpx])| {
+            json!({"key": k, "calcs": c, "share": sh, "gpx": gpx,
+                   "share_rate": rate(sh, c), "gpx_rate": rate(gpx, c)})
+        })
         .collect()
 }
 
@@ -290,6 +330,81 @@ pub fn shape(
         "hist_dplus_m",
         h.as_ref().map(|rows| hist(rows, "dplus_bin", 250.0)),
     );
+    // actions (D59) : volumes par jour, taux d'action par réglage et par stats de sortie
+    put(
+        "events_by_day",
+        v("events_day").map(|rows| {
+            let mut m: BTreeMap<String, Map<String, Value>> = BTreeMap::new();
+            for r in &rows {
+                let e = m.entry(day(r)).or_default();
+                let x = e.get(s(r, "event")).and_then(Value::as_f64).unwrap_or(0.0);
+                e.insert(s(r, "event").into(), json!(x + n(r, "n")));
+            }
+            m.into_iter()
+                .map(|(d, mut e)| {
+                    e.insert("day".into(), json!(d));
+                    Value::Object(e)
+                })
+                .collect()
+        }),
+    );
+    let ev = v("events_mix");
+    put(
+        "action_rates",
+        ev.as_ref().zip(h.as_ref()).map(|(ev, base)| {
+            let mut o = Map::new();
+            for (out, k) in [
+                ("goal", "goal"),
+                ("surface", "surface"),
+                ("km", "km_bin"),
+                ("dplus_m", "dplus_bin"),
+            ] {
+                o.insert(
+                    out.into(),
+                    rates(
+                        ev,
+                        base,
+                        |r| s(r, k).to_string(),
+                        |r, key| (s(r, k) == key).then(|| n(r, "n")),
+                    ),
+                );
+            }
+            // rang r proposé dans un calcul qui a rendu au moins r sorties (n_got absent : 1)
+            o.insert(
+                "rank".into(),
+                rates(
+                    ev,
+                    base,
+                    |r| s(r, "rank").to_string(),
+                    |r, key| {
+                        let got = r
+                            .get("n_got")
+                            .and_then(|x| x.parse::<f64>().ok())
+                            .unwrap_or(1.0);
+                        key.parse::<f64>()
+                            .is_ok_and(|k| got >= k)
+                            .then(|| n(r, "n"))
+                    },
+                ),
+            );
+            Value::Object(o)
+        }),
+    );
+    put("top_combos", ev.as_ref().map(|rows| {
+        let mut m: BTreeMap<[String; 5], [f64; 2]> = BTreeMap::new();
+        for r in rows {
+            let k = ["goal", "surface", "km_bin", "dplus_bin", "rank"].map(|k| s(r, k).to_string());
+            m.entry(k).or_default()[usize::from(s(r, "event") == "gpx")] += n(r, "n");
+        }
+        let mut v: Vec<_> = m.into_iter().collect();
+        v.sort_by(|a, b| (b.1[0] + b.1[1]).total_cmp(&(a.1[0] + a.1[1])));
+        v.into_iter()
+            .take(20)
+            .map(|([g, su, km, dp, rk], [sh, gpx])| {
+                json!({"goal": g, "surface": su, "km_bin": km, "dplus_bin": dp, "rank": rk, "share": sh, "gpx": gpx})
+            })
+            .collect()
+    }));
     let starts = v("starts");
     for (out, outside) in [("starts", false), ("starts_outside", true)] {
         put(out, starts.as_ref().map(|rows| {
@@ -364,7 +479,7 @@ pub fn shape(
     Value::Object(o)
 }
 
-/// Lance les 9 requêtes puis lit leurs résultats jusqu'à `Complete` ou `deadline`. Appels par
+/// Lance les 11 requêtes puis lit leurs résultats jusqu'à `Complete` ou `deadline`. Appels par
 /// lots concurrents de `batch`, `pace` entre deux lots (quotas Logs : 5 appels/s par compte).
 /// Une erreur de `StartQuery` (droits, identifiants) fait échouer l'ensemble.
 pub fn run(

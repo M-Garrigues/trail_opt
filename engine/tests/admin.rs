@@ -163,9 +163,74 @@ fn canned(name: &str) -> Value {
             ],
         ],
         "hist" => vec![
-            vec![("km_bin", "10"), ("dplus_bin", "250"), ("n", "3")],
-            vec![("km_bin", "10"), ("dplus_bin", "500"), ("n", "1")],
-            vec![("km_bin", "5"), ("dplus_bin", "250"), ("n", "2")],
+            vec![
+                ("goal", "target"),
+                ("surface", "trail"),
+                ("n_got", "3"),
+                ("km_bin", "10"),
+                ("dplus_bin", "250"),
+                ("n", "3"),
+            ],
+            vec![
+                ("goal", "max_dplus"),
+                ("n_got", "1"),
+                ("km_bin", "10"),
+                ("dplus_bin", "500"),
+                ("n", "1"),
+            ],
+            vec![
+                ("goal", "target"),
+                ("surface", "trail"),
+                ("n_got", "2"),
+                ("km_bin", "5"),
+                ("dplus_bin", "250"),
+                ("n", "2"),
+            ],
+        ],
+        "events_day" => vec![
+            vec![
+                ("day", "2026-10-06 00:00:00.000"),
+                ("event", "gpx"),
+                ("n", "2"),
+            ],
+            vec![
+                ("day", "2026-10-06 00:00:00.000"),
+                ("event", "share_click"),
+                ("n", "3"),
+            ],
+            vec![
+                ("day", "2026-10-07 00:00:00.000"),
+                ("event", "shared_open"),
+                ("n", "1"),
+            ],
+        ],
+        "events_mix" => vec![
+            vec![
+                ("event", "share_created"),
+                ("goal", "target"),
+                ("surface", "trail"),
+                ("rank", "1"),
+                ("km_bin", "10"),
+                ("dplus_bin", "250"),
+                ("n", "2"),
+            ],
+            vec![
+                ("event", "gpx"),
+                ("goal", "target"),
+                ("surface", "trail"),
+                ("rank", "2"),
+                ("km_bin", "10"),
+                ("dplus_bin", "250"),
+                ("n", "1"),
+            ],
+            vec![
+                ("event", "gpx"),
+                ("goal", "max_dplus"),
+                ("rank", "1"),
+                ("km_bin", "10"),
+                ("dplus_bin", "500"),
+                ("n", "1"),
+            ],
         ],
         "starts" => vec![
             vec![
@@ -253,7 +318,7 @@ fn stats_forme_de_la_reponse() {
         (b["compute_s"]["p50"].as_f64(), b["compute_s"]["n"].as_f64()),
         (Some(4.1289), Some(18.0))
     );
-    assert_eq!(b["scanned_mb"], 0.8);
+    assert_eq!(b["scanned_mb"], 1.0); // 10 vues terminées × 0,1 Mo
     assert_eq!(
         b["visitors_by_day"],
         json!([{"day": "2026-10-06", "visitors": 12.0, "hits": 30.0}])
@@ -311,6 +376,38 @@ fn stats_forme_de_la_reponse() {
         json!([{"dev": "mobile", "visitors": 8.0}, {"dev": "desktop", "visitors": 4.0}])
     );
     assert_eq!(b["referrers"], json!([{"ref": "google.com", "hits": 4.0}]));
+    // actions (D59)
+    assert_eq!(
+        b["events_by_day"],
+        json!([{"day": "2026-10-06", "gpx": 2.0, "share_click": 3.0}, {"day": "2026-10-07", "shared_open": 1.0}])
+    );
+    let a = &b["action_rates"];
+    assert_eq!(
+        a["goal"],
+        json!([
+            {"key": "target", "calcs": 5.0, "share": 2.0, "gpx": 1.0, "share_rate": 0.4, "gpx_rate": 0.2},
+            {"key": "max_dplus", "calcs": 1.0, "share": 0.0, "gpx": 1.0, "share_rate": 0.0, "gpx_rate": 1.0},
+        ])
+    );
+    // rang r : calculs ayant rendu au moins r sorties
+    assert_eq!(
+        a["rank"],
+        json!([
+            {"key": "1", "calcs": 6.0, "share": 2.0, "gpx": 1.0, "share_rate": 0.333, "gpx_rate": 0.167},
+            {"key": "2", "calcs": 5.0, "share": 0.0, "gpx": 1.0, "share_rate": 0.0, "gpx_rate": 0.2},
+        ])
+    );
+    assert_eq!(a["km"][0]["key"], "5");
+    assert_eq!(
+        a["km"][1],
+        json!({"key": "10", "calcs": 4.0, "share": 2.0, "gpx": 2.0, "share_rate": 0.5, "gpx_rate": 0.5})
+    );
+    assert_eq!(a["surface"][1]["key"], "-");
+    assert_eq!(
+        b["top_combos"][0],
+        json!({"goal": "target", "surface": "trail", "km_bin": "10", "dplus_bin": "250", "rank": "1", "share": 2.0, "gpx": 0.0})
+    );
+    assert_eq!(b["top_combos"].as_array().unwrap().len(), 3);
     assert_eq!(
         (&r.log["msg"], &r.log["outcome"]),
         (&json!("admin"), &json!("ok"))

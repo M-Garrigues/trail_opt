@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { days, fmt, histBins, label, pct, perDay, preset, shares, tiles, type Stats } from '../../src/admin/stats';
-import { hitBody, shouldSend, type HitEnv } from '../../src/lib/hit';
+import { days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, shares, tiles, type Stats } from '../../src/admin/stats';
+import { eventBody, hitBody, shouldSend, type HitEnv } from '../../src/lib/hit';
 import fixture from '../fixtures/admin-stats.json';
 
 const s = fixture as unknown as Stats;
@@ -34,6 +34,20 @@ describe('page admin : agrégations', () => {
   });
 });
 
+describe('page admin : actions (D59)', () => {
+  it('totaux, libellés des tranches et rangs', () => {
+    expect([eventTotal(s, 'share_created'), eventTotal(s, 'gpx'), eventTotal(s, 'shared_open')]).toEqual([2, 2, 1]);
+    expect(eventTotal({ ...s, events_by_day: [] }, 'gpx')).toBeNull();
+    expect(eventTotal({ ...s, events_by_day: undefined }, 'gpx')).toBeNull();
+    expect(keyLabel('km', '10')).toBe('10–15 km');
+    expect(keyLabel('dplus_bin', '250')).toBe('250–500 m');
+    expect(keyLabel('rank', '2')).toBe('n° 2');
+    expect(keyLabel('surface', '-')).toBe('—');
+    expect(keyLabel('goal', 'target')).toBe('Cible');
+    expect(s.action_rates!.rank[0].share_rate).toBeCloseTo(1 / 3, 2);
+  });
+});
+
 describe('mesure d’audience : envoi', () => {
   const env: HitEnv = { dev: false, host: 'optrail.eu', path: '/', gpc: undefined, dnt: null, off: false };
   it('conditions', () => {
@@ -41,6 +55,22 @@ describe('mesure d’audience : envoi', () => {
     for (const e of [{ dev: true }, { host: 'localhost' }, { path: '/admin' }, { gpc: true }, { dnt: '1' }, { off: true }]) {
       expect(shouldSend({ ...env, ...e }), JSON.stringify(e)).toBe(false);
     }
+  });
+  it('forcé en test e2e seulement pour le local, jamais contre GPC ou la case', () => {
+    const local = { ...env, dev: true, host: 'localhost', forced: true };
+    expect(shouldSend(local)).toBe(true);
+    expect(shouldSend({ ...local, gpc: true })).toBe(false);
+    expect(shouldSend({ ...local, off: true })).toBe(false);
+  });
+  it('événement : réglages et stats, sans départ ni identifiant', () => {
+    const req = { lat: '45.18', lon: '5.72', goal: 'target', distance_km: '10', dplus_m: '300', climbs: 'balanced', surface: 'trail',
+      no_repeat_junction: 'true', n_candidates: '3', seed: '0', polygon: '5.7,45.1;5.8,45.1;5.8,45.2', via: '45.1,5.7;45.2,5.8' };
+    const b = eventBody('gpx', req, { length_m: 10_234, dplus_m: 312.4, trail_frac: 0.853 }, 2, 4.26, 'fr');
+    expect(b).toEqual({ event: 'gpx', lang: 'fr', goal: 'target', km: 10, dplus_m: 300, surface: 'trail', climbs: 'balanced', max_grade_pct: 60,
+      zone: true, via_n: 2, no_repeat: true, rank: 2, got_km: 10.23, got_dplus_m: 312, trail_pct: 85, road_pct: 15, compute_s: 4.3 });
+    expect(JSON.stringify(b)).not.toMatch(/45\.18|5\.72|seed|polygon/);
+    // lien partagé / historique : rang et temps inconnus ; requête vide : pas de réglages
+    expect(eventBody('shared_open', {}, { length_m: 5000, dplus_m: 100 }, null, 0, 'en')).toEqual({ event: 'shared_open', lang: 'en', got_km: 5, got_dplus_m: 100 });
   });
   it('page, site d’origine, langue', () => {
     expect(hitBody('/', 'https://www.google.com/search?q=x', 'optrail.eu', 'fr')).toEqual({ page: 'home', ref: 'www.google.com', lang: 'fr' });

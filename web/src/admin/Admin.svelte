@@ -4,13 +4,14 @@
   import { onMount } from 'svelte';
   import Chart from './Chart.svelte';
   import Heat from './Heat.svelte';
-  import { DASH, days, fmt, histBins, label, pct, perDay, preset, shares, tiles, type Stats } from './stats';
+  import { DASH, DIMS, EVENTS, days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, shares, tiles, type Stats } from './stats';
   import { errorText } from '../i18n/format';
 
   const KEY = 'optrail.admin';
   const EXPIRED = 'aws credentials expired';
   const PERIODS = [[7, '7 j'], [30, '30 j'], [90, '90 j'], [400, '13 mois']] as const;
   const C = { a: '#a8441c', b: '#1565C0', ok: '#2e7d32', fail: '#c62828', rej: '#9e9e9e' };
+  const EV_COLORS = ['#f0a581', '#a8441c', '#1565C0', '#6A1B9A'];
 
   let key = $state(sessionStorage.getItem(KEY) ?? '');
   let input = $state('');
@@ -72,6 +73,7 @@
     p50: perDay(ds, stats.compute_s.by_day, (r) => r.p50, NaN)!,
     p95: perDay(ds, stats.compute_s.by_day, (r) => r.p95, NaN)!,
   } : null);
+  const events = $derived(stats?.events_by_day ? EVENTS.map(([e, name], i) => ({ name, color: EV_COLORS[i], values: perDay(ds, stats!.events_by_day, (r) => r[e] ?? 0)! })) : null);
   const hk = $derived(histBins(stats?.hist_km ?? null));
   const hd = $derived(histBins(stats?.hist_dplus_m ?? null));
   const mixes = $derived(stats ? [
@@ -117,6 +119,8 @@
       <div><span>Calculs</span><b>{fmt(tl.calcs)}</b><small>{fmt(tl.rejected)} rejetés avant calcul</small></div>
       <div><span>Taux d’échec</span><b>{pct(tl.failRate)}</b><small>calculs sans sortie</small></div>
       <div><span>Temps p50 / p95</span><b>{fmt(tl.p50, 1)} / {fmt(tl.p95, 1)} s</b><small>calculs réussis</small></div>
+      <div><span>Partages</span><b>{fmt(eventTotal(stats, 'share_created'))}</b><small>liens créés · {fmt(eventTotal(stats, 'shared_open'))} ouverts</small></div>
+      <div><span>GPX</span><b>{fmt(eventTotal(stats, 'gpx'))}</b><small>exports</small></div>
     </section>
 
     <section class="grid">
@@ -162,6 +166,38 @@
           {:else}<p class="none">{rows ? 'Aucune donnée.' : DASH}</p>{/if}
         </div>
       {/each}
+      <div class="card">
+        {#if events}
+          <Chart kind="bar" title="Actions par jour" labels={ds.map(short)} series={events} />
+        {:else}<p>Actions par jour : {DASH}</p>{/if}
+      </div>
+      <div class="card wide">
+        <h2>Taux d’action <small>(actions rapportées aux calculs réussis ; distance et D+ : sortie 1 du calcul, sortie choisie pour l’action)</small></h2>
+        {#if stats.action_rates}
+          <div class="rates">
+            {#each DIMS as [dim, title]}
+              <table>
+                <caption>{title}</caption>
+                <thead><tr><th></th><th class="n">Calculs</th><th class="n">Partages</th><th class="n">%</th><th class="n">GPX</th><th class="n">%</th></tr></thead>
+                <tbody>
+                  {#each stats.action_rates[dim] as r}
+                    <tr><td>{keyLabel(dim, r.key)}</td><td class="n">{fmt(r.calcs)}</td><td class="n">{fmt(r.share)}</td><td class="n">{pct(r.share_rate)}</td><td class="n">{fmt(r.gpx)}</td><td class="n">{pct(r.gpx_rate)}</td></tr>
+                  {:else}<tr><td colspan="6" class="none">Aucune donnée.</td></tr>{/each}
+                </tbody>
+              </table>
+            {/each}
+          </div>
+        {:else}<p class="none">{DASH}</p>{/if}
+      </div>
+      <div class="card wide">
+        <h2>Combinaisons qui amènent le plus d’actions</h2>
+        {#if stats.top_combos?.length}
+          <table>
+            <thead><tr><th>Type</th><th>Voie</th><th>Distance</th><th>D+</th><th>Rang</th><th class="n">Partages</th><th class="n">GPX</th></tr></thead>
+            <tbody>{#each stats.top_combos as c}<tr><td>{label(c.goal)}</td><td>{label(c.surface)}</td><td>{keyLabel('km_bin', c.km_bin)}</td><td>{keyLabel('dplus_bin', c.dplus_bin)}</td><td>{keyLabel('rank', c.rank)}</td><td class="n">{fmt(c.share)}</td><td class="n">{fmt(c.gpx)}</td></tr>{/each}</tbody>
+          </table>
+        {:else}<p class="none">{stats.top_combos ? 'Aucune action enregistrée sur la période.' : DASH}</p>{/if}
+      </div>
       <div class="card wide">
         <h2>Départs <small>(densité, cellules de ~500 m ; rouge : hors couverture)</small></h2>
         <Heat starts={stats.starts ?? []} outside={stats.starts_outside ?? []} />
@@ -207,7 +243,9 @@
   form input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
   .error { color: var(--danger); font-weight: 700; }
   .meta, .none { color: var(--muted); }
-  .tiles { display: grid; grid-template-columns: repeat(5, 1fr); gap: 12px; margin: 12px 0 16px; }
+  .tiles { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; margin: 12px 0 16px; }
+  .rates { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px 24px; }
+  caption { text-align: left; font-weight: 700; padding: 4px 0; }
   .tiles div { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; }
   .tiles span { color: var(--muted); font-size: 0.9rem; }
   .tiles b { font-size: 1.6rem; font-family: var(--font-head); }

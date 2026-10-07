@@ -55,9 +55,61 @@ fn referrer(r: &str, own: &[String]) -> Option<String> {
     (valid && !own.iter().any(|h| h.strip_prefix("www.").unwrap_or(h) == r)).then(|| r.into())
 }
 
-/// Corps `{"page","ref"?,"lang"?}` → (statut, ligne `hit` éventuelle). 400 si corps invalide ;
-/// 204 sans ligne pour un robot (UA), sans IP ou sans sel (`salt` : le sel du jour, appelé
-/// seulement si la visite compte).
+/// Bornes des champs numériques d'un événement (D59) : (nom, min, max, décimales gardées).
+const NUMS: [(&str, f64, f64, i32); 11] = [
+    ("km", 0.0, 300.0, 1),
+    ("dplus_m", 0.0, 10_000.0, 0),
+    ("max_grade_pct", 0.0, 60.0, 0),
+    ("via_n", 0.0, 5.0, 0),
+    ("rank", 1.0, 4.0, 0),
+    ("got_km", 0.0, 300.0, 2),
+    ("got_dplus_m", 0.0, 20_000.0, 0),
+    ("trail_pct", 0.0, 100.0, 0),
+    ("mixed_pct", 0.0, 100.0, 0),
+    ("road_pct", 0.0, 100.0, 0),
+    ("compute_s", 0.0, 60.0, 1),
+];
+/// Champs texte d'un événement : valeurs permises (liste blanche).
+const ENUMS: [(&str, &[&str]); 5] = [
+    (
+        "event",
+        &["share_click", "share_created", "gpx", "shared_open"],
+    ),
+    ("lang", &["fr", "en"]),
+    ("goal", &["max_dplus", "target", "min_distance"]),
+    ("surface", &["trail", "any", "road"]),
+    ("climbs", &["short", "balanced", "long"]),
+];
+
+/// Événement (D59) : réglages de la demande et stats de la sortie, rien d'autre. Liste blanche
+/// stricte : champ inconnu, mauvais type, hors bornes ou valeur non permise ⇒ `None` (400).
+/// Aucun identifiant de calcul ni de personne (le visiteur du jour est ajouté par `hit`).
+pub fn event(v: &Value) -> Option<Map<String, Value>> {
+    let mut out = Map::new();
+    for (k, x) in v.as_object()? {
+        let val = if let Some((_, lo, hi, d)) = NUMS.iter().find(|n| n.0 == k) {
+            let f = x.as_f64().filter(|f| (*lo..=*hi).contains(f))?;
+            let p = 10f64.powi(*d);
+            if *d == 0 {
+                json!((f * p).round() as i64)
+            } else {
+                json!((f * p).round() / p)
+            }
+        } else if let Some((_, ok)) = ENUMS.iter().find(|e| e.0 == k) {
+            json!(x.as_str().filter(|s| ok.contains(s))?)
+        } else if k == "zone" || k == "no_repeat" {
+            json!(x.as_bool()?)
+        } else {
+            return None;
+        };
+        out.insert(k.clone(), val);
+    }
+    out.contains_key("event").then_some(out)
+}
+
+/// Corps `{"page","ref"?,"lang"?}` (visite) ou `{"event",…}` (action, D59) → (statut, ligne
+/// `hit` ou `event` éventuelle). 400 si corps invalide ; 204 sans ligne pour un robot (UA), sans
+/// IP ou sans sel (`salt` : le sel du jour, appelé seulement si la visite compte).
 pub fn hit(
     body: &[u8],
     ip: Option<&str>,
@@ -72,9 +124,29 @@ pub fn hit(
     else {
         return (400, None);
     };
-    let page = match v["page"].as_str() {
-        Some(p @ ("home" | "shared")) => p,
-        _ => return (400, None),
+    // visite : page + site d'origine + pays/région ; événement : champs de la liste blanche seuls
+    let fields = if v.get("event").is_some() {
+        match event(&v) {
+            Some(mut e) => {
+                e.insert("msg".into(), json!("event"));
+                e
+            }
+            None => return (400, None),
+        }
+    } else {
+        let page = match v["page"].as_str() {
+            Some(p @ ("home" | "shared")) => p,
+            _ => return (400, None),
+        };
+        let mut m = Map::new();
+        m.insert("msg".into(), json!("hit"));
+        m.insert("page".into(), json!(page));
+        let r = v["ref"].as_str().and_then(|r| referrer(r, own_hosts));
+        let l = v["lang"].as_str().filter(|l| ["fr", "en"].contains(l));
+        m.insert("ref".into(), json!(r));
+        m.insert("lang".into(), json!(l));
+        m.extend(geo);
+        m
     };
     let lower = ua.to_ascii_lowercase();
     if ua.is_empty() || BOTS.iter().any(|b| lower.contains(b)) {
@@ -84,13 +156,11 @@ pub fn hit(
         return (204, None);
     };
     let mut line = json!({
-        "msg": "hit", "v": 1, "visitor": visitor(&salt, ip, ua), "page": page,
-        "ref": v["ref"].as_str().and_then(|r| referrer(r, own_hosts)),
-        "lang": v["lang"].as_str().filter(|l| ["fr", "en"].contains(l)),
+        "v": 1, "visitor": visitor(&salt, ip, ua),
         "dev": if ua.contains("Mobi") { "mobile" } else { "desktop" },
     });
     let o = line.as_object_mut().expect("objet");
-    o.extend(geo);
+    o.extend(fields);
     o.retain(|_, v| !v.is_null());
     (204, Some(line))
 }
@@ -175,6 +245,55 @@ mod tests {
             }),
             (204, None)
         );
+    }
+
+    #[test]
+    fn evenements_liste_blanche() {
+        let ok = json!({"event": "gpx", "lang": "fr", "goal": "target", "km": 10.04, "dplus_m": 300,
+            "surface": "trail", "climbs": "balanced", "max_grade_pct": 60, "zone": false, "via_n": 0,
+            "rank": 2, "got_km": 10.234, "got_dplus_m": 312.4, "trail_pct": 85, "road_pct": 15,
+            "compute_s": 4.26});
+        let (s, l) = run(&ok.to_string(), Some("1.2.3.4"), UA, b"s");
+        let l = l.unwrap();
+        assert_eq!(s, 204);
+        assert_eq!(
+            (&l["msg"], &l["event"], &l["rank"]),
+            (&json!("event"), &json!("gpx"), &json!(2))
+        );
+        assert_eq!(
+            (&l["km"], &l["got_km"], &l["got_dplus_m"], &l["compute_s"]),
+            (&json!(10.0), &json!(10.23), &json!(312), &json!(4.3))
+        );
+        assert_eq!(l["visitor"].as_str().unwrap().len(), 16);
+        // pas de pays/région ni de page sur un événement
+        assert!(l.get("country").is_none() && l.get("page").is_none());
+        // tout le reste est refusé : champ inconnu, type, bornes, valeur hors liste
+        for (k, bad) in [
+            ("id", json!("abc")),
+            ("lat", json!(45.1)),
+            ("event", json!("delete")),
+            ("rank", json!(0)),
+            ("km", json!("10")),
+            ("km", json!(1e9)),
+            ("zone", json!(1)),
+            ("surface", json!("rail")),
+            ("compute_s", json!(-1)),
+            ("goal", json!(null)),
+        ] {
+            let mut b = ok.clone();
+            b[k] = bad;
+            assert_eq!(
+                run(&b.to_string(), Some("1.2.3.4"), UA, b"s"),
+                (400, None),
+                "{k}"
+            );
+        }
+        assert_eq!(
+            run(r#"{"event":"gpx","page":"home"}"#, Some("1"), UA, b"s"),
+            (400, None)
+        );
+        assert!(event(&json!({"km": 10})).is_none()); // event obligatoire
+        assert!(event(&json!({"event": "shared_open"})).is_some());
     }
 
     #[test]

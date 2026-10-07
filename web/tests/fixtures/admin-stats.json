@@ -13,4 +13,12 @@
  "countries":[{"country":"FR","visitors":11.0,"hits":25.0},{"country":"-","visitors":1.0,"hits":5.0}],
  "regions":[{"country":"FR","region":"IDF","visitors":8.0,"hits":20.0},{"country":"FR","region":"ARA","visitors":3.0,"hits":5.0}],
  "devices":[{"dev":"mobile","visitors":8.0},{"dev":"desktop","visitors":4.0}],
- "referrers":[{"ref":"google.com","hits":4.0}]}
+ "referrers":[{"ref":"google.com","hits":4.0}],
+ "events_by_day":[{"day":"2026-10-06","gpx":2.0,"share_click":3.0,"share_created":2.0},{"day":"2026-10-07","shared_open":1.0}],
+ "action_rates":{
+  "goal":[{"key":"target","calcs":5.0,"share":2.0,"gpx":1.0,"share_rate":0.4,"gpx_rate":0.2},{"key":"max_dplus","calcs":1.0,"share":0.0,"gpx":1.0,"share_rate":0.0,"gpx_rate":1.0}],
+  "surface":[{"key":"trail","calcs":5.0,"share":2.0,"gpx":1.0,"share_rate":0.4,"gpx_rate":0.2},{"key":"-","calcs":1.0,"share":0.0,"gpx":1.0,"share_rate":0.0,"gpx_rate":1.0}],
+  "km":[{"key":"5","calcs":2.0,"share":0.0,"gpx":0.0,"share_rate":0.0,"gpx_rate":0.0},{"key":"10","calcs":4.0,"share":2.0,"gpx":2.0,"share_rate":0.5,"gpx_rate":0.5}],
+  "dplus_m":[{"key":"250","calcs":5.0,"share":2.0,"gpx":1.0,"share_rate":0.4,"gpx_rate":0.2},{"key":"500","calcs":1.0,"share":0.0,"gpx":1.0,"share_rate":0.0,"gpx_rate":1.0}],
+  "rank":[{"key":"1","calcs":6.0,"share":2.0,"gpx":1.0,"share_rate":0.333,"gpx_rate":0.167},{"key":"2","calcs":5.0,"share":0.0,"gpx":1.0,"share_rate":0.0,"gpx_rate":0.2}]},
+ "top_combos":[{"goal":"target","surface":"trail","km_bin":"10","dplus_bin":"250","rank":"1","share":2.0,"gpx":0.0},{"goal":"max_dplus","surface":"-","km_bin":"10","dplus_bin":"500","rank":"1","share":0.0,"gpx":1.0},{"goal":"target","surface":"trail","km_bin":"10","dplus_bin":"250","rank":"2","share":0.0,"gpx":1.0}]}
