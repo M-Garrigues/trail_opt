@@ -3,10 +3,11 @@
 use std::time::{Duration, Instant};
 
 use engine::Code;
-use engine::admin::{self, Admin, Views};
+use engine::admin::{self, Admin, Limiter, Views};
 use engine::api::grid500;
 use serde_json::{Value, json};
 
+const IP: &str = "203.0.113.7";
 const KEY: &str = "0123456789abcdef0123456789abcdef";
 
 #[test]
@@ -17,12 +18,12 @@ fn cle_admin() {
     assert!(Admin::from_key(&KEY[1..], false).is_err());
     let local = Admin::from_key("123", true).unwrap().unwrap();
     let now = Instant::now();
-    assert_eq!(local.check(Some("123"), now), Ok(()));
-    assert_eq!(local.check(Some("1234"), now), Err(Code::AdminDenied));
+    assert_eq!(local.check(Some("123"), IP, now), Ok(()));
+    assert_eq!(local.check(Some("1234"), IP, now), Err(Code::AdminDenied));
     let a = Admin::from_key(KEY, false).unwrap().unwrap();
-    assert_eq!(a.check(Some(KEY), now), Ok(()));
-    assert_eq!(a.check(None, now), Err(Code::AdminDenied));
-    assert_eq!(a.check(Some(&KEY[..31]), now), Err(Code::AdminDenied));
+    assert_eq!(a.check(Some(KEY), IP, now), Ok(()));
+    assert_eq!(a.check(None, IP, now), Err(Code::AdminDenied));
+    assert_eq!(a.check(Some(&KEY[..31]), IP, now), Err(Code::AdminDenied));
 }
 
 #[test]
@@ -31,18 +32,20 @@ fn limitation_des_essais() {
     let t = Instant::now();
     for i in 0..admin::MAX_FAILS {
         let at = t + Duration::from_secs(u64::from(i) * 60);
-        assert_eq!(a.check(Some("x"), at), Err(Code::AdminDenied));
+        assert_eq!(a.check(Some("x"), IP, at), Err(Code::AdminDenied));
     }
     // 5 échecs dans la fenêtre : verrou, même avec la bonne clé, jusqu'à sa fin
     let late = t + admin::WINDOW - Duration::from_secs(1);
-    assert_eq!(a.check(Some(KEY), late), Err(Code::AdminLocked));
-    assert_eq!(a.check(Some(KEY), t + admin::WINDOW), Ok(()));
+    assert_eq!(a.check(Some(KEY), IP, late), Err(Code::AdminLocked));
+    // verrou par adresse (revue F5) : le fondateur, ailleurs, entre toujours
+    assert_eq!(a.check(Some(KEY), "198.51.100.1", late), Ok(()));
+    assert_eq!(a.check(Some(KEY), IP, t + admin::WINDOW), Ok(()));
     // un succès ne remet pas le compteur à zéro dans la fenêtre, mais 4 échecs ne verrouillent pas
     let b = Admin::from_key(KEY, false).unwrap().unwrap();
     for _ in 0..4 {
-        let _ = b.check(Some("x"), t);
+        let _ = b.check(Some("x"), IP, t);
     }
-    assert_eq!(b.check(Some(KEY), t), Ok(()));
+    assert_eq!(b.check(Some(KEY), IP, t), Ok(()));
 }
 
 #[test]
@@ -301,6 +304,7 @@ fn stats_forme_de_la_reponse() {
     let r = admin::handle(
         &a,
         Some(KEY),
+        IP,
         &q("from=2026-10-01&to=2026-10-07"),
         today,
         run,
@@ -420,15 +424,17 @@ fn stats_refus_et_erreurs() {
     let today = admin::parse_day("2026-10-07").unwrap();
     let a = Admin::from_key(KEY, false).unwrap().unwrap();
     let never = |_: i64, _: i64| -> Result<Views, String> { panic!("aucune requête sans clé") };
-    let r = admin::handle(&a, Some("mauvaise"), &[], today, never);
+    let r = admin::handle(&a, Some("mauvaise"), IP, &[], today, never);
     assert_eq!(
         (r.status, &r.body["error"]["code"], &r.log["outcome"]),
         (401, &json!("admin_denied"), &json!("denied"))
     );
-    let r = admin::handle(&a, Some(KEY), &q("from=2026-13-01"), today, never);
+    let r = admin::handle(&a, Some(KEY), IP, &q("from=2026-13-01"), today, never);
     assert_eq!(r.status, 400);
     // identifiants AWS expirés : message transmis à la page
-    let r = admin::handle(&a, Some(KEY), &[], today, |_, _| Err(admin::EXPIRED.into()));
+    let r = admin::handle(&a, Some(KEY), IP, &[], today, |_, _| {
+        Err(admin::EXPIRED.into())
+    });
     assert_eq!(
         (r.status, &r.body["error"]["detail"]),
         (503, &json!(admin::EXPIRED))
@@ -438,8 +444,19 @@ fn stats_refus_et_erreurs() {
     let fail = |_: &str, _: &Value| -> Result<Value, String> { Err("AccessDenied".into()) };
     assert!(admin::run(0, 1, "g", fail, (4, Duration::ZERO), Duration::ZERO).is_err());
     for _ in 0..4 {
-        admin::handle(&a, None, &[], today, never);
+        admin::handle(&a, None, IP, &[], today, never);
     }
-    let r = admin::handle(&a, Some(KEY), &[], today, never);
+    let r = admin::handle(&a, Some(KEY), IP, &[], today, never);
     assert_eq!((r.status, &r.log["outcome"]), (429, &json!("locked")));
+}
+
+#[test]
+fn plafond_par_ip() {
+    let l = Limiter::new(3, Duration::from_secs(3600));
+    let t = Instant::now();
+    assert!((0..3).all(|_| l.allow("a", t)));
+    assert!(!l.allow("a", t) && l.blocked("a", t));
+    assert!(l.allow("b", t)); // autre adresse
+    let later = t + Duration::from_secs(3600);
+    assert!(!l.blocked("a", later) && l.allow("a", later)); // nouvelle fenêtre
 }

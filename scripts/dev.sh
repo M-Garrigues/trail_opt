@@ -46,7 +46,7 @@ ADMIN_KEY=${ADMIN_KEY:-123}
 command -v cargo-lambda >/dev/null || { echo "cargo-lambda introuvable : pip install cargo-lambda" >&2; exit 1; }
 test -f "$TILES_DIR/manifest.json" || { echo "pas de manifest.json dans $TILES_DIR" >&2; exit 1; }
 
-echo "API : http://localhost:$API_PORT/lambda-url/lambda/api/plan  (dalles : $TILES_DIR, partage : $SHARE_DIR, FORCE_TURNSTILE=$FORCE_TURNSTILE)"
+echo "API : http://127.0.0.1:$API_PORT/lambda-url/lambda/api/plan  (dalles : $TILES_DIR, partage : $SHARE_DIR, FORCE_TURNSTILE=$FORCE_TURNSTILE)"
 if [ "${WEB:-1}" = 1 ] && [ -d "$ROOT/web/node_modules" ]; then
   # LAN=1 : écoute sur le réseau local en HTTPS auto-signé (test sur téléphone)
   if [ "${LAN:-0}" = 1 ]; then host_opt=--host; scheme=https; else host_opt=; scheme=http; fi
@@ -56,7 +56,9 @@ if [ "${WEB:-1}" = 1 ] && [ -d "$ROOT/web/node_modules" ]; then
   [ "${LAN:-0}" = 1 ] && echo "Réseau local : $scheme://$(ipconfig getifaddr en0 2>/dev/null || hostname -I | cut -d' ' -f1):$WEB_PORT"
 fi
 cd "$ROOT/engine"
-cargo lambda watch --profile local --bin lambda --invoke-port "$API_PORT" \
+# 127.0.0.1 seulement (revue H1) : l'API locale (clé admin locale, session AWS) n'est jamais joignable
+# depuis le réseau ; LAN=1 n'expose que Vite, qui la proxifie
+cargo lambda watch --profile local --bin lambda --invoke-address 127.0.0.1 --invoke-port "$API_PORT" \
   --env-var "TILES_DIR=$TILES_DIR" \
   --env-var "TURNSTILE_SECRET=$TURNSTILE_SECRET" \
   --env-var "FORCE_TURNSTILE=$FORCE_TURNSTILE" \

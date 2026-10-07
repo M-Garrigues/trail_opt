@@ -3,7 +3,7 @@ import { svelte } from '@sveltejs/vite-plugin-svelte';
 import basicSsl from '@vitejs/plugin-basic-ssl';
 
 // /api → handler local (scripts/dev.sh : cargo lambda watch), même origine qu'en prod.
-const api = `http://localhost:${process.env.API_PORT ?? 9000}`;
+const api = `http://127.0.0.1:${process.env.API_PORT ?? 9000}`; // API locale sur 127.0.0.1 seulement (scripts/dev.sh)
 
 export default defineConfig({
   // LAN=1 (scripts/dev.sh) : HTTPS auto-signé, requis sur téléphone pour géoloc et crypto.subtle

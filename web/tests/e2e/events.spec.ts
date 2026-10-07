@@ -33,8 +33,7 @@ test('événements GPX et partage', async ({ page }) => {
   await expect.poll(() => sent.filter((b) => b.event === 'gpx').length).toBe(1);
   const gpx = sent.find((b) => b.event === 'gpx')!;
   expect(gpx).toMatchObject({ goal: 'max_dplus', surface: 'trail', rank: 1, max_grade_pct: 60, zone: false, via_n: 0 });
-  expect(gpx.got_km).toBeCloseTo(10.5, 1);
-  expect(gpx.got_dplus_m).toBe(424);
+  expect([gpx.got_km, gpx.got_dplus_m]).toEqual([10, 250]); // tranches 5 km / 250 m (revue M4)
   for (const k of ['lat', 'lon', 'polygon', 'via', 'seed', 'id', 'sig']) expect(gpx, k).not.toHaveProperty(k);
   await page.getByRole('button', { name: t.share, exact: true }).click();
   await page.getByRole('button', { name: t.create }).click();

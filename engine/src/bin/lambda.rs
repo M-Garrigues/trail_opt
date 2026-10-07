@@ -40,6 +40,9 @@ use lambda_http::request::RequestContext;
 use lambda_http::{Body, Error, Request, RequestExt, Response, run, service_fn};
 use serde_json::json;
 
+/// Plafond de lignes `hit`/`event` par IP et par heure, par instance (revue F3 : un script qui
+/// change d'User-Agent ne crée pas plus de HIT_MAX « visiteurs » par heure et par instance).
+const HIT_MAX: u32 = 60;
 const SITEVERIFY: &str = "https://challenges.cloudflare.com/turnstile/v0/siteverify";
 
 fn tiles_dir() -> PathBuf {
@@ -162,6 +165,8 @@ struct Ctx {
     turnstile: Turnstile,
     key: ring::hmac::Key,
     admin: Option<Admin>,
+    /// lignes de mesure d'audience par IP (revue F3)
+    hits: admin::Limiter,
     /// sel du jour des visiteurs (D51), mis en cache par instance : (jour, sel)
     salt: Mutex<Option<(String, Vec<u8>)>>,
     log_group: String,
@@ -262,8 +267,13 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
             let geo = geo.clone();
             tokio::task::spawn_blocking(move || {
                 let hosts = &ctx.turnstile.hostnames;
-                let (status, line) =
+                let (status, mut line) =
                     hit::hit(&body, ip.as_deref(), &ua, geo, hosts, || day_salt(&ctx));
+                // revue F3 : au plus HIT_MAX lignes par IP et par heure (par instance) ; au-delà, 204 muet
+                let who = ip.as_deref().unwrap_or("");
+                if line.is_some() && !ctx.hits.allow(who, std::time::Instant::now()) {
+                    line = None;
+                }
                 let m = engine::Msg::error(engine::Code::InvalidRequest, "invalid hit");
                 api::Reply {
                     status,
@@ -295,7 +305,8 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
                         admin::logs_api(&region, op, b)
                     }
                 };
-                admin::handle(adm, given.as_deref(), &query, today(), |f, t| {
+                let who = ip.as_deref().unwrap_or("");
+                admin::handle(adm, given.as_deref(), who, &query, today(), |f, t| {
                     admin::run(f, t, &ctx.log_group, call, pace, admin::DEADLINE)
                 })
             })
@@ -377,6 +388,7 @@ async fn main() -> Result<(), Error> {
         key,
         admin,
         salt: Mutex::new(None),
+        hits: admin::Limiter::new(HIT_MAX, Duration::from_secs(3600)),
         log_group,
     });
     run(service_fn(move |req| handler(ctx.clone(), req))).await

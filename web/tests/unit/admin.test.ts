@@ -66,11 +66,11 @@ describe('mesure d’audience : envoi', () => {
     const req = { lat: '45.18', lon: '5.72', goal: 'target', distance_km: '10', dplus_m: '300', climbs: 'balanced', surface: 'trail',
       no_repeat_junction: 'true', n_candidates: '3', seed: '0', polygon: '5.7,45.1;5.8,45.1;5.8,45.2', via: '45.1,5.7;45.2,5.8' };
     const b = eventBody('gpx', req, { length_m: 10_234, dplus_m: 312.4, trail_frac: 0.853 }, 2, 4.26, 'fr');
-    expect(b).toEqual({ event: 'gpx', lang: 'fr', goal: 'target', km: 10, dplus_m: 300, surface: 'trail', climbs: 'balanced', max_grade_pct: 60,
-      zone: true, via_n: 2, no_repeat: true, rank: 2, got_km: 10.23, got_dplus_m: 312, trail_pct: 85, road_pct: 15, compute_s: 4.3 });
+    expect(b).toEqual({ event: 'gpx', lang: 'fr', goal: 'target', km: 10, dplus_m: 250, surface: 'trail', climbs: 'balanced', max_grade_pct: 60,
+      zone: true, via_n: 2, no_repeat: true, rank: 2, got_km: 10, got_dplus_m: 250, trail_pct: 85, road_pct: 15, compute_s: 4 });
     expect(JSON.stringify(b)).not.toMatch(/45\.18|5\.72|seed|polygon/);
     // lien partagé / historique : rang et temps inconnus ; requête vide : pas de réglages
-    expect(eventBody('shared_open', {}, { length_m: 5000, dplus_m: 100 }, null, 0, 'en')).toEqual({ event: 'shared_open', lang: 'en', got_km: 5, got_dplus_m: 100 });
+    expect(eventBody('shared_open', {}, { length_m: 5000, dplus_m: 100 }, null, 0, 'en')).toEqual({ event: 'shared_open', lang: 'en', got_km: 5, got_dplus_m: 0 });
   });
   it('page, site d’origine, langue', () => {
     expect(hitBody('/', 'https://www.google.com/search?q=x', 'optrail.eu', 'fr')).toEqual({ page: 'home', ref: 'www.google.com', lang: 'fr' });

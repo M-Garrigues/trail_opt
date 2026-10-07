@@ -1,7 +1,7 @@
 //! Admin (contracts/admin.md § 3–4, D47) : clé `x-admin-key` comparée à temps constant avec
 //! limitation des essais, et `GET /api/admin/stats` (requêtes CloudWatch Logs Insights mises en
 //! forme). Le transport Logs est injecté (`call`) : API signée SigV4 en Lambda, AWS CLI en local.
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
 
@@ -26,7 +26,48 @@ pub const EXPIRED: &str = "aws credentials expired";
 pub struct Admin {
     k: hmac::Key,
     tag: hmac::Tag,
-    fails: Mutex<(Instant, u32)>,
+    /// échecs par adresse IP (revue F5 : un tiers ne peut plus verrouiller l'admin pour tous)
+    fails: Limiter,
+}
+
+/// Compteur par adresse IP et par instance Lambda : au plus `max` dans une fenêtre `window`
+/// ouverte au premier comptage. Mémoire bornée : au-delà de 10 000 adresses, les fenêtres
+/// échues sont oubliées. ponytail: par instance (≤ 10), sans état partagé ; DynamoDB si besoin.
+pub struct Limiter {
+    map: Mutex<HashMap<String, (Instant, u32)>>,
+    max: u32,
+    window: Duration,
+}
+
+impl Limiter {
+    pub fn new(max: u32, window: Duration) -> Limiter {
+        Limiter {
+            map: Mutex::new(HashMap::new()),
+            max,
+            window,
+        }
+    }
+
+    /// `who` a-t-il atteint le plafond dans sa fenêtre en cours ?
+    pub fn blocked(&self, who: &str, now: Instant) -> bool {
+        let m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        m.get(who)
+            .is_some_and(|&(t, n)| now.saturating_duration_since(t) < self.window && n >= self.max)
+    }
+
+    /// Compte une occurrence ; `false` si le plafond est dépassé.
+    pub fn allow(&self, who: &str, now: Instant) -> bool {
+        let mut m = self.map.lock().unwrap_or_else(|e| e.into_inner());
+        if m.len() > 10_000 {
+            m.retain(|_, (t, _)| now.saturating_duration_since(*t) < self.window);
+        }
+        let e = m.entry(who.to_string()).or_insert((now, 0));
+        if now.saturating_duration_since(e.0) >= self.window {
+            *e = (now, 0);
+        }
+        e.1 += 1;
+        e.1 <= self.max
+    }
 }
 
 impl Admin {
@@ -46,27 +87,20 @@ impl Admin {
         Ok(Some(Admin {
             k,
             tag,
-            fails: Mutex::new((Instant::now(), 0)),
+            fails: Limiter::new(MAX_FAILS, WINDOW),
         }))
     }
 
-    /// Temps constant (indépendant de la longueur) ; après `MAX_FAILS` échecs dans `WINDOW`,
-    /// `AdminLocked` pour toute requête (même bonne clé) jusqu'à la fin de la fenêtre.
-    pub fn check(&self, given: Option<&str>, now: Instant) -> Result<(), Code> {
-        let mut f = self.fails.lock().unwrap_or_else(|e| e.into_inner());
-        if now.saturating_duration_since(f.0) >= WINDOW {
-            *f = (now, 0);
-        }
-        if f.1 >= MAX_FAILS {
+    /// Temps constant (indépendant de la longueur) ; après `MAX_FAILS` échecs d'une même adresse
+    /// `who` dans `WINDOW`, `AdminLocked` pour elle seule (même bonne clé) jusqu'à la fin de la fenêtre.
+    pub fn check(&self, given: Option<&str>, who: &str, now: Instant) -> Result<(), Code> {
+        if self.fails.blocked(who, now) {
             return Err(Code::AdminLocked);
         }
         if hmac::verify(&self.k, given.unwrap_or("").as_bytes(), self.tag.as_ref()).is_ok() {
             return Ok(());
         }
-        if f.1 == 0 {
-            f.0 = now;
-        }
-        f.1 += 1;
+        self.fails.allow(who, now);
         Err(Code::AdminDenied)
     }
 }
@@ -657,6 +691,7 @@ pub fn logs_cli(region: &str, op: &str, body: &Value) -> Result<Value, String> {
 pub fn handle(
     admin: &Admin,
     given: Option<&str>,
+    who: &str,
     query: &[(String, String)],
     today: i64,
     run_views: impl FnOnce(i64, i64) -> Result<Views, String>,
@@ -675,7 +710,7 @@ pub fn handle(
             log: log(outcome, range, None, t0),
         }
     };
-    if let Err(c) = admin.check(given, Instant::now()) {
+    if let Err(c) = admin.check(given, who, Instant::now()) {
         let outcome = if c == Code::AdminLocked {
             "locked"
         } else {

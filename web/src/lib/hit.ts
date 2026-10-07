@@ -27,7 +27,8 @@ export type EventName = 'share_click' | 'share_created' | 'gpx' | 'shared_open';
 
 /**
  * Action suivie (D59) : réglages de la demande (`req` = paramètres de GET /api/plan) et stats de la
- * sortie concernée ; jamais le départ, la zone, les points de passage, le tracé ni un identifiant.
+ * sortie concernée, distances et D+ par tranches de 5 km / 250 m ; jamais le départ, la zone, les points de
+ * passage, le tracé ni un identifiant (le serveur n'y ajoute pas le visiteur du jour).
  * `rank` : 1–4, null si inconnu (historique, lien partagé) ; temps de calcul seulement s'il est connu.
  */
 export function eventBody(
@@ -35,18 +36,20 @@ export function eventBody(
   rank: number | null, computeS: number | undefined, lang: string,
 ): Record<string, string | number | boolean> {
   const num = (k: string) => (req[k] != null && Number.isFinite(Number(req[k])) ? Number(req[k]) : undefined);
+  // tranches des vues admin (revue M4) : rien d'exact qui rattacherait l'action à la ligne du calcul
+  const bin = (x: number | undefined, step: number) => (x == null ? undefined : Math.floor(x / step) * step);
   const has = 'lat' in req;
   const tf = c?.trail_frac;
   const b: Record<string, string | number | boolean | undefined> = {
     event, lang,
-    goal: has ? (req.goal ?? 'max_dplus') : undefined, km: num('distance_km'), dplus_m: num('dplus_m'),
+    goal: has ? (req.goal ?? 'max_dplus') : undefined, km: bin(num('distance_km'), 5), dplus_m: bin(num('dplus_m'), 250),
     surface: req.surface, climbs: req.climbs, max_grade_pct: has ? (num('max_grade_pct') ?? 60) : undefined,
     zone: has ? 'polygon' in req : undefined, via_n: has ? (req.via ? req.via.split(';').length : 0) : undefined,
     no_repeat: req.no_repeat_junction != null ? req.no_repeat_junction !== 'false' : undefined,
     rank: rank ?? undefined,
-    got_km: c ? Math.round(c.length_m / 10) / 100 : undefined, got_dplus_m: c ? Math.round(c.dplus_m) : undefined,
+    got_km: c ? bin(c.length_m / 1000, 5) : undefined, got_dplus_m: c ? bin(c.dplus_m, 250) : undefined,
     trail_pct: tf != null ? Math.round(tf * 100) : undefined, road_pct: tf != null ? 100 - Math.round(tf * 100) : undefined,
-    compute_s: computeS && computeS > 0 ? Math.round(computeS * 10) / 10 : undefined,
+    compute_s: computeS && computeS > 0 ? Math.round(computeS) : undefined,
   };
   return Object.fromEntries(Object.entries(b).filter(([, v]) => v !== undefined)) as Record<string, string | number | boolean>;
 }

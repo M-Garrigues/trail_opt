@@ -55,19 +55,21 @@ fn referrer(r: &str, own: &[String]) -> Option<String> {
     (valid && !own.iter().any(|h| h.strip_prefix("www.").unwrap_or(h) == r)).then(|| r.into())
 }
 
-/// Bornes des champs numériques d'un événement (D59) : (nom, min, max, décimales gardées).
-const NUMS: [(&str, f64, f64, i32); 11] = [
-    ("km", 0.0, 300.0, 1),
-    ("dplus_m", 0.0, 10_000.0, 0),
-    ("max_grade_pct", 0.0, 60.0, 0),
-    ("via_n", 0.0, 5.0, 0),
-    ("rank", 1.0, 4.0, 0),
-    ("got_km", 0.0, 300.0, 2),
-    ("got_dplus_m", 0.0, 20_000.0, 0),
-    ("trail_pct", 0.0, 100.0, 0),
-    ("mixed_pct", 0.0, 100.0, 0),
-    ("road_pct", 0.0, 100.0, 0),
-    ("compute_s", 0.0, 60.0, 1),
+/// Champs numériques d'un événement (D59) : (nom, min, max, tranche). Valeurs ramenées au bas
+/// de leur tranche (5 km, 250 m) ou à l'entier (tranche 1 : temps à la seconde) : jamais de valeur
+/// exacte qui rattacherait l'événement à la ligne `plan` du calcul (revue M4).
+const NUMS: [(&str, f64, f64, f64); 11] = [
+    ("km", 0.0, 300.0, 5.0),
+    ("dplus_m", 0.0, 10_000.0, 250.0),
+    ("max_grade_pct", 0.0, 60.0, 1.0),
+    ("via_n", 0.0, 5.0, 1.0),
+    ("rank", 1.0, 4.0, 1.0),
+    ("got_km", 0.0, 300.0, 5.0),
+    ("got_dplus_m", 0.0, 20_000.0, 250.0),
+    ("trail_pct", 0.0, 100.0, 1.0),
+    ("mixed_pct", 0.0, 100.0, 1.0),
+    ("road_pct", 0.0, 100.0, 1.0),
+    ("compute_s", 0.0, 60.0, 1.0),
 ];
 /// Champs texte d'un événement : valeurs permises (liste blanche).
 const ENUMS: [(&str, &[&str]); 5] = [
@@ -83,18 +85,18 @@ const ENUMS: [(&str, &[&str]); 5] = [
 
 /// Événement (D59) : réglages de la demande et stats de la sortie, rien d'autre. Liste blanche
 /// stricte : champ inconnu, mauvais type, hors bornes ou valeur non permise ⇒ `None` (400).
-/// Aucun identifiant de calcul ni de personne (le visiteur du jour est ajouté par `hit`).
+/// Aucun identifiant de calcul ni de personne, pas même le visiteur du jour (revue M4).
 pub fn event(v: &Value) -> Option<Map<String, Value>> {
     let mut out = Map::new();
     for (k, x) in v.as_object()? {
-        let val = if let Some((_, lo, hi, d)) = NUMS.iter().find(|n| n.0 == k) {
+        let val = if let Some((_, lo, hi, step)) = NUMS.iter().find(|n| n.0 == k) {
             let f = x.as_f64().filter(|f| (*lo..=*hi).contains(f))?;
-            let p = 10f64.powi(*d);
-            if *d == 0 {
-                json!((f * p).round() as i64)
+            let v = if *step > 1.0 {
+                (f / step).floor() * step
             } else {
-                json!((f * p).round() / p)
-            }
+                f.round()
+            };
+            json!(v as i64)
         } else if let Some((_, ok)) = ENUMS.iter().find(|e| e.0 == k) {
             json!(x.as_str().filter(|s| ok.contains(s))?)
         } else if k == "zone" || k == "no_repeat" {
@@ -109,7 +111,7 @@ pub fn event(v: &Value) -> Option<Map<String, Value>> {
 
 /// Corps `{"page","ref"?,"lang"?}` (visite) ou `{"event",…}` (action, D59) → (statut, ligne
 /// `hit` ou `event` éventuelle). 400 si corps invalide ; 204 sans ligne pour un robot (UA), sans
-/// IP ou sans sel (`salt` : le sel du jour, appelé seulement si la visite compte).
+/// IP, ou sans sel pour une visite (`salt` : le sel du jour, appelé seulement si la visite compte).
 pub fn hit(
     body: &[u8],
     ip: Option<&str>,
@@ -152,13 +154,23 @@ pub fn hit(
     if ua.is_empty() || BOTS.iter().any(|b| lower.contains(b)) {
         return (204, None);
     }
-    let (Some(ip), Some(salt)) = (ip, ip.and_then(|_| salt())) else {
+    let Some(ip) = ip else {
         return (204, None);
     };
-    let mut line = json!({
-        "v": 1, "visitor": visitor(&salt, ip, ua),
-        "dev": if ua.contains("Mobi") { "mobile" } else { "desktop" },
-    });
+    // événement : ni visiteur ni appareil (revue M4 : rien qui le rattache à une personne) ;
+    // les visiteurs uniques se comptent par les seules lignes `hit` de page
+    let mut line = json!({"v": 1});
+    if fields["msg"] == "hit" {
+        let Some(salt) = salt() else {
+            return (204, None);
+        };
+        line["visitor"] = json!(visitor(&salt, ip, ua));
+        line["dev"] = json!(if ua.contains("Mobi") {
+            "mobile"
+        } else {
+            "desktop"
+        });
+    }
     let o = line.as_object_mut().expect("objet");
     o.extend(fields);
     o.retain(|_, v| !v.is_null());
@@ -260,11 +272,18 @@ mod tests {
             (&l["msg"], &l["event"], &l["rank"]),
             (&json!("event"), &json!("gpx"), &json!(2))
         );
+        // valeurs en tranches (5 km, 250 m, seconde), jamais exactes ; ni visiteur ni appareil (M4)
         assert_eq!(
-            (&l["km"], &l["got_km"], &l["got_dplus_m"], &l["compute_s"]),
-            (&json!(10.0), &json!(10.23), &json!(312), &json!(4.3))
+            (
+                &l["km"],
+                &l["dplus_m"],
+                &l["got_km"],
+                &l["got_dplus_m"],
+                &l["compute_s"]
+            ),
+            (&json!(10), &json!(250), &json!(10), &json!(250), &json!(4))
         );
-        assert_eq!(l["visitor"].as_str().unwrap().len(), 16);
+        assert!(l.get("visitor").is_none() && l.get("dev").is_none(), "{l}");
         // pas de pays/région ni de page sur un événement
         assert!(l.get("country").is_none() && l.get("page").is_none());
         // tout le reste est refusé : champ inconnu, type, bornes, valeur hors liste
