@@ -26,6 +26,8 @@ SMOKE_MIN_DPLUS=300 SMOKE_MIN_M=9000 SMOKE_MAX_M=11000
 
 die() { echo "deploy: $*" >&2; exit 1; }
 repo=$(git -C "$(dirname "$0")" rev-parse --show-toplevel)
+# AWS CLI v2 ouvre un pager (less/vi) sur un terminal : bloquait la release (2026-10-07)
+export AWS_PAGER=""
 export PATH="$HOME/.cargo/bin:$PATH" AWS_REGION=$REGION AWS_DEFAULT_REGION=$REGION FUNCTION
 
 # --- Compte : jamais le profil default (autre compte) ---------------------------------------------

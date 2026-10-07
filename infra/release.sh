@@ -4,6 +4,7 @@
 # (smoke public raté) et au rollback manuel : front et API reviennent toujours ensemble.
 # Env : ARTIFACTS, SITE_BUCKET, DISTRIBUTION, FUNCTION. Usage : release.sh <sha> <version Lambda>
 set -euo pipefail
+export AWS_PAGER="" # pas de pager interactif (appel manuel depuis un terminal)
 sha=$1 version=$2
 [[ $sha =~ ^[0-9a-f]{40}$ && $version =~ ^[0-9]+$ ]] || { echo "::error::release invalide : '$sha' '$version'"; exit 1; }
 src="s3://$ARTIFACTS/site/$sha"
