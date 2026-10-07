@@ -55,6 +55,8 @@ pub fn http_status(code: Code) -> u16 {
     use Code::*;
     match code {
         BotCheckFailed => 403,
+        AdminDenied => 401,
+        AdminLocked => 429,
         LoopNotFound => 404,
         OutsideCoverage
         | NoWayInZone
@@ -327,13 +329,35 @@ pub fn check_bot(
     r.map_err(|e| Msg::error(Code::BotCheckFailed, e))
 }
 
-/// Coordonnées arrondies au km pour les logs (Lambert-93 ; DOM : UTM de la zone, champ `zone`).
-fn km(store: &TileStore, lat: f64, lon: f64) -> Value {
-    if !lat.is_finite() || !lon.is_finite() {
-        return Value::Null;
+/// Départ arrondi pour les journaux (admin.md § 1) : centre de la cellule d'une grille en degrés
+/// (0,0045° N–S ≈ 500 m ; 0,0065° E–O, 455 à 690 m selon la latitude), 4 décimales ; `None` si invalide.
+pub fn grid500(lat: f64, lon: f64) -> Option<(f64, f64)> {
+    if !(-90.0..=90.0).contains(&lat) || !(-180.0..=180.0).contains(&lon) {
+        return None;
     }
-    let (x, y) = store.zone(lat, lon).proj.forward(lon, lat);
-    json!([(x / 1000.0).round(), (y / 1000.0).round()])
+    let r = |x: f64, step: f64| ((x / step).round() * step * 1e4).round() / 1e4;
+    Some((r(lat, 0.0045), r(lon, 0.0065)))
+}
+
+/// Ligne de journal finale : `phase` (admin.md § 1), `code: "ok"` en 200, clés `null` retirées
+/// (Insights : `ispresent()` et regroupements fiables).
+fn seal(mut log: Value, diagnose: bool) -> Value {
+    log["phase"] = json!(if log["internal"] == true {
+        "internal"
+    } else if log["accepted"] != true {
+        "rejected"
+    } else if diagnose {
+        "diagnose"
+    } else {
+        "plan"
+    });
+    if log["status"] == 200 {
+        log["code"] = json!("ok");
+    }
+    if let Some(o) = log.as_object_mut() {
+        o.retain(|_, v| !v.is_null());
+    }
+    log
 }
 
 /// Traite une requête. `internal` : appel direct IAM (smoke test), sans Turnstile.
@@ -355,15 +379,30 @@ pub fn handle(
             .and_then(|x| x.1.parse::<f64>().ok())
             .unwrap_or(f64::NAN)
     };
+    let goal = query
+        .iter()
+        .find(|x| x.0 == "goal")
+        .map_or("max_dplus", |x| x.1.as_str());
+    let goal = ["max_dplus", "target", "min_distance"]
+        .contains(&goal)
+        .then_some(goal);
+    let start = grid500(get("lat"), get("lon"));
     let mut log = json!({
-        "msg": "plan", "start_l93_km": km(store, get("lat"), get("lon")),
+        "msg": "plan", "v": 2, "internal": internal, "accepted": false, "goal": goal,
+        "req_km": get("distance_km").is_finite().then(|| get("distance_km")),
+        "req_dplus_m": get("dplus_m").is_finite().then(|| get("dplus_m")),
+        "req_max_km": get("max_distance_km").is_finite().then(|| get("max_distance_km")),
+        "start_lat": start.map(|s| s.0), "start_lon": start.map(|s| s.1),
         "zone": store.zone(get("lat"), get("lon")).name,
-        "goal": query.iter().find(|x| x.0 == "goal").map(|x| x.1.clone()),
-        "distance_km": get("distance_km").is_finite().then(|| get("distance_km")),
-        "dplus_m": get("dplus_m").is_finite().then(|| get("dplus_m")),
-        "internal": internal, "accepted": false,
         "data_version": store.manifest.data_version, "solver_version": crate::solver_version(),
     });
+    // D46 : `diagnose=1` = diagnostic seul (mêmes paramètres que la requête initiale)
+    let dq: Vec<&str> = query
+        .iter()
+        .filter(|x| x.0 == "diagnose")
+        .map(|x| x.1.as_str())
+        .collect();
+    let diagnose = matches!(dq.as_slice(), ["1" | "true"]);
     let fail = |m: Msg, mut log: Value| {
         let status = http_status(m.code);
         log["status"] = json!(status);
@@ -373,20 +412,12 @@ pub fn handle(
         Reply {
             status,
             body: error_body(&m, status),
-            log,
+            log: seal(log, diagnose),
         }
     };
-    // D46 : `diagnose=1` = diagnostic seul (mêmes paramètres que la requête initiale)
-    let dq: Vec<&str> = query
-        .iter()
-        .filter(|x| x.0 == "diagnose")
-        .map(|x| x.1.as_str())
-        .collect();
-    let diagnose = match dq.as_slice() {
-        [] | ["0" | "false"] => false,
-        ["1" | "true"] => true,
-        _ => return fail(bad("diagnose: boolean expected"), log),
-    };
+    if !diagnose && !matches!(dq.as_slice(), [] | ["0" | "false"]) {
+        return fail(bad("diagnose: boolean expected"), log);
+    }
     let query: Vec<(String, String)> = query
         .iter()
         .filter(|x| x.0 != "diagnose")
@@ -397,7 +428,11 @@ pub fn handle(
         Err(m) => return fail(m, log),
     };
     log["climbs"] = json!(req.climbs);
-    log["n_candidates"] = json!(req.n_candidates);
+    log["surface"] = json!(req.surface);
+    log["max_grade_pct"] = json!(req.max_grade.map_or(0.0, |g| (g * 100.0).round()));
+    log["via_n"] = json!(req.via.len());
+    log["polygon"] = json!(req.polygon.is_some());
+    log["n_asked"] = json!(req.n_candidates);
     if !covered(store, req.lat, req.lon) {
         return fail(
             Msg::error(Code::OutsideCoverage, "start outside the tiles"),
@@ -421,14 +456,13 @@ pub fn handle(
     };
     if diagnose {
         log["accepted"] = json!(true);
-        log["diagnose"] = json!(true);
         let body = plan::diagnose(store, &req);
         log["status"] = json!(200);
         log["compute_s"] = json!(t0.elapsed().as_secs_f64());
         return Reply {
             status: 200,
             body,
-            log,
+            log: seal(log, true),
         };
     }
     // coupe-circuit (B2, T27) : filtre `{ $.msg = "plan" && $.accepted IS TRUE }`, somme de
@@ -466,10 +500,9 @@ pub fn handle(
     }
     let c0 = &out["candidates"][0];
     log["status"] = json!(200);
-    log["length_m"] = c0["length_m"].clone();
-    log["dplus_res_m"] = c0["dplus_m"].clone();
-    log["points"] = json!(c0["lat"].as_array().map_or(0, Vec::len));
-    log["candidates"] = json!(out["candidates"].as_array().map_or(0, Vec::len));
+    log["got_km"] = json!(c0["length_m"].as_f64().map(|m| (m / 10.0).round() / 100.0));
+    log["got_dplus_m"] = json!(c0["dplus_m"].as_f64().map(|d| d.round() as i64));
+    log["n_got"] = json!(out["candidates"].as_array().map_or(0, Vec::len));
     log["warnings"] = json!(
         out["warnings"]
             .as_array()
@@ -479,6 +512,6 @@ pub fn handle(
     Reply {
         status: 200,
         body: out,
-        log,
+        log: seal(log, false),
     }
 }

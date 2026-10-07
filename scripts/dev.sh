@@ -25,6 +25,10 @@
 # FORCE_TURNSTILE et TURNSTILE_DISABLED (ignorés/refusés en release, T28). Signature des boucles :
 # clé aléatoire à chaque démarrage si LOOP_SIGNING_KEY est absent.
 #
+# Admin (contracts/admin.md) : http://localhost:$WEB_PORT/admin, clé locale ADMIN_KEY (défaut `123`, acceptée
+# par le seul build de développement). /api/admin/stats lit le VRAI groupe de journaux de prod en lecture
+# seule via l'AWS CLI du profil AWS_PROFILE (défaut optrail) ; session expirée : aws login --profile optrail.
+#
 # Prérequis : cargo-lambda (`pip install cargo-lambda`, zig inclus) dans le PATH.
 set -euo pipefail
 
@@ -37,6 +41,7 @@ TILES_DIR=$(cd "$TILES_DIR" && pwd) # chemin absolu (cargo lambda change de doss
 TURNSTILE_SECRET=${TURNSTILE_SECRET:-1x0000000000000000000000000000000AA}
 FORCE_TURNSTILE=${FORCE_TURNSTILE:-0}
 SHARE_DIR=${SHARE_DIR:-$ROOT/engine/target/shared}
+ADMIN_KEY=${ADMIN_KEY:-123}
 
 command -v cargo-lambda >/dev/null || { echo "cargo-lambda introuvable : pip install cargo-lambda" >&2; exit 1; }
 test -f "$TILES_DIR/manifest.json" || { echo "pas de manifest.json dans $TILES_DIR" >&2; exit 1; }
@@ -55,4 +60,7 @@ cargo lambda watch --profile local --bin lambda --invoke-port "$API_PORT" \
   --env-var "TILES_DIR=$TILES_DIR" \
   --env-var "TURNSTILE_SECRET=$TURNSTILE_SECRET" \
   --env-var "FORCE_TURNSTILE=$FORCE_TURNSTILE" \
-  --env-var "SHARE_DIR=$SHARE_DIR"
+  --env-var "SHARE_DIR=$SHARE_DIR" \
+  --env-var "ADMIN_KEY=$ADMIN_KEY" \
+  --env-var "AWS_PROFILE=${AWS_PROFILE:-optrail}" \
+  --env-var "AWS_LAMBDA_LOG_GROUP_NAME=/aws/lambda/optrail-api"

@@ -276,5 +276,15 @@
     "params": [
       "pct"
     ]
+  },
+  {
+    "code": "admin_denied",
+    "kind": "error",
+    "params": []
+  },
+  {
+    "code": "admin_locked",
+    "kind": "error",
+    "params": []
   }
 ]

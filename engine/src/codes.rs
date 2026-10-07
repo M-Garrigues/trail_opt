@@ -64,6 +64,9 @@ pub enum Code {
     FewerLoops,
     // Type de voie (api.md v1.7)
     LowSurfaceShare,
+    // Admin (contracts/admin.md, D47)
+    AdminDenied,
+    AdminLocked,
 }
 
 #[derive(Serialize, Clone, Copy, PartialEq, Eq, Debug)]
@@ -74,7 +77,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 44] = {
+    pub const ALL: [Code; 46] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -121,6 +124,8 @@ impl Code {
             TargetNotReached,
             FewerLoops,
             LowSurfaceShare,
+            AdminDenied,
+            AdminLocked,
         ]
     };
 
@@ -136,7 +141,7 @@ impl Code {
             | ToleranceOutOfRange | MaxGradeInvalid | NoWayInZone | NoLoopOfDistance
             | InvalidProblem | NoLoopFound | InvariantViolated | InvalidRequest
             | OutsideCoverage | Busy | Timeout | BotCheckFailed | ServicePaused | ClimbsUnknown
-            | LoopNotFound => (Error, &[]),
+            | LoopNotFound | AdminDenied | AdminLocked => (Error, &[]),
             DplusOutOfRange => (Error, &["min_m", "max_m"]),
             // min_km : null quand Σw du graphe < D+ (aucune distance ne suffit)
             DplusUnreachableProven => (Error, &["dplus_m", "min_km"]),

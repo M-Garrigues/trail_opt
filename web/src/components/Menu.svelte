@@ -3,7 +3,10 @@
   import { app, close, forgetPosition, eraseAll, open as openLayer, toast } from '../lib/app.svelte';
   import { i18n, t, setLang } from '../i18n/i18n.svelte';
   import Install from './Install.svelte';
+  import { load, remove, save } from '../lib/store';
 
+  // mesure d'audience (admin.md § 7) : opposition mémorisée sur l'appareil
+  let stats = $state(!load('nostats', false));
   function pace(sec: number) { return `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, '0')}`; }
   const PACES = Array.from({ length: (720 - 240) / 15 + 1 }, (_, i) => 240 + i * 15);
 </script>
@@ -33,6 +36,10 @@
     <label for="m-loops">{t().more.loops}</label>
     <select id="m-loops" bind:value={app.settings.nLoops}>{#each [1, 2, 3, 4] as n}<option value={n}>{n}</option>{/each}</select>
   </div>
+  <div class="row">
+    <label for="m-stats">{t().menu.stats}</label>
+    <input id="m-stats" type="checkbox" checked={stats} onchange={(e) => { stats = e.currentTarget.checked; if (stats) remove('nostats'); else save('nostats', true); }} />
+  </div>
   <button class="btn secondary wide" onclick={() => { forgetPosition(); toast(t().menu.forgotten); }}>{t().menu.forgetPosition}</button>
   <button class="btn danger wide" onclick={() => { if (confirm(t().menu.confirmErase)) eraseAll(); }}>{t().menu.eraseAll}</button>
 </section>
@@ -52,6 +59,7 @@
   h2 { font-size: 1.25rem; margin: 0; }
   h3 { font-size: 1rem; margin: 16px 0 6px; }
   .row { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin: 8px 0; }
+  .row input[type='checkbox'] { width: 24px; height: 24px; margin: 10px; accent-color: var(--accent); }
   .seg { display: flex; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; }
   .seg button { all: unset; min-width: 52px; min-height: 44px; text-align: center; cursor: pointer; font-weight: 600; }
   .seg button[aria-checked='true'] { background: var(--accent); color: var(--on-accent); }

@@ -105,7 +105,7 @@ export TF_VAR_lambda_s3_key="lambda/$SHA.zip" TF_VAR_alert_email="$ALERT_EMAIL" 
   TF_VAR_turnstile_secret="$TURNSTILE_SECRET" TF_VAR_cloudflare_api_token="${CLOUDFLARE_API_TOKEN:-}" \
   TF_VAR_reserved_concurrency="$LAMBDA_RESERVED_CONCURRENCY" TF_VAR_enable_custom_domain="$ENABLE_CUSTOM_DOMAIN" \
   TF_VAR_cloudflare_zone_id="$CLOUDFLARE_ZONE_ID" TF_VAR_cloudfront_hostname="$CLOUDFRONT_HOSTNAME"
-export TF_VAR_lambda_env TF_VAR_tiles_source="$TILES_SOURCE"
+export TF_VAR_lambda_env TF_VAR_tiles_source="$TILES_SOURCE" TF_VAR_admin_key="${ADMIN_KEY:-}" # vide : admin désactivé
 tf() { tofu -chdir="$src/infra" "$@"; }
 tf init -input=false -backend-config="bucket=$STATE_BUCKET" >/dev/null
 if [[ ${AUTO_APPROVE:-} == 1 ]]; then tf apply -input=false -auto-approve; else tf apply; fi

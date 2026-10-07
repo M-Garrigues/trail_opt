@@ -38,6 +38,8 @@ resource "aws_iam_role_policy" "api" {
 
 # Boucles partagées (ui-spec §8) : lecture/écriture limitées à shared/ du bucket site. Sans
 # ListBucket, un id absent rend AccessDenied (403) : le handler le traite comme 404.
+# salt/<AAAA-MM-JJ> : sel quotidien aléatoire des visiteurs uniques (POST /api/hit, D51), créé par
+# écriture conditionnelle à la première visite du jour, supprimé après 2 jours (cycle de vie).
 resource "aws_iam_role_policy" "api_shared" {
   name = "shared-loops"
   role = aws_iam_role.api.id
@@ -46,7 +48,7 @@ resource "aws_iam_role_policy" "api_shared" {
     Statement = [{
       Effect   = "Allow"
       Action   = ["s3:GetObject", "s3:PutObject"]
-      Resource = "${aws_s3_bucket.site.arn}/shared/*"
+      Resource = ["${aws_s3_bucket.site.arn}/shared/*", "${aws_s3_bucket.site.arn}/salt/*"]
     }]
   })
 }
@@ -68,9 +70,29 @@ resource "aws_iam_role_policy" "api_tiles" {
   })
 }
 
+# Rétention 13 mois (D47 : statistiques admin) ; 395 j n'est pas une valeur admise par CloudWatch,
+# 400 est la plus proche (≤ 25 mois de conservation exigés par la CNIL pour la mesure d'audience).
 resource "aws_cloudwatch_log_group" "api" {
   name              = "/aws/lambda/${local.api_name}"
-  retention_in_days = 14
+  retention_in_days = 400
+}
+
+# Admin (D47, contracts/admin.md) : GET /api/admin/stats lance des requêtes Logs Insights sur ce
+# seul groupe. GetQueryResults n'accepte pas de ressource : « * » (lit un queryId connu seulement).
+resource "aws_iam_role_policy" "api_stats" {
+  name = "admin-stats"
+  role = aws_iam_role.api.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = "logs:StartQuery"
+        Resource = [aws_cloudwatch_log_group.api.arn, "${aws_cloudwatch_log_group.api.arn}:*"]
+      },
+      { Effect = "Allow", Action = "logs:GetQueryResults", Resource = "*" },
+    ]
+  })
 }
 
 # Clé HMAC des boucles (M3, api.md v1.3) : générée par Tofu, gardée dans l'état chiffré (S3,
@@ -116,6 +138,7 @@ resource "aws_lambda_function" "api" {
       TURNSTILE_HOSTNAMES = local.turnstile_hostnames
       LOOP_SIGNING_KEY    = random_password.loop_signing.result
       SHARED_BUCKET       = aws_s3_bucket.site.id # boucles partagées sous shared/
+      ADMIN_KEY           = var.admin_key         # vide : routes /api/admin/* en 404
     })
   }
 

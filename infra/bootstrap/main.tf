@@ -192,7 +192,17 @@ data "aws_iam_policy_document" "boundary" {
   # Boucles partagées seulement (le reste du site est écrit par scripts/deploy.sh, pas par une Lambda).
   statement {
     actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["arn:aws:s3:::optrail-site-*/shared/*"]
+    resources = ["arn:aws:s3:::optrail-site-*/shared/*", "arn:aws:s3:::optrail-site-*/salt/*"]
+  }
+  # Admin (D47) : requêtes Logs Insights sur les journaux optrail. GetQueryResults n'accepte pas
+  # de ressource (« * ») : il ne lit que le résultat d'un queryId connu.
+  statement {
+    actions   = ["logs:StartQuery"]
+    resources = ["arn:aws:logs:eu-north-1:${local.account}:log-group:/aws/lambda/optrail-*"]
+  }
+  statement {
+    actions   = ["logs:GetQueryResults"]
+    resources = ["*"]
   }
 }
 

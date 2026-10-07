@@ -199,6 +199,15 @@ fn bout_en_bout_dalles_pilotes() {
         (422, json!("outside_coverage"))
     );
     assert!(r.body["error"].get("detail").is_none());
+    // ligne plan v2 (admin.md § 1) : demande hors couverture = rejetée, départ arrondi gardé
+    assert_eq!(
+        (&r.log["phase"], &r.log["code"], &r.log["start_lat"]),
+        (
+            &json!("rejected"),
+            &json!("outside_coverage"),
+            &json!(43.299)
+        )
+    );
     // Turnstile : jeton absent, refusé, ou erreur réseau -> 403, rien de calculé
     assert_eq!(handle(&massy, None, false, &store, &key, never).status, 403);
     assert_eq!(
@@ -211,6 +220,7 @@ fn bout_en_bout_dalles_pilotes() {
     assert_eq!((r.status, r.log["detail"].clone()), (403, json!("down")));
     assert!(r.body["error"].get("detail").is_none(), "{}", r.body);
     assert_eq!(r.log["accepted"], json!(false));
+    assert_eq!(r.log["phase"], json!("rejected"));
     // diagnose=1 (D46) : Turnstile requis, valeur validée, réponse sans géométrie
     let dg = q(
         "lat=48.7309&lon=2.2713&goal=target&distance_km=10&dplus_m=300&roads=unpaved&n_candidates=1&diagnose=1",
@@ -233,6 +243,10 @@ fn bout_en_bout_dalles_pilotes() {
     assert!(r.body.get("candidates").is_none() && r.body["params"]["asked"] == 1);
     assert!(r.body["checked"].is_boolean());
     assert!(r.body["suggest"].get("roads").is_none(), "{}", r.body);
+    assert_eq!(
+        (&r.log["phase"], &r.log["code"], &r.log["surface"]),
+        (&json!("diagnose"), &json!("ok"), &json!("trail"))
+    );
     // appel interne (smoke test deploy.yml) : pas de Turnstile
     let r = handle(&massy, None, true, &store, &key, never);
     assert_eq!(r.status, 200, "{}", r.body);
@@ -254,13 +268,51 @@ fn bout_en_bout_dalles_pilotes() {
     );
     assert!(r.body.get("debug").is_none());
     assert!(r.body["solver_version"].is_string() && r.body["data_version"].is_string());
-    // log : une ligne, coordonnées au km seulement
+    // log : une ligne, départ arrondi à 500 m seulement
     let log = r.log.to_string();
-    assert!(!log.contains("48.73") && !log.contains("2.27"), "{log}");
+    assert!(!log.contains("48.7309") && !log.contains("2.2713"), "{log}");
     assert_eq!(r.log["status"], json!(200));
-    // avec jeton valide
+    assert_eq!(r.log["phase"], json!("internal"));
+    // avec jeton valide : ligne plan v2 complète, sans null ni anciens champs
     let r = handle(&massy, Some("t"), false, &store, &key, |t| Ok(t == "t"));
     assert_eq!(r.status, 200);
+    let l = &r.log;
+    for (k, v) in [
+        ("msg", json!("plan")),
+        ("v", json!(2)),
+        ("phase", json!("plan")),
+        ("code", json!("ok")),
+        ("goal", json!("max_dplus")),
+        ("surface", json!("trail")),
+        ("climbs", json!("balanced")),
+        ("max_grade_pct", json!(60.0)),
+        ("via_n", json!(0)),
+        ("polygon", json!(false)),
+        ("req_km", json!(10.0)),
+        ("n_asked", json!(1)),
+        ("n_got", json!(1)),
+        ("start_lat", json!(48.7305)),
+        ("start_lon", json!(2.2685)),
+    ] {
+        assert_eq!(l[k], v, "{k} : {l}");
+    }
+    let got = l["got_km"].as_f64().unwrap();
+    assert!(
+        (9.0..=11.0).contains(&got) && (got * 100.0).fract() == 0.0,
+        "{got}"
+    );
+    assert!(l["got_dplus_m"].is_i64() && l["compute_s"].is_f64());
+    for k in [
+        "start_l93_km",
+        "points",
+        "diagnose",
+        "length_m",
+        "candidates",
+        "req_dplus_m",
+    ] {
+        assert!(l.get(k).is_none(), "{k} : {l}");
+    }
+    assert!(!l.as_object().unwrap().values().any(Value::is_null), "{l}");
     // la réponse se partage telle quelle (corps de POST /api/loops construit comme le front)
     let b = &r.body;
     let body = json!({

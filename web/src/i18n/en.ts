@@ -185,6 +185,7 @@ export const en: Dict = {
     privacy: 'Privacy',
     attributions: 'Credits',
     settings: 'Settings',
+    stats: 'Audience measurement',
     forgetPosition: 'Forget my last position',
     forgotten: 'Position forgotten.',
     eraseAll: 'Erase my data',
@@ -194,9 +195,10 @@ export const en: Dict = {
       'Host: Amazon Web Services EMEA SARL, 38 avenue John F. Kennedy, L-1855 Luxembourg, phone +352 2789 0000. Servers in the European Union; pages delivered by the global Amazon CloudFront network.\n\n' +
       'Code licensed under PolyForm Noncommercial 1.0.0; data: see Credits.\n\n' +
       'Runs are computed automatically and come with no warranty: you alone judge the terrain, weather, access and your safety. The French version prevails.',
-    privacyText: 'Controller: the publisher (see Legal notice), contact@optrail.eu. No account, no cookie, no analytics, no ads.\n\n' +
-      'Planning: your start and the area you draw are sent to the server when planning, to compute the run (basis: providing the service you request). Logs keep only a position rounded to the kilometre, with settings and result, for 14 days (legitimate interest: operations, abuse prevention).\n\n' +
+    privacyText: 'Controller: the publisher (see Legal notice), contact@optrail.eu. No account, no cookie, no ads.\n\n' +
+      'Planning: your start and the area you draw are sent to the server when planning, to compute the run (basis: providing the service you request). Logs keep only a position rounded to about 500 m, with settings, result and the country or region derived from your IP address by our host (the address itself is not recorded), for 13 months (legitimate interest: operations, abuse prevention, usage statistics).\n\n' +
       'Sharing: “Create link” stores the run, exact start included, for 90 days; anyone with the link can see it. To delete it sooner, e-mail contact@optrail.eu with the link.\n\n' +
+      'Audience measurement: when the site opens, your browser reports the visit (home page or shared run, referring site reduced to its domain, language). The server derives an identifier valid for one day only: an encrypted fingerprint of your IP address and browser, computed with a random key specific to each day and erased after two days; neither the IP address nor the browser string is recorded, no cookie is set and nothing is read from your device. Only anonymous figures are produced (visitors per day, country or region, device type, referring sites), for the publisher alone, never combined with other data nor shared with third parties; logs are kept for 13 months. This measurement is exempt from consent (French Data Protection Act art. 82, CNIL guidelines); to object: Settings › “Audience measurement”; your browser’s Global Privacy Control or Do Not Track signal is also honoured.\n\n' +
       'On your device: language, settings, run history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
       'IP address: optrail does not record it, but it is seen by Amazon Web Services (hosting), Cloudflare (Turnstile bot check when planning and sharing; legitimate interest: security), IGN (base map; place search, which also receives what you type) and Mapterhorn (3D relief). Amazon and Cloudflare are US companies: transfers covered by the EU–US Data Privacy Framework and standard contractual clauses.\n\n' +
       'Your rights: access, rectification, erasure, objection and restriction, by e-mail to contact@optrail.eu; you may complain to the CNIL (cnil.fr). Without accounts, optrail cannot link logs to a person.',
@@ -250,6 +252,8 @@ export const en: Dict = {
     internal: (p: P) => `Internal error (${p.code}). Try again.`,
     offline: () => 'Offline: check your connection.',
     loop_not_found: () => 'This link has expired or does not exist.',
+    admin_denied: () => 'Key refused.',
+    admin_locked: () => 'Too many attempts, try again in 15 min.',
   },
   warn: {
     long_distance: () => '',
