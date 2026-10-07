@@ -241,6 +241,33 @@ data "archive_file" "killswitch" {
   }
 }
 
+# E-mail dédié quand la pause a VRAIMENT eu lieu (ligne `{"msg":"killswitch","op":"pause"}` de la
+# Lambda du coupe-circuit), sur le canal des alertes (même abonnement, adresse = var.alert_email).
+resource "aws_cloudwatch_log_metric_filter" "killswitch_pause" {
+  name           = "optrail-killswitch-pause"
+  log_group_name = aws_cloudwatch_log_group.killswitch.name
+  pattern        = "{ $.msg = \"killswitch\" && $.op = \"pause\" }"
+  metric_transformation {
+    namespace = "optrail"
+    name      = "KillswitchPause"
+    value     = "1"
+  }
+}
+
+resource "aws_cloudwatch_metric_alarm" "killswitch_pause" {
+  alarm_name          = "optrail-killswitch-pause"
+  alarm_description   = "Pause du coupe-circuit déclenchée : API de calcul à concurrence 0 (reprise auto 1 h après une alarme, manuelle après un budget). Voir infra/README.md « Coupe-circuit »."
+  namespace           = "optrail"
+  metric_name         = aws_cloudwatch_log_metric_filter.killswitch_pause.metric_transformation[0].name
+  statistic           = "Sum"
+  period              = 60
+  evaluation_periods  = 1
+  threshold           = 0
+  comparison_operator = "GreaterThanThreshold"
+  treat_missing_data  = "notBreaching"
+  alarm_actions       = [aws_sns_topic.alerts.arn]
+}
+
 resource "aws_iam_role" "killswitch" {
   name                 = "optrail-killswitch"
   assume_role_policy   = data.aws_iam_policy_document.lambda_trust.json

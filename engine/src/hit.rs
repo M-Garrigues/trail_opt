@@ -205,6 +205,8 @@ mod tests {
             "{v}"
         );
         assert_eq!(l["dev"], "mobile");
+        // hors coupe-circuit (filtre `$.msg = "plan" && $.accepted IS TRUE`, infra/alarms.tf)
+        assert!(l["msg"] == "hit" && l.get("accepted").is_none() && l.get("compute_s").is_none());
         assert_eq!((&l["country"], &l["region"]), (&json!("FR"), &json!("IDF")));
         assert!(l.get("ref").is_none() && !l.to_string().contains("1.2.3.4"));
         // même IP + UA, même jour : même visiteur ; autre jour (autre sel) ou autre IP : différent

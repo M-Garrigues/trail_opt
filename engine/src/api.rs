@@ -407,7 +407,12 @@ pub fn handle(
         let status = http_status(m.code);
         log["status"] = json!(status);
         log["code"] = json!(m.code);
-        log["detail"] = json!(m.detail);
+        // revue F2 : texte venant de la requête (nom de paramètre…) borné dans les journaux
+        log["detail"] = json!(
+            m.detail
+                .as_ref()
+                .map(|d| d.chars().take(100).collect::<String>())
+        );
         log["compute_s"] = json!(t0.elapsed().as_secs_f64());
         Reply {
             status,
@@ -427,7 +432,9 @@ pub fn handle(
         Ok(x) => x,
         Err(m) => return fail(m, log),
     };
-    log["climbs"] = json!(req.climbs);
+    // revue F2 : seulement des valeurs validées dans les journaux (climbs est validé plus loin)
+    let climbs = ["short", "balanced", "long"].contains(&req.climbs.as_str());
+    log["climbs"] = json!(climbs.then_some(&req.climbs));
     log["surface"] = json!(req.surface);
     log["max_grade_pct"] = json!(req.max_grade.map_or(0.0, |g| (g * 100.0).round()));
     log["via_n"] = json!(req.via.len());

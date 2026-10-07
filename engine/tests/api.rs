@@ -221,6 +221,19 @@ fn bout_en_bout_dalles_pilotes() {
     assert!(r.body["error"].get("detail").is_none(), "{}", r.body);
     assert_eq!(r.log["accepted"], json!(false));
     assert_eq!(r.log["phase"], json!("rejected"));
+    // revue F2 : journaux bornés avant Turnstile (detail ≤ 100 caractères, climbs validé seulement)
+    let long = format!("lat=48.7&lon=2.2&{}=1", "x".repeat(500));
+    let r = handle(&q(&long), None, false, &store, &key, never);
+    assert!(r.log["detail"].as_str().unwrap().chars().count() <= 100);
+    let r = handle(
+        &q("lat=43.3&lon=5.4&climbs=<img>"),
+        None,
+        false,
+        &store,
+        &key,
+        never,
+    );
+    assert!(r.log.get("climbs").is_none(), "{}", r.log);
     // diagnose=1 (D46) : Turnstile requis, valeur validée, réponse sans géométrie
     let dg = q(
         "lat=48.7309&lon=2.2713&goal=target&distance_km=10&dplus_m=300&roads=unpaved&n_candidates=1&diagnose=1",
