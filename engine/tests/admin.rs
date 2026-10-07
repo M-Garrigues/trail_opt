@@ -229,7 +229,7 @@ fn stats_forme_de_la_reponse() {
             t,
             "/aws/lambda/optrail-api",
             fake,
-            Duration::ZERO,
+            (4, Duration::ZERO),
             Duration::from_millis(50),
         )
     };
@@ -339,7 +339,7 @@ fn stats_refus_et_erreurs() {
     assert_eq!(r.log["outcome"], "error");
     // StartQuery en échec : erreur globale
     let fail = |_: &str, _: &Value| -> Result<Value, String> { Err("AccessDenied".into()) };
-    assert!(admin::run(0, 1, "g", fail, Duration::ZERO, Duration::ZERO).is_err());
+    assert!(admin::run(0, 1, "g", fail, (4, Duration::ZERO), Duration::ZERO).is_err());
     for _ in 0..4 {
         admin::handle(&a, None, &[], today, never);
     }

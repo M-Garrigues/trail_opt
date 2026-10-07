@@ -51,11 +51,11 @@ export function preset(n: number, today = new Date()): { from: string; to: strin
   return { from: iso(from), to: iso(today) };
 }
 
-/** Valeurs par jour (0 si le jour manque) ; `null` si la vue manque. */
-export function perDay<T extends Day>(ds: string[], rows: T[] | null | undefined, f: (r: T) => number): number[] | null {
+/** Valeurs par jour (`fill` si le jour manque : 0 pour un comptage, NaN pour un temps) ; `null` si la vue manque. */
+export function perDay<T extends Day>(ds: string[], rows: T[] | null | undefined, f: (r: T) => number, fill = 0): number[] | null {
   if (!rows) return null;
   const m = new Map(rows.map((r) => [r.day, f(r)]));
-  return ds.map((d) => m.get(d) ?? 0);
+  return ds.map((d) => m.get(d) ?? fill);
 }
 
 const sum = (xs: number[]) => xs.reduce((a, b) => a + b, 0);
@@ -65,9 +65,10 @@ export function tiles(s: Stats) {
   const v = s.visitors_by_day, c = s.calcs_by_day;
   const n = c ? sum(c.map((r) => r.n)) : null;
   const ok = c ? sum(c.map((r) => r.ok)) : null;
+  // aucune ligne `hit` (mesure pas encore en service) : « — » plutôt que 0
   return {
-    visitors: v ? sum(v.map((r) => r.visitors)) : null,
-    visits: v ? sum(v.map((r) => r.hits)) : null,
+    visitors: v?.length ? sum(v.map((r) => r.visitors)) : null,
+    visits: v?.length ? sum(v.map((r) => r.hits)) : null,
     calcs: n,
     rejected: c ? sum(c.map((r) => r.rejected)) : null,
     failRate: n && ok != null ? (n - ok) / n : null,

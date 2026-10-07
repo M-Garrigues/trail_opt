@@ -22,8 +22,9 @@
     const muted = css.getPropertyValue('--muted').trim() || '#555', grid = css.getPropertyValue('--border').trim() || '#ddd';
     const L = 48, R = 8, T = 8, B = 22, n = labels.length;
     const tops = labels.map((_, i) => (kind === 'bar' ? series.reduce((a, s) => a + (s.values[i] ?? 0), 0) : Math.max(...series.map((s) => s.values[i] ?? 0))));
-    const raw = Math.max(...tops, 1e-9);
-    const p = 10 ** Math.floor(Math.log10(raw)), max = [1, 2, 2.5, 5, 10].map((k) => k * p).find((m) => m >= raw) ?? raw;
+    // 4 intervalles « ronds » (entiers si digits = 0)
+    const st0 = Math.max(...tops.filter(Number.isFinite), 1e-9) / 4, p = 10 ** Math.floor(Math.log10(st0));
+    const max = 4 * ([1, 2, 2.5, 5, 10].map((k) => k * p).find((x) => x >= st0 && (digits > 0 || Number.isInteger(x))) ?? Math.ceil(st0));
     const step = (w - L - R) / n;
     const X = (i: number) => L + step * (i + 0.5), Y = (v: number) => T + (h - T - B) * (1 - v / max);
     c.font = '12px system-ui, sans-serif';
@@ -34,7 +35,7 @@
     for (let k = 0; k <= 4; k++) {
       const v = (max * k) / 4, y = Math.round(Y(v)) + 0.5;
       c.beginPath(); c.moveTo(L, y); c.lineTo(w - R, y); c.stroke();
-      c.fillText(fmt(v, max < 4 ? 1 : digits), L - 6, y + 4);
+      c.fillText(fmt(v, digits), L - 6, y + 4);
     }
     c.textAlign = 'center';
     const every = Math.ceil(n / Math.max(1, Math.floor((w - L - R) / 70)));
@@ -55,9 +56,10 @@
         c.strokeStyle = s.color;
         c.lineWidth = 2;
         c.beginPath();
-        s.values.forEach((v, i) => (i ? c.lineTo(X(i), Y(v)) : c.moveTo(X(i), Y(v))));
+        // valeur absente (NaN) : la courbe s'interrompt
+        s.values.forEach((v, i) => (Number.isFinite(v) && i && Number.isFinite(s.values[i - 1]) ? c.lineTo(X(i), Y(v)) : c.moveTo(X(i), Y(v))));
         c.stroke();
-        if (n < 60) { c.fillStyle = s.color; s.values.forEach((v, i) => { c.beginPath(); c.arc(X(i), Y(v), 2.5, 0, 7); c.fill(); }); }
+        if (n < 60) { c.fillStyle = s.color; s.values.forEach((v, i) => { if (Number.isFinite(v)) { c.beginPath(); c.arc(X(i), Y(v), 2.5, 0, 7); c.fill(); } }); }
       }
     }
   }

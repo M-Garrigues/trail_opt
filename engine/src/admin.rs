@@ -364,37 +364,54 @@ pub fn shape(
     Value::Object(o)
 }
 
-/// Lance les 9 requêtes puis lit leurs résultats jusqu'à `Complete` ou `DEADLINE`. Appels
-/// espacés de `pace` (quota GetQueryResults : 5 par seconde et par compte). Une erreur de
-/// `StartQuery` (droits, identifiants) fait échouer l'ensemble.
+/// Lance les 9 requêtes puis lit leurs résultats jusqu'à `Complete` ou `deadline`. Appels par
+/// lots concurrents de `batch`, `pace` entre deux lots (quotas Logs : 5 appels/s par compte).
+/// Une erreur de `StartQuery` (droits, identifiants) fait échouer l'ensemble.
 pub fn run(
     from: i64,
     to: i64,
     group: &str,
-    mut call: impl FnMut(&str, &Value) -> Result<Value, String>,
-    pace: Duration,
+    call: impl Fn(&str, &Value) -> Result<Value, String> + Sync,
+    (batch, pace): (usize, Duration),
     deadline: Duration,
 ) -> Result<Views, String> {
     let t0 = Instant::now();
+    let calls = |op: &str, reqs: Vec<Value>| -> Vec<Result<Value, String>> {
+        let mut out = Vec::new();
+        for chunk in reqs.chunks(batch.max(1)) {
+            std::thread::scope(|s| {
+                let hs: Vec<_> = chunk.iter().map(|b| s.spawn(|| call(op, b))).collect();
+                out.extend(
+                    hs.into_iter()
+                        .map(|h| h.join().unwrap_or(Err("panic".into()))),
+                );
+            });
+            std::thread::sleep(pace);
+        }
+        out
+    };
+    let starts = queries().map(|(_, q)| {
+        json!({"logGroupName": group, "startTime": from * 86_400,
+               "endTime": to * 86_400 + 86_399, "queryString": q, "limit": 10_000})
+    });
     let mut pending = Vec::new();
-    for (name, q) in queries() {
-        let r = call(
-            "StartQuery",
-            &json!({"logGroupName": group, "startTime": from * 86_400,
-                    "endTime": to * 86_400 + 86_399, "queryString": q, "limit": 10_000}),
-        )?;
-        let id = r["queryId"].as_str().ok_or("StartQuery: no queryId")?;
-        pending.push((name, id.to_string()));
-        std::thread::sleep(pace);
+    for ((name, _), r) in queries()
+        .into_iter()
+        .zip(calls("StartQuery", starts.into()))
+    {
+        let id = r?["queryId"]
+            .as_str()
+            .ok_or("StartQuery: no queryId")?
+            .to_string();
+        pending.push((name, id));
     }
     let (mut views, mut bytes) = (BTreeMap::new(), 0.0);
     while !pending.is_empty() && t0.elapsed() < deadline {
-        std::thread::sleep(pace);
+        let ids = pending.iter().map(|p| json!({"queryId": p.1})).collect();
         let mut still = Vec::new();
-        for (name, id) in pending {
+        for ((name, id), r) in pending.into_iter().zip(calls("GetQueryResults", ids)) {
             // erreur passagère (quota) : nouvel essai au tour suivant
-            let r = call("GetQueryResults", &json!({"queryId": id})).unwrap_or_default();
-            std::thread::sleep(pace);
+            let r = r.unwrap_or_default();
             match r["status"].as_str() {
                 Some("Complete") => {
                     bytes += r["statistics"]["bytesScanned"].as_f64().unwrap_or(0.0);

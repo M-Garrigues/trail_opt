@@ -282,7 +282,12 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
                 let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into());
                 // local (build de développement + AWS_PROFILE) : AWS CLI, sinon API signée
                 let cli = cfg!(debug_assertions) && std::env::var_os("AWS_PROFILE").is_some();
-                let pace = Duration::from_millis(if cli { 0 } else { 200 });
+                // quotas Logs : 5 appels/s (API) ; AWS CLI : ~1 s par appel, tout en parallèle
+                let pace = if cli {
+                    (9, Duration::from_millis(300))
+                } else {
+                    (5, Duration::from_secs(1))
+                };
                 let call = |op: &str, b: &serde_json::Value| {
                     if cli {
                         admin::logs_cli(&region, op, b)

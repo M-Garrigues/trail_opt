@@ -14,6 +14,8 @@ describe('page admin : agrégations', () => {
     expect(fmt(t.visitors)).toBe('—');
     expect(pct(t.failRate)).toBe('—');
     expect(pct(0.1)).toBe('10,0 %');
+    // aucune ligne `hit` encore (journaux actuels) : « — », pas 0
+    expect(tiles({ ...s, visitors_by_day: [] }).visitors).toBeNull();
   });
   it('jours de la période, valeurs par jour complétées de zéros', () => {
     expect(days('2026-09-29', '2026-10-02')).toEqual(['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
@@ -21,6 +23,7 @@ describe('page admin : agrégations', () => {
     const ds = days(s.from, s.to);
     expect(perDay(ds, s.visitors_by_day, (r) => r.visitors)).toEqual([0, 0, 0, 0, 0, 12, 3]);
     expect(perDay(ds, null, () => 1)).toBeNull();
+    expect(perDay(ds, s.compute_s!.by_day, (r) => r.p50, NaN)!.slice(4)).toEqual([NaN, 4.0, 4.3]);
   });
   it('histogrammes avec classes vides, parts par catégorie', () => {
     expect(histBins({ step: 5, bins: [{ from: 20, n: 1 }, { from: 10, n: 4 }] })).toEqual({ labels: ['10–15', '15–20', '20–25'], values: [4, 0, 1] });

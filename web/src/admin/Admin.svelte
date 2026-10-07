@@ -69,8 +69,8 @@
     rej: perDay(ds, stats.calcs_by_day, (r) => r.rejected)!,
   } : null);
   const perf = $derived(stats?.compute_s?.by_day ? {
-    p50: perDay(ds, stats.compute_s.by_day, (r) => r.p50)!,
-    p95: perDay(ds, stats.compute_s.by_day, (r) => r.p95)!,
+    p50: perDay(ds, stats.compute_s.by_day, (r) => r.p50, NaN)!,
+    p95: perDay(ds, stats.compute_s.by_day, (r) => r.p95, NaN)!,
   } : null);
   const hk = $derived(histBins(stats?.hist_km ?? null));
   const hd = $derived(histBins(stats?.hist_dplus_m ?? null));
