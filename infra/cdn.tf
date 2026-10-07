@@ -131,8 +131,9 @@ resource "aws_cloudfront_origin_request_policy" "api" {
 }
 
 # En-têtes de sécurité (M2) : ceux de Managed-SecurityHeadersPolicy + Permissions-Policy + CSP.
-# CSP d'abord en Report-Only (violations visibles dans la console du navigateur) ; passer en
-# Content-Security-Policy (security_headers_config) une fois la console propre sur le site.
+# CSP BLOQUANTE (D61) depuis le 2026-10-07 : suite e2e complète (3 projets) sur le build servi avec ces
+# en-têtes, zéro violation ; web/tests/e2e/csp.spec.ts échoue à toute violation. Une source ajoutée au
+# front doit l'être ici aussi.
 # Origines : tuiles/style/géocodage IGN (data.geopf.fr), MNT 3D (tiles.mapterhorn.com),
 # Turnstile (challenges.cloudflare.com, script + iframe), worker MapLibre (self, blob:).
 locals {
@@ -178,17 +179,16 @@ resource "aws_cloudfront_response_headers_policy" "security" {
       mode_block = true
       override   = true
     }
+    content_security_policy {
+      content_security_policy = local.csp
+      override                = true
+    }
   }
 
   custom_headers_config {
     items {
       header   = "Permissions-Policy"
       value    = "geolocation=(self), camera=(), microphone=(), payment=(), usb=(), interest-cohort=()"
-      override = true
-    }
-    items {
-      header   = "Content-Security-Policy-Report-Only"
-      value    = local.csp
       override = true
     }
   }
