@@ -87,10 +87,20 @@ const ENUMS: [(&str, &[&str]); 5] = [
 /// stricte : champ inconnu, mauvais type, hors bornes ou valeur non permise ⇒ `None` (400).
 /// Aucun identifiant de calcul ni de personne, pas même le visiteur du jour (revue M4).
 pub fn event(v: &Value) -> Option<Map<String, Value>> {
+    event_checked(v).ok()
+}
+
+/// Comme `event`, avec la raison du refus (champ fautif) pour le journal (bug prod du 08/10 : aucun
+/// événement, aucune trace des refus).
+fn event_checked(v: &Value) -> Result<Map<String, Value>, String> {
     let mut out = Map::new();
-    for (k, x) in v.as_object()? {
+    for (k, x) in v.as_object().ok_or("not an object")? {
+        let bad = || format!("field {}", k.chars().take(32).collect::<String>());
         let val = if let Some((_, lo, hi, step)) = NUMS.iter().find(|n| n.0 == k) {
-            let f = x.as_f64().filter(|f| (*lo..=*hi).contains(f))?;
+            let f = x
+                .as_f64()
+                .filter(|f| (*lo..=*hi).contains(f))
+                .ok_or_else(bad)?;
             let v = if *step > 1.0 {
                 (f / step).floor() * step
             } else {
@@ -98,15 +108,24 @@ pub fn event(v: &Value) -> Option<Map<String, Value>> {
             };
             json!(v as i64)
         } else if let Some((_, ok)) = ENUMS.iter().find(|e| e.0 == k) {
-            json!(x.as_str().filter(|s| ok.contains(s))?)
+            json!(x.as_str().filter(|s| ok.contains(s)).ok_or_else(bad)?)
         } else if ["zone", "no_repeat", "smooth"].contains(&k.as_str()) {
-            json!(x.as_bool()?)
+            json!(x.as_bool().ok_or_else(bad)?)
         } else {
-            return None;
+            return Err(format!("unknown {}", bad()));
         };
         out.insert(k.clone(), val);
     }
-    out.contains_key("event").then_some(out)
+    if out.contains_key("event") {
+        Ok(out)
+    } else {
+        Err("event missing".into())
+    }
+}
+
+/// Ligne de journal d'un corps refusé (400) : la raison seule, bornée, jamais le corps.
+fn rejected(reason: &str) -> Value {
+    json!({"v": 1, "msg": "hit_rejected", "reason": reason.chars().take(64).collect::<String>()})
 }
 
 /// Corps `{"page","ref"?,"lang"?}` (visite) ou `{"event",…}` (action, D59) → (statut, ligne
@@ -124,21 +143,21 @@ pub fn hit(
         .then(|| serde_json::from_slice::<Value>(body).ok())
         .flatten()
     else {
-        return (400, None);
+        return (400, Some(rejected("body: invalid JSON or too large")));
     };
     // visite : page + site d'origine + pays/région ; événement : champs de la liste blanche seuls
     let fields = if v.get("event").is_some() {
-        match event(&v) {
-            Some(mut e) => {
+        match event_checked(&v) {
+            Ok(mut e) => {
                 e.insert("msg".into(), json!("event"));
                 e
             }
-            None => return (400, None),
+            Err(r) => return (400, Some(rejected(&r))),
         }
     } else {
         let page = match v["page"].as_str() {
             Some(p @ ("home" | "shared")) => p,
-            _ => return (400, None),
+            _ => return (400, Some(rejected("page"))),
         };
         let mut m = Map::new();
         m.insert("msg".into(), json!("hit"));
@@ -250,7 +269,9 @@ mod tests {
             r#"{"lang":"fr"}"#,
             big.as_str(),
         ] {
-            assert_eq!(run(b, Some("1.2.3.4"), UA, b"s"), (400, None), "{b}");
+            let (st, l) = run(b, Some("1.2.3.4"), UA, b"s");
+            assert_eq!(st, 400, "{b}");
+            assert_eq!(l.unwrap()["msg"], "hit_rejected", "{b}"); // refus journalisé, sans le corps
         }
         // sans sel (stockage indisponible) : pas de ligne
         assert_eq!(
@@ -303,15 +324,17 @@ mod tests {
         ] {
             let mut b = ok.clone();
             b[k] = bad;
-            assert_eq!(
-                run(&b.to_string(), Some("1.2.3.4"), UA, b"s"),
-                (400, None),
-                "{k}"
-            );
+            let (st, l) = run(&b.to_string(), Some("1.2.3.4"), UA, b"s");
+            assert_eq!(st, 400, "{k}");
+            // le journal dit quel champ est refusé (bug prod du 08/10 : refus invisibles)
+            let l = l.unwrap();
+            assert_eq!(l["msg"], "hit_rejected");
+            assert!(l["reason"].as_str().unwrap().contains(k), "{k} : {l}");
         }
+        let (st, l) = run(r#"{"event":"gpx","page":"home"}"#, Some("1"), UA, b"s");
         assert_eq!(
-            run(r#"{"event":"gpx","page":"home"}"#, Some("1"), UA, b"s"),
-            (400, None)
+            (st, &l.unwrap()["reason"]),
+            (400, &json!("unknown field page"))
         );
         assert!(event(&json!({"km": 10})).is_none()); // event obligatoire
         assert!(event(&json!({"event": "shared_open"})).is_some());

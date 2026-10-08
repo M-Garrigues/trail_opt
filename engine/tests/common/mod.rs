@@ -36,3 +36,19 @@ pub fn tiles(points: &[(f64, f64)]) -> Option<(PathBuf, TileStore)> {
 pub const MASSY: (f64, f64) = (48.7309, 2.2713);
 pub const ALPES: (f64, f64) = (45.0920, 6.0700);
 pub const BOURG: (f64, f64) = (45.0555, 6.0310);
+
+/// Comme `tiles`, mais sans échec en CI : None si aucune dalle ne couvre les points.
+pub fn tiles_opt(points: &[(f64, f64)]) -> Option<(PathBuf, TileStore)> {
+    let dirs = [
+        std::env::var("ENGINE_TILES_DIR").ok(),
+        Some("tests/data/tiles".into()),
+    ];
+    dirs.into_iter().flatten().find_map(|d| {
+        let p = PathBuf::from(d);
+        let s = TileStore::open(&p).ok()?;
+        points
+            .iter()
+            .all(|&(lat, lon)| engine::api::covered(&s, lat, lon))
+            .then_some((p, s))
+    })
+}

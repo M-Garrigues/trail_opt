@@ -514,6 +514,10 @@ impl<'a> FaceSearch<'a> {
     /// sur une longueur estimée (d(s,A) + 1,3·|AB| + d(B,s)), au plus `PETAL_TRIES` routées ; à défaut de
     /// seconde cible, B = le nœud de 40 à 120° de A qui donne la meilleure longueur estimée. Triées :
     /// cible = erreur croissante, sinon D+ décroissant ; au plus `k`.
+    /// Montagne (banc du 08/10, Chartreuse et Bourg 35–50 km) : aucun pétale dans la tolérance. Les
+    /// trois tronçons ne partageant ni arête ni carrefour (carrefours uniques), les pétales routés font
+    /// 1,4 à 2,6 L (même estimés sur les distances réseau), ou n'ont pas de route ; leur D+ y est 2 fois
+    /// la cible. Les pétales n'agissent donc qu'en plaine et en ville.
     pub fn petals(&self, k: usize) -> Vec<Vec<usize>> {
         const ANG: (f64, f64) = (40.0, 120.0);
         const LEN: (f64, f64) = (0.85, 1.10);

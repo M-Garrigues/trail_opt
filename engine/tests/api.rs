@@ -589,6 +589,76 @@ fn nombres_hors_bornes_refuses_sans_panique() {
     assert!((400..=422).contains(&r.status), "{}", r.body);
 }
 
+/// Bout en bout (bug prod du 08/10 : `candidate.sig: missing or invalid signature`) : la boucle rendue
+/// par `/api/plan`, renvoyée telle quelle (corps JSON comme le front), est acceptée par `POST /api/loops`,
+/// avec ou sans étiquettes de dalles (`ENGINE_TILES_DIR` enrichie : calme, balisé, eau).
+#[test]
+fn partage_de_bout_en_bout() {
+    let pts = [common::MASSY, (45.343, 5.815), (45.757, 4.832)];
+    let key = key();
+    let never = |_: &str| -> Result<bool, String> { panic!("Turnstile ne doit pas être appelé") };
+    let mut done = 0;
+    for p in pts {
+        let Some((_, store)) = common::tiles_opt(&[p]) else {
+            continue;
+        };
+        let qs = format!("lat={}&lon={}&distance_km=10&n_candidates=2", p.0, p.1);
+        let r = handle(&q(&qs), None, true, &store, &key, never);
+        assert_eq!(r.status, 200, "{}", r.body);
+        for i in 0..r.body["candidates"].as_array().unwrap().len() {
+            let request: serde_json::Map<String, Value> =
+                q(&qs).into_iter().map(|(k, v)| (k, json!(v))).collect();
+            let body = json!({"request": request, "data_version": r.body["data_version"],
+                "solver_version": r.body["solver_version"], "effective_start": r.body["effective_start"],
+                "zone": r.body["zone"], "candidate": r.body["candidates"][i], "warnings": r.body["warnings"]});
+            // texte JSON comme le navigateur le renvoie (JSON.stringify de l'objet reçu)
+            let text = serde_json::to_string(&body).unwrap();
+            let v = share::validate(text.as_bytes(), &key);
+            assert!(v.is_ok(), "{p:?} boucle {i} : {:?}", v.err());
+        }
+        done += 1;
+    }
+    assert!(done > 0 || std::env::var_os("CI").is_none(), "aucune dalle");
+}
+
+/// Bug prod du 08/10 : un `-0.0` rendu par `/api/plan` (écart à la cible arrondi) revient du navigateur
+/// en `0` (JSON.stringify(-0)) : la signature doit rester valable.
+#[test]
+fn partage_zero_negatif() {
+    let mut c = cand();
+    c["target_gap"] = json!({"distance_m": -0.0, "dplus_m": 12.0});
+    c["ele"][0] = json!(-0.0);
+    let signed = shared(c);
+    let text = signed.to_string();
+    assert!(text.contains("-0.0"));
+    let browser = text.replace("-0.0", "0");
+    assert!(
+        share::validate(browser.as_bytes(), &key()).is_ok(),
+        "zéro négatif renvoyé en 0"
+    );
+    assert!(share::validate(text.as_bytes(), &key()).is_ok());
+}
+
+/// Bug prod du 08/10 (reproduit sous WebKit) : un paramètre d'avertissement entier écrit `21.0` par le
+/// moteur revient `21` du navigateur ; la signature doit rester valable. Paramètre décimal inchangé.
+#[test]
+fn partage_parametres_entiers() {
+    let mut v = unsigned(cand());
+    v["warnings"] = json!([{"code": "access_round_trip", "params": {"access_m": 21.0}},
+                           {"code": "low_surface_share", "params": {"pct": 48.0}},
+                           {"code": "start_moved", "params": {"distance_m": 31.9}}]);
+    let s: share::SharedLoop = serde_json::from_value(v.clone()).unwrap();
+    v["candidate"]["sig"] = json!(share::signature(&key(), &s));
+    let text = v.to_string();
+    assert!(text.contains("21.0") && text.contains("48.0"));
+    let browser = text.replace("21.0", "21").replace("48.0", "48");
+    assert!(
+        share::validate(browser.as_bytes(), &key()).is_ok(),
+        "entiers réécrits par le navigateur"
+    );
+    assert!(share::validate(text.as_bytes(), &key()).is_ok());
+}
+
 #[test]
 fn partage_ancienne_boucle_sans_trail_frac() {
     let hmac_raw = |v: &Value| {

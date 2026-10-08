@@ -205,7 +205,9 @@ export class TrailMap {
     const b = new maplibregl.LngLatBounds();
     c.lon.forEach((lo, i) => b.extend([lo, c.lat[i]]));
     const cam = m.cameraForBounds(b, { padding, bearing });
-    if (!cam) return;
+    const dur = still ? 0 : duration;
+    // repli : sans cadrage calculable (carte pas encore dimensionnée, rendu logiciel), au moins l'inclinaison
+    if (!cam) { m.easeTo({ pitch: PITCH_3D, bearing, duration: dur }); return; }
     // cadrage en perspective : `cameraForBounds` cadre vu de dessus ; inclinée, la sortie ne remplissait plus
     // qu'un cinquième de l'écran. On essaie la vue inclinée (sans l'afficher), on mesure l'emprise projetée
     // de la sortie dans la zone utile (hors marges) et on corrige le zoom pour qu'elle la remplisse (D57).
@@ -217,6 +219,7 @@ export class TrailMap {
     const step = Math.max(1, Math.floor(c.lat.length / 300));
     for (let k = 0; k < 4; k++) {
       m.jumpTo({ center, zoom, bearing, pitch: PITCH_3D, padding });
+      if (k === 0 && !c.lat.every((_, i) => i % step || Number.isFinite(m.project([c.lon[i], c.lat[i]]).x))) break;
       const ps = c.lat.filter((_, i) => i % step === 0).map((la, i) => m.project([c.lon[i * step], la]));
       const x0 = Math.min(...ps.map((p) => p.x)), x1 = Math.max(...ps.map((p) => p.x));
       const y0 = Math.min(...ps.map((p) => p.y)), y1 = Math.max(...ps.map((p) => p.y));
@@ -226,7 +229,10 @@ export class TrailMap {
       zoom += Math.max(-1, Math.min(1, Math.log2(0.9 * Math.min(w / Math.max(x1 - x0, 1), h / Math.max(y1 - y0, 1)))));
     }
     m.jumpTo(start);
-    m.easeTo({ center, zoom: Math.min(zoom, 17), bearing, pitch: PITCH_3D, padding, duration: still ? 0 : duration });
+    // projection inexploitable (NaN : relief pas encore chargé) : cadrage vu de dessus, incliné
+    const ok = Number.isFinite(zoom) && Number.isFinite(center.lng) && Number.isFinite(center.lat);
+    if (!ok) [center, zoom] = [maplibregl.LngLat.convert(cam.center ?? start.center), cam.zoom ?? start.zoom];
+    m.easeTo({ center, zoom: Math.min(zoom, 17), bearing, pitch: PITCH_3D, padding, duration: dur });
   }
 
   /** Centre sur p ; offsetY > 0 remonte le point (au-dessus de la bottom sheet). */

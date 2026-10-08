@@ -187,15 +187,55 @@ fn bad(detail: impl Into<String>) -> Msg {
 /// Signature (hex) d'une boucle : HMAC-SHA256 de tout sauf `request` et `candidate.sig`,
 /// resérialisé depuis le schéma typé (nombres normalisés : `10494` et `10494.0` signent pareil).
 pub fn signature(key: &hmac::Key, s: &SharedLoop) -> String {
-    hex(hmac::sign(key, &signed_bytes(s)).as_ref())
+    hex(hmac::sign(key, &signed_bytes(s, true)).as_ref())
 }
 
-fn signed_bytes(s: &SharedLoop) -> Vec<u8> {
-    serde_json::to_vec(&json!({
+/// `canon` : forme canonique (signature et vérification) ; sinon octets d'avant le 08/10, encore acceptés à la
+/// vérification pour qu'aucune signature déjà valable ne cesse de l'être.
+fn signed_bytes(s: &SharedLoop, canon: bool) -> Vec<u8> {
+    let mut v = json!({
         "data_version": s.data_version, "solver_version": s.solver_version,
         "effective_start": s.effective_start, "zone": s.zone, "candidate": s.candidate, "warnings": s.warnings,
-    }))
-    .expect("JSON")
+    });
+    if !canon {
+        return serde_json::to_vec(&v).expect("JSON");
+    }
+    canonical(&mut v);
+    // paramètres d'avertissement (valeurs JSON libres) : un nombre entier écrit `21.0` par le moteur revient
+    // `21` du navigateur (JSON.stringify) ; on signe la forme entière. Les champs typés (f64) se relisent
+    // déjà à l'identique. Bug prod du 08/10 : `access_round_trip`, `low_surface_share`, `start_moved`…
+    for w in v["warnings"].as_array_mut().into_iter().flatten() {
+        for p in w["params"]
+            .as_object_mut()
+            .into_iter()
+            .flat_map(|o| o.values_mut())
+        {
+            if let Some(f) = p
+                .as_f64()
+                .filter(|f| p.is_f64() && f.fract() == 0.0 && f.abs() < 9.0e15)
+            {
+                *p = json!(f as i64);
+            }
+        }
+    }
+    serde_json::to_vec(&v).expect("JSON")
+}
+
+/// Forme canonique signée : le zéro négatif devient 0.0. `/api/plan` peut rendre `-0.0` (écart arrondi de
+/// la cible, altitude au niveau de la mer) et le navigateur le renvoie `0` (JSON.stringify(-0)). Ces deux
+/// normalisations ne changent que des boucles qu'aucun navigateur ne pouvait partager : les signatures
+/// des boucles partagées jusqu'ici restent valables.
+fn canonical(v: &mut Value) {
+    match v {
+        Value::Number(n)
+            if n.as_f64() == Some(0.0) && n.as_f64().is_some_and(f64::is_sign_negative) =>
+        {
+            *v = json!(0.0)
+        }
+        Value::Array(a) => a.iter_mut().for_each(canonical),
+        Value::Object(o) => o.values_mut().for_each(canonical),
+        _ => {}
+    }
 }
 
 /// `/api/plan` : pose `sig` sur chaque boucle de la réponse (déjà simplifiée, telle qu'envoyée).
@@ -226,7 +266,11 @@ pub fn validate(body: &[u8], key: &hmac::Key) -> Result<Vec<u8>, Msg> {
         && (0..32)
             .map(|i| u8::from_str_radix(&s.candidate.sig[2 * i..2 * i + 2], 16))
             .collect::<Result<Vec<u8>, _>>()
-            .is_ok_and(|tag| hmac::verify(key, &signed_bytes(&s), &tag).is_ok());
+            .is_ok_and(|tag| {
+                [true, false]
+                    .iter()
+                    .any(|&c| hmac::verify(key, &signed_bytes(&s, c), &tag).is_ok())
+            });
     if !sig_ok {
         return Err(bad("candidate.sig: missing or invalid signature"));
     }

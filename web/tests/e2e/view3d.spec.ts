@@ -14,7 +14,7 @@ test('3D : sélection de boucle, profil, couleur', async ({ page, browserName },
   await expect(page.getByTestId('headline')).toBeVisible({ timeout: 20_000 });
   await page.getByRole('button', { name: isFr() ? 'Vue 3D' : '3D view' }).click();
   await expect(page.getByRole('button', { name: isFr() ? 'Vue 2D' : '2D view' })).toHaveAttribute('aria-pressed', 'true');
-  await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getPitch()), { timeout: 10_000 }).toBeGreaterThan(40);
+  await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getPitch()), { timeout: 30_000 }).toBeGreaterThan(40); // CI sans carte graphique : rendu logiciel lent
   await expect.poll(() => page.evaluate(() => !!(window as any).tmap.map.getTerrain()), { timeout: 30_000 }).toBe(true);
   // la 3D est réellement active (mobile compris)
   expect(await page.evaluate(() => (window as any).tmap.map.getLayer('trail-3d') != null)).toBe(true);
@@ -23,7 +23,7 @@ test('3D : sélection de boucle, profil, couleur', async ({ page, browserName },
   const radios = page.getByRole('radio', { name: /^(Choisir la sortie|Choose run)/ });
   await expect(radios).toHaveCount(4);
   // caméra 3D arrivée (D57 : animation de cadrage) avant de viser un point à l'écran
-  await page.waitForFunction(() => !(window as any).tmap.map.isMoving(), null, { timeout: 15_000 });
+  await page.waitForFunction(() => !(window as any).tmap.map.isMoving(), null, { timeout: 30_000 });
   // la caméra serre la sortie choisie (D57) : on cadre toutes les sorties au-dessus de la feuille pour viser une autre
   await page.evaluate(() => {
     const T = (window as any).tmap, m = T.map, cv = m.getCanvas().getBoundingClientRect();
@@ -79,7 +79,7 @@ test('3D : sélection de boucle, profil, couleur', async ({ page, browserName },
 test('cadrage : variante choisie recadrée, 3D rapprochée', async ({ page }, info) => {
   test.skip(info.project.name !== 'desktop-en');
   test.slow();
-  test.setTimeout(120_000);
+  test.setTimeout(180_000);
   const t = T();
   await setup(page);
   await mockPlan(page, async (route) => { await route.fulfill({ contentType: 'application/json', body: (await import('./helpers')).plan4 }); return true; });
@@ -96,7 +96,7 @@ test('cadrage : variante choisie recadrée, 3D rapprochée', async ({ page }, in
     // étendue : la plus grande des deux dimensions occupées (en 3D la sortie s'étire en profondeur)
     return { inside, width: Math.max((Math.max(...xs) - Math.min(...xs)) / cv.width, (Math.max(...ys) - Math.min(...ys)) / cv.height) };
   }, i);
-  const settle = () => page.waitForFunction(() => !(window as any).tmap.map.isMoving(), null, { timeout: 15_000 });
+  const settle = () => page.waitForFunction(() => !(window as any).tmap.map.isMoving(), null, { timeout: 30_000 });
   const radios = page.getByRole('radio', { name: /^(Choisir la sortie|Choose run)/ });
   await radios.nth(2).click();
   await settle();
@@ -104,11 +104,11 @@ test('cadrage : variante choisie recadrée, 3D rapprochée', async ({ page }, in
   expect(f2.inside).toBeGreaterThan(0.95);
   expect(f2.width).toBeGreaterThan(0.25);
   await page.getByRole('button', { name: isFr() ? 'Vue 3D' : '3D view' }).click();
-  await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getPitch()), { timeout: 15_000 }).toBeGreaterThan(60);
+  await expect.poll(() => page.evaluate(() => (window as any).tmap.map.getPitch()), { timeout: 30_000 }).toBeGreaterThan(60);
   await settle();
   await radios.nth(1).click();
   await settle();
-  await page.screenshot({ path: test.info().outputPath('3d.png') });
+  if (!process.env.CI) await page.screenshot({ path: test.info().outputPath('3d.png') }); // capture lente sans carte graphique
   const f1 = await fill(1);
   console.log('cadrage', JSON.stringify({ f2, f1 }));
   expect(f1.inside).toBeGreaterThan(0.9);
