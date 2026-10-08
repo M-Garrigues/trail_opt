@@ -185,6 +185,8 @@ test('option « Sorties plus fluides » : défaut du mode, puis forcée et mémo
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[1].searchParams.get('smooth')).toBe('true');
   await page.reload();
+  // la sortie affichée revient au rechargement (2026-10-08) : on la ferme pour retrouver les réglages
+  await page.getByRole('button', { name: T().back }).first().click();
   await openOptions(page);
   await expect(page.locator('#smooth')).toHaveValue('on'); // mémorisé
 });

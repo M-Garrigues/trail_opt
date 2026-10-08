@@ -155,6 +155,7 @@ export const en: Dict = {
     gpx: 'Download GPX',
     gpxShare: 'Download GPX',
     view3d: '3D view',
+    lost3d: '3D view stopped (memory)',
     view2d: '2D view',
     centerOn: 'Center the map here',
     centerHint: 'Tap the profile to center the map on that point.',

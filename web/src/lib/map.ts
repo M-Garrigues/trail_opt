@@ -36,7 +36,10 @@ type Handlers = {
   onLoopClick: (idx: number) => void;
   onLoopHover: (idx: number, p: { lat: number; lng: number } | null) => void;
   onStartDrag: (p: { lat: number; lon: number }) => void;
+  /** contexte WebGL perdu (mémoire du téléphone) : l'appli repasse en 2D */
+  onContextLost?: () => void;
 };
+
 
 const empty = (): GeoJSON.FeatureCollection => ({ type: 'FeatureCollection', features: [] });
 
@@ -66,6 +69,9 @@ export class TrailMap {
       dragRotate: false,
       pitchWithRotate: false,
     });
+    // MapLibre tente de lui-même de restaurer le contexte ; l'appli quitte la 3D pour soulager la mémoire
+    this.map.on('webglcontextlost', () => this.h.onContextLost?.());
+    this.trail3d.onError = (e) => { console.warn('3D', e); this.h.onContextLost?.(); };
     this.map.touchZoomRotate.disableRotation();
     // pointeur grossier (mobile) : pincement seulement, pas de boutons zoom
     if (!matchMedia('(pointer: coarse)').matches) this.map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');

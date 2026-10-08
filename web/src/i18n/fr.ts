@@ -158,6 +158,7 @@ export const fr = {
     gpx: 'Télécharger le GPX',
     gpxShare: 'Télécharger le GPX',
     view3d: 'Vue 3D',
+    lost3d: 'Vue 3D interrompue (mémoire)',
     view2d: 'Vue 2D',
     centerOn: 'Centrer la carte ici',
     centerHint: 'Touche le profil pour centrer la carte sur ce point.',

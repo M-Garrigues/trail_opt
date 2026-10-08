@@ -56,13 +56,16 @@ export class Trail3D implements CustomLayerInterface {
   /** couleur, exagération du relief, bascule ligne drapée ↔ ruban, largeur (px CSS), surélévation maximale (m) */
   constructor(public color: string, private exag: number, private onShown: (shown: boolean) => void = () => {}, private widthPx = 5, private lift = 6) {}
 
+  /** erreur dans la 3D (pose du ruban, rendu) : l'appli repasse en 2D au lieu de casser la carte (2026-10-08) */
+  onError: (e: unknown) => void = () => {};
+
   setColor(c: string) { if (c !== this.color) { this.color = c; this.map?.triggerRepaint(); } }
   /** au plus une passe par « arrêt » : les rafales d'événements (dalles, fin de mouvement) sont regroupées */
   private schedule = (e: object) => {
     const src = (e as { sourceId?: string }).sourceId;
     if (src && src !== 'dem') return;
     clearTimeout(this.timer);
-    this.timer = window.setTimeout(() => this.pass(), 80);
+    this.timer = window.setTimeout(() => { try { this.pass(); } catch (err) { this.onError(err); } }, 80);
   };
   onAdd(map: Map, gl: WebGL2RenderingContext) {
     this.map = map;
@@ -154,6 +157,10 @@ export class Trail3D implements CustomLayerInterface {
   }
 
   render(gl: WebGL2RenderingContext, o: CustomRenderMethodInput) {
+    try { this.draw(gl, o); } catch (err) { this.n = 0; this.onError(err); }
+  }
+
+  private draw(gl: WebGL2RenderingContext, o: CustomRenderMethodInput) {
     if (!this.prog || !this.n) return;
     // mainMatrix projette (x, y, z) mercator 0..1 (z conforme : mètres × u_m) ; on y ajoute la translation de l'origine (en float64)
     const M = Array.from(o.defaultProjectionData.mainMatrix as ArrayLike<number>);

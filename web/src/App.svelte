@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, top, has, current, compute, close, cancel, setStart, select, open as openLayer, dismissIntro, openShared, mapUi, level, loadCoverage, debug, addVia, moveVia, viaIdx, dismissNotice, applySuggest, suggestLabel } from './lib/app.svelte';
+  import { app, top, has, current, compute, close, cancel, setStart, select, open as openLayer, dismissIntro, openShared, mapUi, level, loadCoverage, debug, addVia, moveVia, viaIdx, dismissNotice, applySuggest, suggestLabel, saveSession, restoreSession, toast } from './lib/app.svelte';
   import Profile, { profileMarks } from './components/Profile.svelte';
   import { sharedId } from './lib/share';
   import { TrailMap } from './lib/map';
@@ -63,18 +63,33 @@
         app.cursor = c && ll && i === app.sel ? nearestIndex(c.lat, c.lon, ll) : -1;
       },
       onStartDrag: (p) => setStart(p),
+      // contexte WebGL perdu (mémoire) : retour en 2D, la sortie affichée reste
+      onContextLost: () => {
+        if (!view3d) return;
+        view3d = false;
+        void tmap?.set3D(false, current(), padding(), cap);
+        toast(t().detail.lost3d);
+      },
     }, last ?? undefined, t().start.marker);
     if (import.meta.env.DEV) (window as unknown as { tmap: TrailMap }).tmap = tmap;
     const map = tmap;
     void loadCoverage().then((g) => { if (g) void map.setCoverage(g, !last && !sharedId() && !app.start); });
     const sid = sharedId();
     if (sid) { app.intro = false; void openShared(sid); }
+    else {
+      // onglet rechargé (Safari iOS tue l'onglet quand la mémoire manque) : la sortie revient sans recalcul ;
+      // la 3D seulement sur ordinateur (sur téléphone, c'est elle qui a pu épuiser la mémoire)
+      const rs = restoreSession();
+      if (rs) { app.intro = false; if (rs.view3d && !matchMedia('(pointer: coarse)').matches) view3d = true; }
+    }
     const on = () => (app.offline = false), off = () => (app.offline = true);
     addEventListener('online', on);
     addEventListener('offline', off);
     return () => { mq.removeEventListener('change', onMq); removeEventListener('online', on); removeEventListener('offline', off); };
   });
 
+  // résultat courant gardé pour l'onglet (rechargement après manque de mémoire)
+  $effect(() => { if (app.result) saveSession(view3d); });
   // carte ← état
   $effect(() => { tmap?.setStart(app.start); });
   $effect(() => { tmap?.setVia([...app.via], (n) => t().via.marker({ n: String(n) }), moveVia); });

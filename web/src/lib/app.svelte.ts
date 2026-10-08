@@ -148,19 +148,30 @@ export function closeTo(l: Layer): Promise<void> {
   if (i < 0) return Promise.resolve();
   return new Promise((ok) => {
     addEventListener('popstate', () => setTimeout(ok), { once: true });
+    inApp = true;
     history.go(-(app.layers.length - i));
   });
 }
+/** Retour demandé par l'appli (bouton Retour, nouveau calcul) ; sinon c'est le navigateur (geste de retour). */
+let inApp = false;
 const closeAll = () => (app.layers.length ? closeTo(app.layers[0]) : Promise.resolve());
 function popTo(depth: number) {
   while (app.layers.length > depth) {
     const l = app.layers.pop()!;
     onClose[l]?.();
     if (l === 'computing') abort();
-    if (l === 'result') clearResult();
+    // geste « retour » du navigateur (glissé du pavé tactile ou du bord de l'écran, souvent pendant les
+    // mouvements de la carte en 3D) : la sortie se ferme mais reste gardée ; « suivant » la rouvre
+    if (l === 'result') clearResult(!inApp);
   }
 }
-addEventListener('popstate', (e) => popTo((e.state as { depth?: number } | null)?.depth ?? 0));
+addEventListener('popstate', (e) => {
+  const depth = (e.state as { depth?: number } | null)?.depth ?? 0;
+  // « suivant » du navigateur vers la sortie fermée par un geste : on la rouvre depuis l'état gardé
+  if (!inApp && depth > 0 && !app.layers.length && restoreSession(false)) return;
+  popTo(depth);
+  inApp = false;
+});
 
 // ---- couverture (web/public/coverage.geojson, lead data) ----
 let coverage: GeoJSON.Polygon | GeoJSON.MultiPolygon | null = null;
@@ -203,8 +214,9 @@ let ctrl: AbortController | null = null;
 function abort() { ctrl?.abort(); ctrl = null; }
 export function cancel() { if (has('computing')) void closeTo('computing'); }
 
-function clearResult() {
+function clearResult(keepSession = false) {
   app.result = null; app.cands = []; app.sel = 0; app.cursor = -1; app.fromHistory = false; app.noMore = false;
+  if (!keepSession) dropSession();
   if (app.shared) { app.shared = false; history.replaceState(history.state, '', '/' + location.search); }
 }
 
@@ -370,4 +382,55 @@ export async function openShared(id: string) {
     app.error = { code: pe.code, params: pe.params ?? {}, status: pe.status };
     history.replaceState(null, '', '/' + location.search);
   }
+}
+
+// ---- résultat courant gardé pour la session de l'onglet (2026-10-08) ----
+// Safari iOS tue et recharge l'onglet quand la mémoire manque (3D) : on retrouve la sortie sans recalcul,
+// sans Turnstile ni appel serveur. sessionStorage (onglet seulement), effacé par « nouvelle recherche ».
+const SESSION = 'optrail.session';
+/** Au-delà, on retire les autres sorties puis la zone ; trop gros même ainsi : rien n'est gardé. */
+const SESSION_MAX = 2_000_000;
+type Session = { v: 1; result: PlanResponse; sel: number; request: Record<string, string>; start: Start | null;
+  via: Start[]; zone: [number, number][] | null; seed: number; fromHistory: boolean; view3d: boolean };
+
+export function saveSession(view3d: boolean) {
+  const r = app.result;
+  if (!r || app.shared) return; // lien partagé : l'URL /b/<id> suffit à le rouvrir
+  const base = { v: 1 as const, sel: app.sel, request: app.request, start: app.start, via: app.via, zone: app.zone, seed: app.seed,
+    fromHistory: app.fromHistory, view3d };
+  const c = app.cands[app.sel];
+  const tries: Session[] = [
+    { ...base, result: { ...r, candidates: app.cands } },
+    { ...base, sel: 0, result: { ...r, candidates: c ? [c] : [] } },
+    { ...base, sel: 0, result: { ...r, candidates: c ? [c] : [], zone: null } },
+  ];
+  try {
+    for (const t of tries) {
+      const s = JSON.stringify($state.snapshot(t));
+      if (s.length <= SESSION_MAX) { sessionStorage.setItem(SESSION, s); return; }
+    }
+    sessionStorage.removeItem(SESSION);
+  } catch { /* stockage plein ou indisponible : on n'en meurt pas */ }
+}
+
+function dropSession() {
+  try { sessionStorage.removeItem(SESSION); } catch { /* indisponible */ }
+}
+
+/** Restaure le résultat gardé (rechargement de l'onglet ; `push` = false : retour par « suivant », l'entrée
+ *  d'historique existe déjà) ; renvoie la vue 3D à rétablir, ou null sans état. */
+export function restoreSession(push = true): { view3d: boolean } | null {
+  let s: Session | null = null;
+  try { s = JSON.parse(sessionStorage.getItem(SESSION) ?? 'null') as Session | null; } catch { s = null; }
+  if (!s || s.v !== 1 || !s.result?.candidates?.length) return null;
+  app.start = s.start; app.via = s.via ?? []; app.zone = s.zone ?? null; app.seed = s.seed ?? 0;
+  // l'entrée d'historique courante est celle du résultat d'avant le rechargement : elle redevient l'accueil
+  // (profondeur 0), pour que « Retour » ferme bien la sortie restaurée
+  if (push) {
+    history.replaceState({ depth: 0 }, '');
+    open('result');
+  } else app.layers.push('result');
+  app.result = s.result; app.cands = s.result.candidates; app.sel = Math.min(s.sel, s.result.candidates.length - 1);
+  app.request = s.request ?? {}; app.fromHistory = s.fromHistory; app.noMore = false; app.snap = 2;
+  return { view3d: !!s.view3d };
 }

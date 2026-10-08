@@ -33,6 +33,9 @@
 }
 * { box-sizing: border-box; }
 html, body { margin: 0; height: 100%; }
+/* pas de « tirer pour recharger » (Android) ni de glissé de pavé tactile qui fait « page précédente » (Chrome,
+   macOS) pendant les gestes de la carte 3D : c'était la « remise à zéro » signalée le 08/10 */
+html, body { overscroll-behavior: none; }
 body {
   font: 16px/1.4 system-ui, -apple-system, 'Segoe UI', Roboto, sans-serif;
   background: var(--bg);
