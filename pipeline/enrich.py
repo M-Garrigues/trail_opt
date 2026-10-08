@@ -12,6 +12,9 @@ telles quelles), le manifeste reçoit sha256/tailles, `columns` (source et licen
   moteur prend alors la classe de la nature IGN, 2 route compris) : seulement avec `--osm`.
   © les contributeurs d'OpenStreetMap, ODbL. Étiquettes seulement : aucune géométrie OSM n'entre dans
   la dalle, et l'absence d'étiquette est neutre (0 = « rien de connu », jamais une pénalité).
+- `osm_access` (uint8, D66) : 2 = fermé au piéton (`foot=private|no`, ou `access=private|no` sans `foot`
+  autorisant), 1 = restreint (customers, destination…), posé dès 20 m appariés ; le moteur EXCLUT 2 (seule
+  étiquette qui retire une voie, comme la via ferrata de `osm_flags`). Barrières des nœuds non lues (voir contrat).
 
 Chaque valeur ne dépend que du tronçon et de ce qui l'entoure à 300 m au plus : le résultat est le même
 quel que soit l'ordre ou le lot de traitement, pourvu que les dalles voisines soient dans le dossier.
@@ -78,6 +81,7 @@ ROUGH = {**{s: 1 for s in PAVED + ("compacted", "fine_gravel", "dirt", "earth", 
                            "shells", "snow")},
          **{s: 3 for s in ("rock", "stone", "scree", "ice")}}
 F_VIA, F_LIT, F_DRINK, F_VIEW = 1, 2, 4, 8     # bits de osm_flags
+ACC_RESTRICTED, ACC_CLOSED = 1, 2              # osm_access (D66) : restreint, fermé au piéton
 TRAILS = ("path", "track", "bridleway")
 PEDESTRIAN = ("pedestrian", "footway", "steps", "cycleway", "living_street", "corridor")
 NOT_STREET = ("path", "bridleway", "footway", "steps", "cycleway", "corridor", "via_ferrata")   # jamais appariés à une route IGN
@@ -95,6 +99,7 @@ COLUMNS = {
     "osm_visibility": dict(dtype="uint8", range=[0, 6], **OSM),
     "osm_flags": dict(dtype="uint8", range=[0, 15], **OSM),
     "osm_forest": dict(dtype="uint8", range=[0, 15], **OSM),
+    "osm_access": dict(dtype="uint8", range=[0, 2], **OSM),
 }
 ADDED = tuple(COLUMNS)
 # Extrait OSM réduit à ce qui sert : `osmium tags-filter` (ways porteurs de leurs coordonnées ensuite).
@@ -254,17 +259,30 @@ def _code(table, v) -> int:
     return 0 if v is None else table.index(v) if v in table else OTHER
 
 
+def access_level(tags: dict) -> int:
+    """Accès piéton d'un way (D66) : ACC_CLOSED si `foot=private|no`, ou `access=private|no` sans `foot`
+    autorisant (yes, designated, permissive) ; ACC_RESTRICTED si `access=customers|destination|delivery|permit` ;
+    0 sinon (rien de connu, ou piéton admis ; `access=agricultural|forestry` ne vise pas le piéton)."""
+    a, f = tags.get("access"), tags.get("foot")
+    if f in ("yes", "designated", "permissive"):
+        return 0
+    if f in ("private", "no") or a in ("private", "no"):
+        return ACC_CLOSED
+    return ACC_RESTRICTED if a in ("customers", "destination", "delivery", "permit") else 0
+
+
 def _way(tags: dict) -> tuple:
-    """Attributs d'un way : highway, surface (codes), classe, rue ?, roulant, sac, visibilité, bits via/éclairé."""
+    """Attributs d'un way : highway, surface (codes), classe, rue ?, roulant, sac, visibilité, bits via/éclairé, accès."""
     h, s = tags.get("highway"), tags.get("surface")
     rough = SMOOTH.get(tags.get("smoothness"), ROUGH.get(s, 0)) if h else 0
     via = h == "via_ferrata" or "via_ferrata_scale" in tags
     return (_code(HIGHWAYS, h), _code(SURFACES, s) if h else 0, way_class(tags),
             h is not None and h not in NOT_STREET, rough, SAC.get(tags.get("sac_scale"), 0),
-            VISIBILITY.get(tags.get("trail_visibility"), 0), F_VIA * via | F_LIT * (tags.get("lit") == "yes"))
+            VISIBILITY.get(tags.get("trail_visibility"), 0), F_VIA * via | F_LIT * (tags.get("lit") == "yes"),
+            access_level(tags) if h else 0)
 
 
-WAY_KEYS = ("highway", "surface", "cls", "street", "rough", "sac", "vis", "wfl")
+WAY_KEYS = ("highway", "surface", "cls", "street", "rough", "sac", "vis", "wfl", "acc")
 
 
 def read_osm(paths) -> dict:
@@ -426,7 +444,7 @@ def osm_ways(g: dict, W: dict, natures, near) -> dict:
     voisine). Autres natures : 0 (osm_class : NOCLASS)."""
     ns = len(g["n"])
     out = {k: np.zeros(ns, np.uint8) for k in ("osm_highway", "osm_surface", "osm_rough", "osm_sac",
-                                               "osm_visibility", "osm_flags")}
+                                               "osm_visibility", "osm_flags", "osm_access")}
     out["osm_class"] = np.full(ns, NOCLASS, np.uint8)
     if not ns or not len(W["n"]):
         return out
@@ -445,6 +463,7 @@ def osm_ways(g: dict, W: dict, natures, near) -> dict:
         out["osm_class"][sel & (c > 0)] = (c - 1)[sel & (c > 0)]
         out["osm_sac"][sel] = _spot(a["sac"], ow, w, ns)[sel]
         out["osm_visibility"][sel] = _spot(a["vis"], ow, w, ns)[sel]
+        out["osm_access"][sel] = _spot(a["acc"], ow, w, ns)[sel]       # le plus fermé sur ≥ 20 m appariés
         lit = _share(ow, w, a["wfl"] & F_LIT > 0, ns) >= HIKE_FRAC
         out["osm_flags"][sel] |= (F_VIA * (_spot(a["wfl"] & F_VIA, ow, w, ns) > 0) | F_LIT * lit)[sel].astype(np.uint8)
     return out
@@ -564,7 +583,8 @@ def forest(g: dict, R: dict, zone: str) -> np.ndarray:
 
 # ----------------------------------------------------------------------------------------- dossier
 
-STATS = ("path_km", "osm_hike_km", "osm_water_km", "osm_mid_km", "osm_forest_km")
+STATS = ("path_km", "osm_hike_km", "osm_water_km", "osm_mid_km", "osm_forest_km", "osm_closed_path_km",
+         "osm_closed_road_km")
 
 
 def derived_version(v: str) -> str:
@@ -624,7 +644,10 @@ def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> di
             path = np.isin(T["nature"], _codes(natures, PATHS))
             info.update(path_km=round(float(km[path].sum()), 1), osm_hike_km=round(float(km[T["osm_hike"] > 0].sum()), 1),
                         osm_water_km=round(float((km * T["osm_water"]).sum() / 15), 1),
-                        osm_mid_km=round(float(km[T["osm_class"] == 1].sum()), 1))
+                        osm_mid_km=round(float(km[T["osm_class"] == 1].sum()), 1),
+                        osm_closed_path_km=round(float(km[path & (T["osm_access"] == ACC_CLOSED)].sum()), 1),
+                        osm_closed_road_km=round(float(km[np.isin(T["nature"], _codes(natures, ROADS))
+                                                          & (T["osm_access"] == ACC_CLOSED)].sum()), 1))
         log(f"{key} : {info['n']} tronçons, {len(data)} octets, {time.time() - t:.1f} s")
     m["derived_from"] = m.get("derived_from") or m["data_version"]
     m["data_version"] = version or derived_version(m["data_version"])

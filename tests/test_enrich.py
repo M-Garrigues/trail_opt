@@ -187,6 +187,30 @@ def test_osm_ways_points_and_forest(tiles, tmp_path):
     assert check(tiles) == []
 
 
+def test_osm_access(tiles, tmp_path):
+    """D66 : fermé au piéton dès 20 m appariés ; foot=yes l'emporte ; trottoir privé le long d'une route : ignoré."""
+    from pipeline.enrich import ACC_CLOSED, ACC_RESTRICTED, access_level
+    osm = _opl(tmp_path / "a.opl", {
+        61: ("access=private,highway=path", [(1000, 60050), (6000, 60050)]),              # sentier 3 privé
+        62: ("access=private,foot=yes,highway=footway", [(1000, 1010), (6000, 1010)]),    # sentier 1 : piéton admis
+        63: ("highway=tertiary", [(1000, 80030), (5750, 80030)]),                          # route 6 publique…
+        64: ("access=private,highway=service", [(5750, 80030), (6000, 80030)]),           # … sauf ses 25 derniers m
+        65: ("access=destination,highway=residential", [(1000, 90040), (6000, 90040)]),   # route 7 : riverains
+        66: ("access=forestry,highway=track", [(E - 5000, 100040), (E - 100, 100040)]),   # chemin 4 : vise les véhicules
+        67: ("access=private,highway=footway", [(1000, 1340), (6000, 1340)]),             # longe la route 2 : pas une rue
+    }, {})
+    m = enrich(tiles, [osm], log=lambda s: None)
+    a = np.load(tiles / f"{A}.npz")["osm_access"]
+    assert a[SENTIER_LOIN] == ACC_CLOSED and a[PETITE_ROUTE] == ACC_CLOSED and a[DESSERTE] == ACC_RESTRICTED
+    assert a[SENTIER_PRES] == 0 and a[CHEMIN_BORD] == 0 and a[ROUTE] == 0
+    assert m["tiles"][A]["osm_closed_path_km"] == 0.5 and m["tiles"][A]["osm_closed_road_km"] == 0.5
+    assert m["columns"]["osm_access"]["range"] == [0, 2] and check(tiles) == []
+    assert access_level({"highway": "path", "foot": "no"}) == ACC_CLOSED
+    assert access_level({"highway": "service", "access": "no", "foot": "designated"}) == 0
+    assert access_level({"highway": "track", "access": "agricultural"}) == 0
+    assert access_level({"highway": "footway", "access": "private", "foot": "private"}) == ACC_CLOSED
+
+
 def test_derived_version():
     assert derived_version("bdtopo-wfs-2026-10e") == "bdtopo-wfs-2026-10e.1"
     assert derived_version("bdtopo-wfs-2026-10e.9") == "bdtopo-wfs-2026-10e.10"
