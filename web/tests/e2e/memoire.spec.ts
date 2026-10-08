@@ -50,6 +50,8 @@ test('contexte WebGL perdu en 3D : retour en 2D, message, sortie conservée', as
 // Longue suite de mouvements en 3D (rotation, inclinaison, zoom, changement de sortie, survol du profil, 2D/3D) :
 // aucune erreur JavaScript, aucun rechargement, aucune remise à zéro de l'application.
 test('3D : longue suite de mouvements sans erreur ni remise à zéro', async ({ page }, info) => {
+  // ponytail: test d'endurance, local seulement : sans carte graphique (runner CI) la 3D rend une image par seconde
+  test.skip(!!process.env.CI, 'endurance 3D : poste avec carte graphique');
   test.slow();
   test.setTimeout(240_000);
   const t = T();

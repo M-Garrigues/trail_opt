@@ -59,10 +59,12 @@ pub const MAJOR_K_MAX: f64 = 1.0;
 /// Part minimale de la longueur dans le coût de recherche d'une arête (`Problem::search_len`).
 pub const MIN_SEARCH_LEN: f64 = 0.1;
 /// Élégance (D52) : prix d'un demi-tour à un carrefour (voir `turn_cost`). Cible : en unités du score
-/// des faces (`TARGET_SCALE` = 100 % d'erreur) : 1 = 0,1 % d'erreur, ne départage que dans la bande.
-/// Banc du 07/10 (cible, médianes) : 1 → virages aux carrefours −58 % plaine / −47 % montagne, chemin
-/// −2,4 pts ; 2 → −4,9 pts de chemin ; 5 (version douce) → −14 pts.
-pub const TURN_TARGET: f64 = 1.0;
+/// des faces (`TARGET_SCALE` = 100 % d'erreur) : 0,75 = 0,075 % d'erreur, ne départage que dans la
+/// bande. Banc final du 08/10 (cible, smooth 1 contre 0, 21 cas × 2 graines, tiles_v1) : virages > 90°
+/// aux carrefours −41 %, part de chemin −3,5 pts (0,5 : −2,7 pts mais une sortie de moins à Bourg 12 km
+/// en « Tout », D44 ; 1 : −3,4 pts ; prix nul : −3,1 pts : l'essentiel de la perte vient des pétales,
+/// des directions et de la recherche de secours, pas du virage ; écart de l'ordre du bruit des graines).
+pub const TURN_TARGET: f64 = 0.75;
 /// Mode max : prix d'un demi-tour = TURN_MAX_FRAC × densité de D+ de la borne sac à dos × 100 m.
 pub const TURN_MAX_FRAC: f64 = 0.3;
 

@@ -513,7 +513,7 @@ impl<'a> FaceSearch<'a> {
     /// par faces est local : une graine hors tolérance n'est pas rattrapée). Paires présélectionnées
     /// sur une longueur estimée (d(s,A) + 1,3·|AB| + d(B,s)), au plus `PETAL_TRIES` routées ; à défaut de
     /// seconde cible, B = le nœud de 40 à 120° de A qui donne la meilleure longueur estimée. Triées :
-    /// cible = erreur croissante, sinon D+ décroissant ; au plus `k`.
+    /// par score du mode décroissant (`Problem::score`) ; au plus `k`.
     /// Montagne (banc du 08/10, Chartreuse et Bourg 35–50 km) : aucun pétale dans la tolérance. Les
     /// trois tronçons ne partageant ni arête ni carrefour (carrefours uniques), les pétales routés font
     /// 1,4 à 2,6 L (même estimés sur les distances réseau), ou n'ont pas de route ; leur D+ y est 2 fois
@@ -567,17 +567,13 @@ impl<'a> FaceSearch<'a> {
             let Some(ids) = self.route_through(&[a, b]) else {
                 continue;
             };
-            let (l, w) = p.stats(&ids);
+            let l = p.stats(&ids).0;
             if l < LEN.0 * p.l || l > LEN.1 * p.l {
                 continue;
             }
-            let key = if p.target() {
-                let dt = p.d.unwrap_or(1.0);
-                -((l - p.l).abs() / p.l + (w - dt).abs() / dt)
-            } else {
-                w
-            };
-            out.push((key, ids));
+            // classées par le score du mode (cible : erreur, confort et virages ; max : D+ et confort) :
+            // un pétale qui tient la cible sur des routes ne passe plus devant un pétale sur chemins
+            out.push((p.score(&ids).0, ids));
         }
         out.sort_by(|x, y| y.0.total_cmp(&x.0));
         out.into_iter().take(k).map(|x| x.1).collect()

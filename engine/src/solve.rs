@@ -18,6 +18,9 @@ pub const FACES_ONLY_EDGES: usize = 5000;
 const RESTARTS: u64 = 2;
 /// Voir `search` : part des itérations de faces faite sans la prime de type de voie.
 const SURF_FIRST: f64 = 0.6;
+/// Mode cible : écart relatif max (distance ou D+) de la sortie avant la recherche de secours sans
+/// confort (`optimize_on`, D63).
+const TARGET_KEEP: f64 = 0.05;
 
 pub struct Budget {
     /// Itérations du recuit par faces (boucle principale).
@@ -211,7 +214,41 @@ fn optimize_on(p: &Problem, b: &Budget) -> Result<Output, Msg> {
     let mut face_iterations = face_iterations;
     let mut fs = FaceSearch::new(p);
     fs.deadline = b.deadline;
-    let main = route.ok_or_else(|| Msg::error(Code::NoLoopFound, "no initial loop"))?;
+    let mut main = route.ok_or_else(|| Msg::error(Code::NoLoopFound, "no initial loop"))?;
+    // D63 : le confort, fort en cible, ne doit jamais faire rater la cible. Si la sortie s'écarte de
+    // plus de 5 % en distance ou en D+, même recherche sans confort, gardée si elle s'approche plus
+    // de la demande (Bourg 12 km / 500 m, graine 1 : 418 m de D+ avec le confort, 491 m sans).
+    let dist = |x: &[usize]| {
+        let (l, d) = p.stats(x);
+        let dt = p.d.unwrap_or(1.0);
+        ((l - p.l) / p.l).abs().max(((d - dt) / dt).abs())
+    };
+    if p.target() && !p.off.is_empty() && dist(&main) > TARGET_KEEP {
+        let plain = Problem {
+            off: Vec::new(),
+            ..p.clone()
+        };
+        let again: Vec<Found> = (0..restarts)
+            .into_par_iter()
+            .map(|k| {
+                search(
+                    &plain,
+                    b,
+                    b.seed.wrapping_mul(RESTARTS).wrapping_add(k),
+                    use_anneal,
+                )
+            })
+            .collect();
+        face_iterations += again.iter().map(|f| f.3).sum::<u64>();
+        if let Some(x) = again
+            .into_iter()
+            .filter_map(|f| f.0)
+            .min_by(|x, y| dist(x).total_cmp(&dist(y)))
+            && dist(&x) < dist(&main)
+        {
+            main = x;
+        }
+    }
     p.check(&main)
         .map_err(|e| Msg::error(Code::InvariantViolated, e))?;
     let mut alternatives = Vec::new();
