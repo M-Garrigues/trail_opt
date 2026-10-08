@@ -460,3 +460,127 @@ fn plafond_par_ip() {
     let later = t + Duration::from_secs(3600);
     assert!(!l.blocked("a", later) && l.allow("a", later)); // nouvelle fenêtre
 }
+
+#[test]
+fn consommation_forme() {
+    assert_eq!(
+        admin::month_of(admin::parse_day("2026-12-15").unwrap()),
+        (admin::parse_day("2026-12-01").unwrap(), 31)
+    );
+    assert_eq!(
+        admin::month_of(admin::parse_day("2028-02-29").unwrap()).1,
+        29
+    );
+    // 2026-10-08 18:00 UTC : un quart d'octobre écoulé
+    let now = admin::parse_day("2026-10-01").unwrap() as u64 * 86_400 + 669_600;
+    let m = [
+        ("lambda_req", 100.0),
+        ("lambda_gbs", 200_000.0),
+        ("s3_gb", 1.0),
+    ]
+    .into_iter()
+    .collect();
+    let plan = json!({"accountId": "1", "accountPlanType": "PAID", "accountPlanStatus": "ACTIVE",
+                      "accountPlanRemainingCredits": {"amount": 139.98, "unit": "USD"}});
+    let budgets = json!({"Budgets": [{"TimeUnit": "MONTHLY", "BudgetLimit": {"Amount": "50.0"},
+                                      "CalculatedSpend": {"ActualSpend": {"Amount": "0.5"}}}]});
+    let errs = ["cf_req: AccessDenied".to_string()];
+    let u = admin::usage_shape(&m, &plan, &budgets, now, &errs);
+    assert_eq!(
+        (&u["month"], &u["renewal"], &u["elapsed"]),
+        (&json!("2026-10"), &json!("2026-11-01"), &json!(0.25))
+    );
+    let line = |k: &str| {
+        u["lines"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|l| l["key"] == k)
+            .unwrap()
+            .clone()
+    };
+    // compteur : projection = consommé ÷ part écoulée ; payant au-delà du seuil gratuit seulement
+    let gbs = line("lambda_gbs");
+    assert_eq!(
+        (&gbs["used"], &gbs["projected"], &gbs["share"], &gbs["cost"]),
+        (
+            &json!(200_000.0),
+            &json!(800_000.0),
+            &json!(0.5),
+            &json!(0.0)
+        )
+    );
+    assert_eq!(gbs["cost_forecast"], json!(5.33336));
+    // jauge (stockage) : Go-mois = taille × part écoulée, projection = taille actuelle ; S3 sans offre gratuite
+    let s3 = line("s3_gb");
+    assert_eq!(
+        (&s3["now"], &s3["used"], &s3["projected"], &s3["share"]),
+        (&json!(1.0), &json!(0.25), &json!(1.0), &Value::Null)
+    );
+    assert_eq!(
+        (&s3["cost"], &s3["cost_forecast"]),
+        (&json!(0.00575), &json!(0.023))
+    );
+    // source en échec : poste « — », erreur transmise
+    assert!(line("cf_req")["used"].is_null() && line("cf_req")["cost"].is_null());
+    assert_eq!(u["errors"], json!(errs));
+    // reste non ventilé = dépense réelle (Budgets) − postes estimés
+    let other = line("other");
+    assert_eq!(
+        (&other["cost"], &other["cost_forecast"]),
+        (&json!(0.49425), &json!(1.977))
+    );
+    assert_eq!(
+        u["spend"],
+        json!({"actual": 0.5, "forecast": 2.0, "forecast_source": "rythme", "limit": 50.0,
+                                  "steps": [1.0, 5.0, 10.0, 20.0, 50.0], "next_step": 1.0})
+    );
+    assert_eq!(
+        u["plan"],
+        json!({"type": "PAID", "status": "ACTIVE", "credits_usd": 139.98})
+    );
+    // prévision de Budgets préférée quand elle existe ; sources AWS absentes : `null`
+    let mut b2 = budgets.clone();
+    b2["Budgets"][0]["CalculatedSpend"]["ForecastedSpend"] = json!({"Amount": "3.2"});
+    let u = admin::usage_shape(&m, &plan, &b2, now, &[]);
+    assert_eq!(
+        (&u["spend"]["forecast"], &u["spend"]["forecast_source"]),
+        (&json!(3.2), &json!("budgets"))
+    );
+    let u = admin::usage_shape(&m, &Value::Null, &Value::Null, now, &[]);
+    assert!(u["spend"].is_null() && u["plan"].is_null());
+}
+
+#[test]
+fn consommation_cle_et_cache() {
+    let a = Admin::from_key(KEY, false).unwrap().unwrap();
+    let never = || -> Result<(Value, f64), String> { panic!("aucune source sans clé") };
+    let r = admin::handle_usage(&a, Some("mauvaise"), IP, &[], never);
+    assert_eq!(
+        (r.status, &r.body["error"]["code"]),
+        (401, &json!("admin_denied"))
+    );
+    assert_eq!(
+        admin::handle_usage(&a, Some(KEY), IP, &q("x=1"), never).status,
+        400
+    );
+    let r = admin::handle_usage(&a, Some(KEY), IP, &[], || Err(admin::EXPIRED.into()));
+    assert_eq!(
+        (r.status, &r.body["error"]["detail"]),
+        (503, &json!(admin::EXPIRED))
+    );
+    // réponse avec une source en échec : pas gardée ; complète : gardée (USAGE_TTL)
+    let r = admin::handle_usage(&a, Some(KEY), IP, &[], || {
+        Ok((json!({"errors": ["s3_gb: x"]}), 0.0))
+    });
+    assert_eq!(r.status, 200);
+    let r = admin::handle_usage(&a, Some(KEY), IP, &[], || {
+        Ok((json!({"errors": [], "v": 1}), 0.2))
+    });
+    assert_eq!(
+        (&r.body["v"], &r.log["scanned_mb"]),
+        (&json!(1), &json!(0.2))
+    );
+    let r = admin::handle_usage(&a, Some(KEY), IP, &[], never);
+    assert_eq!(r.body["v"], 1);
+}

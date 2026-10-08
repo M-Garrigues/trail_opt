@@ -4,7 +4,7 @@
   import { onMount } from 'svelte';
   import Chart from './Chart.svelte';
   import Heat from './Heat.svelte';
-  import { DASH, DIMS, EVENTS, days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, shares, tiles, type Stats } from './stats';
+  import { DASH, DIMS, EVENTS, days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, qty, shares, tiles, usd, type Stats, type Usage } from './stats';
   import { errorText } from '../i18n/format';
 
   const KEY = 'optrail.admin';
@@ -19,11 +19,27 @@
   let stats = $state<Stats | null>(null);
   let error = $state('');
   let loading = $state(false);
+  let usage = $state<Usage | null>(null);
+  let usageError = $state('');
+
+  // consommation AWS : indépendante de la période (mois en cours), cache serveur de 3 h
+  async function loadUsage() {
+    usageError = '';
+    try {
+      const res = await fetch('/api/admin/usage', { headers: { 'x-admin-key': key } });
+      const body = await res.json().catch(() => null);
+      if (res.ok) usage = body as Usage;
+      else usageError = body?.error?.detail === EXPIRED ? 'Identifiants AWS expirés : aws login --profile optrail' : `Erreur ${res.status}${body?.error?.detail ? ` : ${body.error.detail}` : ''}`;
+    } catch {
+      usageError = 'Serveur injoignable.';
+    }
+  }
 
   async function load() {
     if (!key) return;
     loading = true;
     error = '';
+    if (!usage) void loadUsage();
     try {
       const res = await fetch(`/api/admin/stats?from=${range.from}&to=${range.to}`, { headers: { 'x-admin-key': key } });
       const body = await res.json().catch(() => null);
@@ -95,7 +111,7 @@
         <label>du <input type="date" bind:value={range.from} max={range.to} /></label>
         <label>au <input type="date" bind:value={range.to} min={range.from} /></label>
         <button class="btn small primary" onclick={load} disabled={loading}>{loading ? 'Chargement…' : 'Actualiser'}</button>
-        <button class="btn small link" onclick={() => { sessionStorage.removeItem(KEY); key = ''; stats = null; }}>Oublier la clé</button>
+        <button class="btn small link" onclick={() => { sessionStorage.removeItem(KEY); key = ''; stats = null; usage = null; }}>Oublier la clé</button>
       </nav>
     {/if}
   </header>
@@ -203,6 +219,46 @@
         <Heat starts={stats.starts ?? []} outside={stats.starts_outside ?? []} />
         {#if !stats.starts?.length && !stats.starts_outside?.length}<p class="none">Aucun départ enregistré sur la période (champ absent des anciennes lignes).</p>{/if}
       </div>
+      <div class="card wide" role="region" aria-label="Consommation AWS">
+        <h2>Consommation AWS {#if usage}<small>({usage.month}, renouvellement le {usage.renewal} ; {fmt(usage.elapsed * 100)} % du mois écoulé ; lu à {new Date(usage.fetched_at * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}, gardé 3 h)</small>{/if}</h2>
+        {#if usageError}<p class="error">{usageError}</p>{/if}
+        {#if usage}
+          <div class="tiles usage">
+            <div><span>Dépense du mois</span><b>{usd(usage.spend?.actual)}</b><small>coût brut hors crédits (AWS Budgets)</small></div>
+            <div><span>Prévision fin de mois</span><b>{usd(usage.spend?.forecast)}</b><small>{usage.spend?.forecast_source === 'budgets' ? 'prévision AWS Budgets' : 'au rythme actuel'}</small></div>
+            <div><span>Prochain palier</span><b>{usd(usage.spend?.next_step)}</b><small>paliers {usage.spend?.steps.map((x) => `${x} $`).join(' · ') ?? DASH} : chacun met l’API de calcul en pause (reprise manuelle)</small></div>
+            <div><span>Crédits restants</span><b>{usd(usage.plan?.credits_usd)}</b><small>plan {usage.plan?.type === 'PAID' ? 'payant' : (usage.plan?.type ?? DASH)} : les crédits paient la facture</small></div>
+          </div>
+          <div class="scroll"><table>
+            <thead><tr><th>Service</th><th>Poste</th><th class="n">Consommé ce mois</th><th class="n">Seuil gratuit / mois</th><th class="n">Part du seuil</th><th class="n">Projection fin de mois</th><th class="n">Coût du mois</th><th class="n">Coût prévu</th></tr></thead>
+            <tbody>
+              {#each usage.lines as l}
+                <tr>
+                  <td>{l.service}</td><td>{l.item}{#if l.now != null} <small>({qty(l.now, l.unit === 'Go-mois' ? 'Go' : l.unit)} stockés)</small>{/if}</td>
+                  <td class="n">{qty(l.used, l.unit)}</td>
+                  <td class="n">{l.free == null ? '' : l.free ? qty(l.free, l.unit) : 'aucun'}</td>
+                  <td class="n">{pct(l.share)}</td>
+                  <td class="n">{qty(l.projected, l.unit)}{#if l.projected_share != null} ({pct(l.projected_share)}){/if}</td>
+                  <td class="n">{usd(l.cost)}</td><td class="n">{usd(l.cost_forecast)}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table></div>
+          {#if usage.errors.length}<p class="error">Sources en échec : {usage.errors.join(' ; ')}</p>{/if}
+          <p class="none">
+            Sources, toutes gratuites et en lecture : métriques CloudWatch (requêtes et données CloudFront, journaux reçus, taille des buckets S3),
+            lignes REPORT de la Lambda via Logs Insights (requêtes et durée facturée, démarrages compris), taille des journaux, AWS Budgets
+            (dépense réelle, coût brut hors crédits, et sa prévision quand AWS en donne une) et le plan du compte (crédits restants).
+            Le compte est au plan payant ouvert après juillet 2025 : pas d’offre gratuite de 12 mois (l’API Free Tier ne renvoie aucun poste),
+            seulement les offres « toujours gratuites » (Lambda, CloudFront, CloudWatch Logs) dont les seuils sont rappelés ici ; S3 est payant
+            dès le premier octet. Coûts des postes = consommation au-delà du seuil × prix public eu-north-1 (relevé le 8 octobre 2026) ;
+            « Non ventilé » = dépense réelle − postes estimés (surtout les requêtes S3, non mesurables gratuitement : envoi des dalles, partages).
+            Les 5 Go gratuits de CloudWatch Logs sont communs à l’ingestion, au stockage et à l’analyse. Projection = consommé ÷ part du mois écoulée
+            (stockage : taille actuelle), peu fiable en début de mois. Cost Explorer (détail exact par poste) n’est pas utilisé : 0,01 $ par appel,
+            plus que la facture actuelle.
+          </p>
+        {:else if !usageError}<p class="none">Chargement de la consommation…</p>{/if}
+      </div>
       <div class="card">
         <h2>Pays</h2>
         {#if stats.countries?.length}
@@ -250,6 +306,8 @@
   .tiles span { color: var(--muted); font-size: 0.9rem; }
   .tiles b { font-size: 1.6rem; font-family: var(--font-head); }
   .tiles small { color: var(--muted); }
+  .tiles.usage { grid-template-columns: repeat(4, 1fr); }
+  .scroll { overflow-x: auto; }
   .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
   .card { background: var(--lvl-3); border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
   .card.wide { grid-column: 1 / -1; }
@@ -260,7 +318,7 @@
   .bars .bar span { display: block; height: 12px; border-radius: 3px; background: var(--accent); }
   @media (max-width: 1023px) {
     main { padding: 12px; }
-    .tiles { grid-template-columns: repeat(2, 1fr); }
+    .tiles, .tiles.usage { grid-template-columns: repeat(2, 1fr); }
     .grid { grid-template-columns: 1fr; }
   }
 </style>

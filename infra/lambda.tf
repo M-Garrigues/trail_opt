@@ -95,6 +95,26 @@ resource "aws_iam_role_policy" "api_stats" {
   })
 }
 
+# Admin : GET /api/admin/usage (consommation AWS du mois), lectures gratuites seulement : métriques
+# CloudWatch (Lambda, CloudFront, S3, Logs), taille des journaux, crédits du plan, budget. Les
+# actions cloudwatch:* et freetier:* n'acceptent pas de ressource : « * ». Même liste dans la boundary.
+resource "aws_iam_role_policy" "api_usage" {
+  name = "admin-usage"
+  role = aws_iam_role.api.id
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [
+      {
+        Effect   = "Allow"
+        Action   = ["cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics", "freetier:GetAccountPlanState"]
+        Resource = "*"
+      },
+      { Effect = "Allow", Action = "budgets:ViewBudget", Resource = "arn:aws:budgets::${local.account}:budget/*" },
+      { Effect = "Allow", Action = "logs:DescribeLogGroups", Resource = "arn:aws:logs:eu-north-1:${local.account}:log-group:*" },
+    ]
+  })
+}
+
 # Clé HMAC des boucles (M3, api.md v1.3) : générée par Tofu, gardée dans l'état chiffré (S3,
 # TLS seul), aucun secret GitHub à gérer. Rotation : tofu apply -replace=random_password.loop_signing
 # (seules les boucles calculées et pas encore partagées deviennent impartageables).

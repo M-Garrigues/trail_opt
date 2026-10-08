@@ -311,6 +311,21 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
                 })
             })
         }
+        // consommation AWS du mois (admin, même clé), sources en lecture, cache 3 h
+        ("GET", "/api/admin/usage") if ctx.admin.is_some() => {
+            let given = header(&req, "x-admin-key").map(str::to_string);
+            tokio::task::spawn_blocking(move || {
+                let adm = ctx.admin.as_ref().expect("admin");
+                let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into());
+                let now = SystemTime::now()
+                    .duration_since(SystemTime::UNIX_EPOCH)
+                    .map_or(0, |d| d.as_secs());
+                let who = ip.as_deref().unwrap_or("");
+                admin::handle_usage(adm, given.as_deref(), who, &query, || {
+                    admin::usage(&ctx.log_group, &region, now, admin::aws)
+                })
+            })
+        }
         // CloudFront transmet toutes les méthodes sur /api/loops* et /api/hit (jeu imposé) : 405
         (_, p) => {
             let status = if p.starts_with("/api/loops") || p == "/api/hit" {

@@ -15,10 +15,14 @@
   });
 
   function update() {
-    if (!map?.isStyleLoaded()) return;
-    (map.getSource('starts') as maplibregl.GeoJSONSource | undefined)?.setData(fc(starts));
-    (map.getSource('outside') as maplibregl.GeoJSONSource | undefined)?.setData(fc(outside));
+    // pas `isStyleLoaded()` : faux tant que des tuiles ou la source geojson chargent (juste après
+    // `style.load` notamment), d'où une carte restée vide ; les sources existent dès `style.load`
+    const src = (id: string) => map?.getSource(id) as maplibregl.GeoJSONSource | undefined;
+    if (!map || !src('starts')) return;
+    src('starts')!.setData(fc(starts));
+    src('outside')!.setData(fc(outside));
     const all = [...starts, ...outside];
+    el.dataset.points = String(all.length); // lu par le test e2e
     if (all.length) {
       const b = new maplibregl.LngLatBounds();
       for (const c of all) b.extend([c.lon, c.lat]);

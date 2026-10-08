@@ -204,6 +204,20 @@ data "aws_iam_policy_document" "boundary" {
     actions   = ["logs:GetQueryResults"]
     resources = ["*"]
   }
+  # Admin : consommation AWS du mois (/api/admin/usage), lectures gratuites ; cloudwatch:* et
+  # freetier:* n'acceptent pas de ressource.
+  statement {
+    actions   = ["cloudwatch:GetMetricStatistics", "cloudwatch:ListMetrics", "freetier:GetAccountPlanState"]
+    resources = ["*"]
+  }
+  statement {
+    actions   = ["budgets:ViewBudget"]
+    resources = ["arn:aws:budgets::${local.account}:budget/*"]
+  }
+  statement {
+    actions   = ["logs:DescribeLogGroups"]
+    resources = ["arn:aws:logs:eu-north-1:${local.account}:log-group:*"]
+  }
 }
 
 resource "aws_iam_policy" "boundary" {

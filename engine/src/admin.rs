@@ -521,6 +521,19 @@ pub fn run(
     to: i64,
     group: &str,
     call: impl Fn(&str, &Value) -> Result<Value, String> + Sync,
+    pace: (usize, Duration),
+    deadline: Duration,
+) -> Result<Views, String> {
+    run_qs(&queries(), from, to, group, call, pace, deadline)
+}
+
+/// `run` pour les requêtes `qs` (nom, texte).
+pub fn run_qs(
+    qs: &[(&'static str, String)],
+    from: i64,
+    to: i64,
+    group: &str,
+    call: impl Fn(&str, &Value) -> Result<Value, String> + Sync,
     (batch, pace): (usize, Duration),
     deadline: Duration,
 ) -> Result<Views, String> {
@@ -539,20 +552,17 @@ pub fn run(
         }
         out
     };
-    let starts = queries().map(|(_, q)| {
+    let starts = qs.iter().map(|(_, q)| {
         json!({"logGroupName": group, "startTime": from * 86_400,
                "endTime": to * 86_400 + 86_399, "queryString": q, "limit": 10_000})
     });
     let mut pending = Vec::new();
-    for ((name, _), r) in queries()
-        .into_iter()
-        .zip(calls("StartQuery", starts.into()))
-    {
+    for ((name, _), r) in qs.iter().zip(calls("StartQuery", starts.collect())) {
         let id = r?["queryId"]
             .as_str()
             .ok_or("StartQuery: no queryId")?
             .to_string();
-        pending.push((name, id));
+        pending.push((*name, id));
     }
     let (mut views, mut bytes) = (BTreeMap::new(), 0.0);
     while !pending.is_empty() && t0.elapsed() < deadline {
@@ -591,18 +601,60 @@ pub fn run(
 
 /// Requête de l'API CloudWatch Logs (JSON 1.1) signée SigV4 avec les identifiants du rôle Lambda.
 pub fn logs_api(region: &str, op: &str, body: &Value) -> Result<Value, String> {
+    aws_api("logs", region, op, body)
+}
+
+/// Appel en lecture d'une API AWS JSON (`logs`, `cloudwatch`, `budgets`, `freetier` : ces deux
+/// derniers en `us-east-1`) : AWS CLI du profil en build de développement avec `AWS_PROFILE`,
+/// sinon API signée avec les identifiants du rôle Lambda.
+pub fn aws(service: &str, region: &str, op: &str, body: &Value) -> Result<Value, String> {
+    if cfg!(debug_assertions) && std::env::var_os("AWS_PROFILE").is_some() {
+        aws_cli(service, region, op, body)
+    } else {
+        aws_api(service, region, op, body)
+    }
+}
+
+/// API AWS JSON signée SigV4 (sans SDK).
+pub fn aws_api(service: &str, region: &str, op: &str, body: &Value) -> Result<Value, String> {
     use crate::share::{Creds, amz_date, hex, sigv4};
+    let (sign, host, target, ver) = match service {
+        "logs" => (
+            "logs",
+            format!("logs.{region}.amazonaws.com"),
+            "Logs_20140328",
+            "1.1",
+        ),
+        "cloudwatch" => (
+            "monitoring",
+            format!("monitoring.{region}.amazonaws.com"),
+            "GraniteServiceVersion20100801",
+            "1.0",
+        ),
+        "budgets" => (
+            "budgets",
+            "budgets.amazonaws.com".into(),
+            "AWSBudgetServiceGateway",
+            "1.1",
+        ),
+        "freetier" => (
+            "freetier",
+            format!("freetier.{region}.api.aws"),
+            "AWSFreeTierService",
+            "1.0",
+        ),
+        _ => return Err(format!("unknown service {service}")),
+    };
     let creds = Creds::from_env()?;
-    let host = format!("logs.{region}.amazonaws.com");
     let body = body.to_string();
     let date = amz_date(std::time::SystemTime::now());
     let hash = hex(ring::digest::digest(&ring::digest::SHA256, body.as_bytes()).as_ref());
     let mut headers = vec![
-        ("content-type", "application/x-amz-json-1.1".to_string()),
+        ("content-type", format!("application/x-amz-json-{ver}")),
         ("host", host.clone()),
         ("x-amz-content-sha256", hash),
         ("x-amz-date", date.clone()),
-        ("x-amz-target", format!("Logs_20140328.{op}")),
+        ("x-amz-target", format!("{target}.{op}")),
     ];
     if let Some(t) = &creds.token {
         headers.push(("x-amz-security-token", t.clone()));
@@ -614,7 +666,7 @@ pub fn logs_api(region: &str, op: &str, body: &Value) -> Result<Value, String> {
         &headers,
         &date,
         region,
-        "logs",
+        sign,
         &creds.key_id,
         &creds.secret,
     );
@@ -631,14 +683,14 @@ pub fn logs_api(region: &str, op: &str, body: &Value) -> Result<Value, String> {
         .header("authorization", auth)
         .body(body.into_bytes())
         .map_err(|e| e.to_string())?;
-    let mut resp = agent.run(req).map_err(|e| format!("logs: {e}"))?;
+    let mut resp = agent.run(req).map_err(|e| format!("{service}: {e}"))?;
     let status = resp.status().as_u16();
     let v: Value = resp
         .body_mut()
         .with_config()
         .limit(16 << 20)
         .read_json()
-        .map_err(|e| format!("logs: {e}"))?;
+        .map_err(|e| format!("{service}: {e}"))?;
     match status {
         200 => Ok(v),
         _ if v["__type"]
@@ -647,22 +699,29 @@ pub fn logs_api(region: &str, op: &str, body: &Value) -> Result<Value, String> {
         {
             Err(EXPIRED.into())
         }
-        _ => Err(format!("logs {op}: HTTP {status} {}", v["__type"])),
+        _ => Err(format!("{service} {op}: HTTP {status} {}", v["__type"])),
     }
 }
 
 /// Transport local (build de développement) : AWS CLI avec le profil `AWS_PROFILE`, sans
 /// manipuler d'identifiants ; session expirée → `EXPIRED`.
 pub fn logs_cli(region: &str, op: &str, body: &Value) -> Result<Value, String> {
-    let sub = if op == "StartQuery" {
-        "start-query"
-    } else {
-        "get-query-results"
-    };
+    aws_cli("logs", region, op, body)
+}
+
+/// AWS CLI (`StartQuery` → `aws logs start-query`), même contrat que `aws_api`.
+pub fn aws_cli(service: &str, region: &str, op: &str, body: &Value) -> Result<Value, String> {
+    let mut sub = String::new();
+    for (i, c) in op.chars().enumerate() {
+        if i > 0 && c.is_ascii_uppercase() {
+            sub.push('-');
+        }
+        sub.push(c.to_ascii_lowercase());
+    }
     let out = std::process::Command::new("aws")
         .args([
-            "logs",
-            sub,
+            service,
+            &sub,
             "--region",
             region,
             "--output",
@@ -697,30 +756,12 @@ pub fn handle(
     run_views: impl FnOnce(i64, i64) -> Result<Views, String>,
 ) -> Reply {
     let t0 = Instant::now();
-    let reply = |m: Msg, outcome: &str, range: Option<(i64, i64)>| {
-        let status = http_status(m.code);
-        let body = if status == 400 || m.code == Code::Busy {
-            json!({"error": m})
-        } else {
-            error_body(&m, status)
-        };
-        Reply {
-            status,
-            body,
-            log: log(outcome, range, None, t0),
-        }
-    };
-    if let Err(c) = admin.check(given, who, Instant::now()) {
-        let outcome = if c == Code::AdminLocked {
-            "locked"
-        } else {
-            "denied"
-        };
-        return reply(Msg::error(c, "admin key"), outcome, None);
+    if let Err(r) = gate(admin, given, who, t0) {
+        return r;
     }
     let (from, to) = match parse_range(query, today) {
         Ok(r) => r,
-        Err(m) => return reply(m, "error", None),
+        Err(m) => return fail(m, "error", None, t0),
     };
     match run_views(from, to) {
         Ok((views, mb)) => Reply {
@@ -728,8 +769,35 @@ pub fn handle(
             body: shape(from, to, &views, mb),
             log: log("ok", Some((from, to)), Some(mb), t0),
         },
-        Err(e) => reply(Msg::error(Code::Busy, e), "error", Some((from, to))),
+        Err(e) => fail(Msg::error(Code::Busy, e), "error", Some((from, to)), t0),
     }
+}
+
+/// Réponse d'erreur admin (`detail` gardé : appelant authentifié).
+fn fail(m: Msg, outcome: &str, range: Option<(i64, i64)>, t0: Instant) -> Reply {
+    let status = http_status(m.code);
+    let body = if status == 400 || m.code == Code::Busy {
+        json!({"error": m})
+    } else {
+        error_body(&m, status)
+    };
+    Reply {
+        status,
+        body,
+        log: log(outcome, range, None, t0),
+    }
+}
+
+/// Clé admin (temps constant, essais limités) : `Err(401 | 429)` si refusée.
+fn gate(admin: &Admin, given: Option<&str>, who: &str, t0: Instant) -> Result<(), Reply> {
+    admin.check(given, who, Instant::now()).map_err(|c| {
+        let outcome = if c == Code::AdminLocked {
+            "locked"
+        } else {
+            "denied"
+        };
+        fail(Msg::error(c, "admin key"), outcome, None, t0)
+    })
 }
 
 /// Ligne `{"msg":"admin",…}` (jamais la clé).
@@ -744,4 +812,361 @@ fn log(outcome: &str, range: Option<(i64, i64)>, mb: Option<f64>, t0: Instant) -
         l["scanned_mb"] = json!((mb * 10.0).round() / 10.0);
     }
     l
+}
+
+// ---- Consommation AWS du mois (GET /api/admin/usage) ----
+
+/// Postes suivis : (clé, service, poste, unité, seuil gratuit par mois, prix $ par unité au-delà,
+/// jauge). Prix eu-north-1 (CloudFront : Europe) lus sur l'API Pricing le 2026-10-08 ; seuils =
+/// offre « toujours gratuite » d'AWS (compte au plan payant ouvert après juillet 2025 : pas d'offre
+/// de 12 mois, S3 payé dès le premier octet ; `freetier:GetFreeTierUsage` y répond une liste vide).
+/// Jauge (stockage, Go-mois) : mesurée à l'instant ; consommé = taille × part du mois écoulée.
+/// ponytail: les 5 Go gratuits de CloudWatch Logs sont communs aux 3 postes Logs, comptés ici par
+/// poste (écart nul tant que leur somme reste sous 5 Go).
+pub const POSTES: [(&str, &str, &str, &str, f64, f64, bool); 8] = [
+    (
+        "lambda_req",
+        "Lambda",
+        "Requêtes",
+        "requêtes",
+        1e6,
+        2e-7,
+        false,
+    ),
+    (
+        "lambda_gbs",
+        "Lambda",
+        "Calcul facturé (démarrages compris)",
+        "Go·s",
+        4e5,
+        0.000_013_333_4,
+        false,
+    ),
+    (
+        "cf_req",
+        "CloudFront",
+        "Requêtes HTTPS",
+        "requêtes",
+        1e7,
+        1.2e-6,
+        false,
+    ),
+    (
+        "cf_gb",
+        "CloudFront",
+        "Données sortantes",
+        "Go",
+        1024.0,
+        0.085,
+        false,
+    ),
+    (
+        "logs_in",
+        "CloudWatch Logs",
+        "Ingestion des journaux",
+        "Go",
+        5.0,
+        0.54,
+        false,
+    ),
+    (
+        "logs_scan",
+        "CloudWatch Logs",
+        "Analyse Insights (page admin)",
+        "Go",
+        5.0,
+        0.0054,
+        false,
+    ),
+    (
+        "logs_gb",
+        "CloudWatch Logs",
+        "Stockage des journaux",
+        "Go-mois",
+        5.0,
+        0.028,
+        true,
+    ),
+    (
+        "s3_gb",
+        "S3",
+        "Stockage (dalles, site, état Tofu)",
+        "Go-mois",
+        0.0,
+        0.023,
+        true,
+    ),
+];
+/// Paliers du budget mensuel (infra/variables.tf `budget_usd`) : chacun met l'API en pause.
+pub const BUDGET_STEPS: [f64; 5] = [1.0, 5.0, 10.0, 20.0, 50.0];
+/// Durée du cache de `/api/admin/usage` (par instance).
+pub const USAGE_TTL: Duration = Duration::from_secs(3 * 3600);
+static USAGE: Mutex<Option<(Instant, Value)>> = Mutex::new(None);
+
+/// Premier jour (jours depuis 1970) et nombre de jours du mois du jour `day`.
+pub fn month_of(day: i64) -> (i64, i64) {
+    let s = day_str(day);
+    let first = parse_day(&format!("{}-01", &s[..7])).unwrap_or(day);
+    let (y, m): (i64, i64) = (s[..4].parse().unwrap_or(2000), s[5..7].parse().unwrap_or(1));
+    let next = if m == 12 {
+        format!("{}-01-01", y + 1)
+    } else {
+        format!("{y}-{:02}-01", m + 1)
+    };
+    (first, parse_day(&next).unwrap_or(first + 31) - first)
+}
+
+/// Mise en forme pure : mesures (`m` : clé de `POSTES` → valeur ; absente si la source a échoué),
+/// réponses `GetAccountPlanState` (`plan`) et `DescribeBudgets` (`budgets`), instant `now` (s).
+/// Projection « au rythme actuel » : consommé ÷ part du mois écoulée (jauge : taille actuelle).
+pub fn usage_shape(
+    m: &BTreeMap<&str, f64>,
+    plan: &Value,
+    budgets: &Value,
+    now: u64,
+    errors: &[String],
+) -> Value {
+    let (first, ndays) = month_of(now as i64 / 86_400);
+    let month_s = (ndays * 86_400) as f64;
+    // au moins une heure écoulée : pas de projection infinie le 1er à minuit
+    let frac = ((now as f64 - (first * 86_400) as f64) / month_s).clamp(3600.0 / month_s, 1.0);
+    let r = |x: f64| (x * 1e6).round() / 1e6;
+    let cost = |used: f64, free: f64, price: f64| r((used - free).max(0.0) * price);
+    let mut known = 0.0;
+    let mut lines: Vec<Value> = POSTES
+        .iter()
+        .map(|&(k, service, item, unit, free, price, gauge)| {
+            let Some(&x) = m.get(k) else {
+                return json!({"key": k, "service": service, "item": item, "unit": unit, "free": free, "price": price,
+                              "used": null, "projected": null, "share": null, "cost": null, "cost_forecast": null});
+            };
+            let (used, projected) = if gauge { (x * frac, x) } else { (x, x / frac) };
+            let c = cost(used, free, price);
+            known += c;
+            json!({"key": k, "service": service, "item": item, "unit": unit, "free": free, "price": price,
+                   "now": gauge.then_some(r(x)), "used": r(used), "projected": r(projected),
+                   "share": (free > 0.0).then(|| r(used / free)), "projected_share": (free > 0.0).then(|| r(projected / free)),
+                   "cost": c, "cost_forecast": cost(projected, free, price)})
+        })
+        .collect();
+    let b = budgets["Budgets"]
+        .as_array()
+        .and_then(|v| v.iter().find(|b| b["TimeUnit"] == "MONTHLY"));
+    let amount = |b: &Value, k: &str| {
+        let a = &b["CalculatedSpend"][k]["Amount"];
+        a.as_str()
+            .and_then(|x| x.parse::<f64>().ok())
+            .or(a.as_f64())
+    };
+    let actual = b.and_then(|b| amount(b, "ActualSpend"));
+    let forecast = b.and_then(|b| amount(b, "ForecastedSpend"));
+    // reste non ventilé (requêtes S3, autres services, taxes) : dépense réelle − postes estimés
+    if let Some(a) = actual {
+        let rest = r((a - known).max(0.0));
+        lines.push(json!({"key": "other", "service": "Autres", "item": "Non ventilé : requêtes S3, autres services, taxes",
+                          "unit": null, "used": null, "projected": null, "share": null,
+                          "cost": rest, "cost_forecast": r(rest / frac)}));
+    }
+    let spend = actual.map(|a| {
+        let (f, src) = forecast.map_or((r(a / frac), "rythme"), |f| (f, "budgets"));
+        json!({"actual": a, "forecast": f, "forecast_source": src,
+               "limit": b.and_then(|b| b["BudgetLimit"]["Amount"].as_str().and_then(|x| x.parse::<f64>().ok())),
+               "steps": BUDGET_STEPS, "next_step": BUDGET_STEPS.iter().find(|&&s| s > a)})
+    });
+    let credits = &plan["accountPlanRemainingCredits"]["amount"];
+    json!({
+        "month": &day_str(first)[..7], "renewal": day_str(first + ndays), "elapsed": r(frac), "fetched_at": now,
+        "plan": plan.get("accountPlanType").map(|t| json!({"type": t, "status": plan["accountPlanStatus"], "credits_usd": credits})),
+        "spend": spend, "lines": lines, "errors": errors,
+    })
+}
+
+/// Lit les sources (toutes gratuites, en lecture) et met en forme ; Insights : lignes REPORT de la
+/// Lambda (durée facturée, démarrages compris) et lignes `admin` (Mo analysés par la page).
+/// `call(service, région, opération, corps)`. Identifiants expirés → `Err(EXPIRED)`.
+pub fn usage(
+    group: &str,
+    region: &str,
+    now: u64,
+    call: impl Fn(&str, &str, &str, &Value) -> Result<Value, String> + Sync,
+) -> Result<(Value, f64), String> {
+    let (first, _) = month_of(now as i64 / 86_400);
+    let start = first * 86_400;
+    let mut m: BTreeMap<&str, f64> = BTreeMap::new();
+    let mut errors = Vec::new();
+    let mut put = |k: &'static str, v: Result<f64, String>| match v {
+        Ok(x) => {
+            m.insert(k, x);
+        }
+        Err(e) => errors.push(format!("{k}: {e}")),
+    };
+    let q = [("usage", r#"filter @type = "REPORT" or (msg = "admin" and ispresent(scanned_mb)) | stats count(@billedDuration) as n, sum(@billedDuration * @memorySize) as ms_b, sum(scanned_mb) as mb"#.to_string())];
+    let views = run_qs(
+        &q,
+        first,
+        now as i64 / 86_400,
+        group,
+        |op, b| call("logs", region, op, b),
+        (1, Duration::from_millis(500)),
+        DEADLINE,
+    );
+    let mut scanned = 0.0;
+    match views {
+        Ok((v, mb)) => {
+            scanned = mb;
+            match v.get("usage").cloned().flatten() {
+                Some(rows) => {
+                    let row = rows.first().cloned().unwrap_or_default();
+                    put("lambda_req", Ok(n(&row, "n")));
+                    // ms × (Mo × 10⁶) → Go·s (1 Go = 1 024 Mo)
+                    put("lambda_gbs", Ok(n(&row, "ms_b") / 1.024e12));
+                    put("logs_scan", Ok((n(&row, "mb") + mb) / 1024.0));
+                }
+                None => put("insights", Err("incomplete".into())),
+            }
+        }
+        Err(e) => put("insights", Err(e)),
+    }
+    // métriques CloudWatch (GetMetricStatistics, ListMetrics : dans le million d'appels gratuits)
+    let stat = |reg: &str,
+                ns: &str,
+                name: &str,
+                dims: &Value,
+                gauge: bool|
+     -> Result<f64, String> {
+        let (st, from, period) = if gauge {
+            ("Maximum", now as i64 - 3 * 86_400, 3 * 86_400)
+        } else {
+            ("Sum", start, 86_400)
+        };
+        let r = call(
+            "cloudwatch",
+            reg,
+            "GetMetricStatistics",
+            &json!({"Namespace": ns, "MetricName": name,
+            "Dimensions": dims, "StartTime": from, "EndTime": now, "Period": period, "Statistics": [st]}),
+        )?;
+        let xs = r["Datapoints"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|d| d[st].as_f64());
+        Ok(if gauge {
+            xs.fold(0.0, f64::max)
+        } else {
+            xs.sum()
+        })
+    };
+    // toutes les séries d'une métrique (distributions, buckets) : dimensions par ListMetrics
+    let all = |reg: &str, ns: &str, name: &str, gauge: bool| -> Result<f64, String> {
+        let l = call(
+            "cloudwatch",
+            reg,
+            "ListMetrics",
+            &json!({"Namespace": ns, "MetricName": name}),
+        )?;
+        let mut t = 0.0;
+        for x in l["Metrics"].as_array().into_iter().flatten() {
+            t += stat(reg, ns, name, &x["Dimensions"], gauge)?;
+        }
+        Ok(t)
+    };
+    const GB: f64 = 1_073_741_824.0;
+    put(
+        "cf_req",
+        all("us-east-1", "AWS/CloudFront", "Requests", false),
+    );
+    put(
+        "cf_gb",
+        all("us-east-1", "AWS/CloudFront", "BytesDownloaded", false).map(|b| b / GB),
+    );
+    put(
+        "s3_gb",
+        all(region, "AWS/S3", "BucketSizeBytes", true).map(|b| b / GB),
+    );
+    put(
+        "logs_in",
+        stat(
+            region,
+            "AWS/Logs",
+            "IncomingBytes",
+            &json!([{"Name": "LogGroupName", "Value": group}]),
+            false,
+        )
+        .map(|b| b / GB),
+    );
+    put(
+        "logs_gb",
+        call(
+            "logs",
+            region,
+            "DescribeLogGroups",
+            &json!({"logGroupNamePrefix": "/aws/lambda/optrail-"}),
+        )
+        .map(|r| {
+            r["logGroups"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|g| g["storedBytes"].as_f64())
+                .sum::<f64>()
+                / GB
+        }),
+    );
+    let mut other = |svc: &str, op: &str, body: Value| {
+        call(svc, "us-east-1", op, &body).unwrap_or_else(|e| {
+            errors.push(format!("{svc}: {e}"));
+            Value::Null
+        })
+    };
+    let plan = other("freetier", "GetAccountPlanState", json!({}));
+    let budgets = match plan["accountId"].as_str() {
+        Some(id) => other("budgets", "DescribeBudgets", json!({"AccountId": id})),
+        None => Value::Null,
+    };
+    if errors.iter().any(|e| e.ends_with(EXPIRED)) {
+        return Err(EXPIRED.into());
+    }
+    Ok((usage_shape(&m, &plan, &budgets, now, &errors), scanned))
+}
+
+/// `GET /api/admin/usage` (aucun paramètre) : clé comme `/api/admin/stats`, cache `USAGE_TTL`
+/// (une réponse avec sources en échec n'est pas gardée).
+pub fn handle_usage(
+    admin: &Admin,
+    given: Option<&str>,
+    who: &str,
+    query: &[(String, String)],
+    fetch: impl FnOnce() -> Result<(Value, f64), String>,
+) -> Reply {
+    let t0 = Instant::now();
+    if let Err(r) = gate(admin, given, who, t0) {
+        return r;
+    }
+    if let Some((k, _)) = query.first() {
+        let m = Msg::error(Code::InvalidRequest, format!("unknown parameter {k}"));
+        return fail(m, "error", None, t0);
+    }
+    let cached = USAGE.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    if let Some((_, v)) = cached.filter(|(t, _)| t.elapsed() < USAGE_TTL) {
+        return Reply {
+            status: 200,
+            body: v,
+            log: log("ok", None, None, t0),
+        };
+    }
+    match fetch() {
+        Ok((v, mb)) => {
+            if v["errors"].as_array().is_some_and(Vec::is_empty) {
+                *USAGE.lock().unwrap_or_else(|e| e.into_inner()) =
+                    Some((Instant::now(), v.clone()));
+            }
+            Reply {
+                status: 200,
+                body: v,
+                log: log("ok", None, Some(mb), t0),
+            }
+        }
+        Err(e) => fail(Msg::error(Code::Busy, e), "error", None, t0),
+    }
 }

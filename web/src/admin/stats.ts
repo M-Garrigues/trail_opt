@@ -132,3 +132,33 @@ export function shares<T>(rows: T[] | null, key: (r: T) => string, n: (r: T) => 
   const total = sum(rows.map(n));
   return rows.map((r) => ({ label: label(key(r)), n: n(r), share: total ? n(r) / total : 0 })).sort((a, b) => b.n - a.n);
 }
+
+/** Consommation AWS du mois (GET /api/admin/usage) : postes, seuils gratuits, projection, budget. */
+export type UsageLine = {
+  key: string; service: string; item: string; unit: string | null; free?: number;
+  /** jauge (stockage) : taille actuelle */
+  now?: number | null;
+  used: number | null; projected: number | null; share: number | null; projected_share?: number | null;
+  cost: number | null; cost_forecast: number | null;
+};
+export type Usage = {
+  month: string; renewal: string; elapsed: number; fetched_at: number;
+  plan: { type: string; status: string; credits_usd: number | null } | null;
+  spend: { actual: number; forecast: number; forecast_source: 'budgets' | 'rythme'; limit: number | null; steps: number[]; next_step: number | null } | null;
+  lines: UsageLine[]; errors: string[];
+};
+
+/** Quantité d'un poste ; en Mo sous 1 Go. */
+export function qty(x: number | null | undefined, unit: string | null): string {
+  if (x == null || unit == null) return DASH;
+  if (unit.startsWith('Go') && unit !== 'Go·s' && x < 1) return `${fmt(x * 1024, 1)} ${unit.replace('Go', 'Mo')}`;
+  return `${fmt(x, x < 10 && !Number.isInteger(x) ? 1 : 0)} ${unit}`;
+}
+
+/** Montant en dollars : 3 décimales sous 1 $. */
+export function usd(x: number | null | undefined): string {
+  if (x == null || !Number.isFinite(x)) return DASH;
+  if (x === 0) return '0 $';
+  if (x < 0.001) return '< 0,001 $';
+  return `${fmt(x, x < 1 ? 3 : 2)} $`;
+}

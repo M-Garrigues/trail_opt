@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, shares, tiles, type Stats } from '../../src/admin/stats';
+import { days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, qty, shares, tiles, usd, type Stats } from '../../src/admin/stats';
 import { eventBody, hitBody, shouldSend, type HitEnv } from '../../src/lib/hit';
 import fixture from '../fixtures/admin-stats.json';
 
@@ -45,6 +45,14 @@ describe('page admin : actions (D59)', () => {
     expect(keyLabel('surface', '-')).toBe('—');
     expect(keyLabel('goal', 'target')).toBe('Cible');
     expect(s.action_rates!.rank[0].share_rate).toBeCloseTo(1 / 3, 2);
+  });
+});
+
+describe('page admin : consommation AWS', () => {
+  it('quantités (Mo sous 1 Go) et montants', () => {
+    expect([qty(0.0305, 'Go'), qty(0.27, 'Go-mois'), qty(749.35, 'Go·s'), qty(1898, 'requêtes'), qty(1024, 'Go'), qty(null, 'Go')])
+      .toEqual(['31,2 Mo', '276,5 Mo-mois', '749 Go·s', '1\u202f898 requêtes', '1\u202f024 Go', '—']);
+    expect([usd(0), usd(0.0004), usd(0.021), usd(5.33336), usd(null)]).toEqual(['0 $', '< 0,001 $', '0,021 $', '5,33 $', '—']);
   });
 });
 

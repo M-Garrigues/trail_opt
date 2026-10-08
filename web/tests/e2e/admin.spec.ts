@@ -3,6 +3,8 @@ import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 
 const stats = readFileSync(new URL('../fixtures/admin-stats.json', import.meta.url), 'utf8');
+// réponse réelle de /api/admin/usage (sources AWS en lecture, 2026-10-08)
+const usage = readFileSync(new URL('../fixtures/admin-usage.json', import.meta.url), 'utf8');
 
 test.beforeEach(({}, info) => test.skip(info.project.name !== 'desktop-en', 'page pensée pour ordinateur'));
 
@@ -14,6 +16,7 @@ test('clé, refus, rendu des vues, noindex', async ({ page }) => {
     if (k !== 'bonne') return route.fulfill({ status: 401, contentType: 'application/json', body: '{"error":{"code":"admin_denied","params":{}}}' });
     await route.fulfill({ contentType: 'application/json', body: stats });
   });
+  await page.route('**/api/admin/usage', (route) => route.fulfill({ contentType: 'application/json', body: usage }));
   let hits = 0;
   await page.route('**/api/hit', (route) => { hits++; return route.fulfill({ status: 204 }); });
   await page.goto('/admin');
@@ -46,6 +49,16 @@ test('clé, refus, rendu des vues, noindex', async ({ page }) => {
   await expect(page.getByRole('cell', { name: '—' }).first()).toBeVisible(); // type de voie absent (journal v1)
   await expect(page.getByRole('cell', { name: 'google.com' })).toBeVisible();
   await expect(page.locator('.maplibregl-canvas')).toBeVisible();
+  // départs de la fixture (2 cellules + 1 hors couverture) posés sur la carte (bug : jamais posés)
+  await expect(page.getByRole('img', { name: 'Carte de densité des départs' })).toHaveAttribute('data-points', '3');
+  // consommation AWS : postes, seuil gratuit, projection, dépense (Budgets), crédits, reste non ventilé
+  const aws = page.getByRole('region', { name: 'Consommation AWS' });
+  await expect(aws.getByRole('row', { name: /Calcul facturé/ })).toContainText('400\u202f000 Go·s');
+  await expect(aws).toContainText('0,021 $');
+  await expect(aws).toContainText('0,088 $');
+  await expect(aws).toContainText('139,98 $');
+  await expect(aws.getByRole('row', { name: /Non ventilé/ })).toContainText('0,020 $');
+  await expect(aws.getByRole('row', { name: /Stockage \(dalles/ })).toContainText('aucun');
   // clé gardée pour la session : rechargement sans nouvelle saisie ; aucune mesure d'audience sur /admin
   await page.reload();
   await expect(page.getByRole('region', { name: 'Chiffres clés' })).toBeVisible();
