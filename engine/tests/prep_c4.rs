@@ -725,6 +725,75 @@ fn via_ferrata_never_in_network() {
     }
 }
 
+/// D66 : un accès interdit au piéton (`osm_access` = 2) n'entre jamais dans le réseau, quel que soit
+/// le type de voie ; inconnu (0) ou restreint (1) restent.
+#[test]
+fn closed_access_never_in_network() {
+    for (acc, kept) in [(0u8, true), (1, true), (2, false)] {
+        let mut t = Troncons::new();
+        t.push(
+            1,
+            &[[0, 0], [100, 0]],
+            |_, _| 0.0,
+            code("Sentier"),
+            6,
+            OK,
+            &[],
+        );
+        t.osm_access[0] = acc;
+        assert_eq!(!keep_mask(&t, &natures()).is_empty(), kept, "accès {acc}");
+    }
+    for surface in ["trail", "any"] {
+        let mut w = World::new();
+        w.square(0.0, 0.0, 400.0);
+        w.t.osm_access[0] = 2;
+        let r = w.run(json!({"distance_km": 1.6, "surface": surface}), false);
+        assert!(r.is_err(), "{surface}");
+    }
+}
+
+/// D66 : seule exception, l'aller-retour d'accès d'un départ cliqué dans un lieu privé ; un départ
+/// public ne passe jamais par un accès interdit pour rejoindre le réseau.
+#[test]
+fn closed_access_only_to_leave_a_private_start() {
+    let road = |w: &mut World, a: f64, b: f64| {
+        w.line_full(
+            &[[a, 0.0], [(a + b) / 2.0, 0.0], [b, 0.0]],
+            "Route à 1 chaussée",
+            2,
+            OK,
+            &[],
+        );
+        let k = w.t.len() - 1;
+        w.t.osm_access[k] = 2;
+    };
+    // départ sur la route privée : aller-retour de 600 m, point cliqué gardé
+    let mut w = World::new();
+    w.square(600.0, 0.0, 375.0);
+    road(&mut w, 0.0, 600.0);
+    let out = w.run(json!({"distance_km": 2.7}), false).unwrap();
+    assert_eq!(out["effective_start"]["kind"], "access");
+    let a = out["effective_start"]["access_m"].as_f64().unwrap();
+    assert!((595.0..=605.0).contains(&a), "{a}");
+    check_track(&out["candidates"][0]);
+    // départ sur une route publique que seul un accès interdit relie au réseau : jamais d'aller-retour
+    // par l'accès interdit (ici, sans autre voie, aucune sortie)
+    let mut w = World::new();
+    w.square(600.0, 0.0, 375.0);
+    w.line_full(
+        &[[0.0, 0.0], [150.0, 0.0], [300.0, 0.0]],
+        "Route à 1 chaussée",
+        2,
+        OK,
+        &[],
+    );
+    road(&mut w, 300.0, 600.0);
+    match w.run(json!({"distance_km": 2.7}), false) {
+        Ok(out) => assert!(out["effective_start"]["access_m"].is_null()),
+        Err(e) => assert!(!format!("{e:?}").contains("access_m"), "{e:?}"),
+    }
+}
+
 /// Étiquettes OSM des dalles (tiles.md) : `osm_class` l'emporte sur la nature IGN, `osm_surface`
 /// (déjà traduit en `SURF_*` au chargement) sur le revêtement IGN ; bois revêtu sur un pont seulement.
 #[test]

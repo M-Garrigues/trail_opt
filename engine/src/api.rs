@@ -24,6 +24,8 @@ pub const DEFAULT_GRADE_PCT: f64 = 60.0;
 pub const TARGET_DPLUS_M: (f64, f64) = (10.0, 5000.0);
 /// Simplification Douglas–Peucker en plan (m).
 pub const SIMPLIFY_M: f64 = 1.0;
+/// Tolérance d'altitude de la simplification (m, D67) : un point qui s'écarte davantage du segment simplifié est gardé.
+pub const SIMPLIFY_Z_M: f64 = 1.0;
 const KNOWN: [&str; 17] = [
     "lat",
     "lon",
@@ -243,7 +245,7 @@ pub fn covered(store: &TileStore, lat: f64, lon: f64) -> bool {
     store.tile_at(lat, lon).is_some()
 }
 
-/// Douglas–Peucker en plan (`eps` m) d'une boucle de la réponse : `lat`, `lon`, `ele`, `dist`
+/// Douglas–Peucker (`eps` m en plan, `SIMPLIFY_Z_M` en altitude, D67) d'une boucle de la réponse : `lat`, `lon`, `ele`, `dist`
 /// gardent les mêmes indices ; longueur, D+ et `climbs` restent ceux du profil complet.
 pub fn simplify(cand: &mut Value, eps: f64) {
     let col = |k: &str| -> Vec<f64> {
@@ -251,11 +253,14 @@ pub fn simplify(cand: &mut Value, eps: f64) {
             .as_array()
             .map_or(Vec::new(), |a| a.iter().filter_map(Value::as_f64).collect())
     };
-    let (lat, lon) = (col("lat"), col("lon"));
+    let (lat, lon, ele, along) = (col("lat"), col("lon"), col("ele"), col("dist"));
     let n = lat.len();
     if n < 3 || lon.len() != n {
         return;
     }
+    // D67 : altitude comprise (sinon toute bosse sur une ligne droite disparaît : 399 → 374 m de D+ brut sur la
+    // sortie du fondateur) ; écart d'altitude à l'interpolation selon la distance parcourue, toléré à SIMPLIFY_Z_M
+    let with_z = ele.len() == n && along.len() == n;
     // repère local équirectangulaire (erreur négligeable à l'échelle d'une boucle)
     let k = lat[0].to_radians().cos();
     let xy: Vec<[f64; 2]> = (0..n)
@@ -281,10 +286,23 @@ pub fn simplify(cand: &mut Value, eps: f64) {
             };
             (r[0] - p[0] - t * dx).hypot(r[1] - p[1] - t * dy)
         };
+        let dz = |i: usize| {
+            if !with_z {
+                return 0.0;
+            }
+            let span = along[b] - along[a];
+            let t = if span > 0.0 {
+                (along[i] - along[a]) / span
+            } else {
+                0.0
+            };
+            (ele[i] - (ele[a] + t * (ele[b] - ele[a]))).abs()
+        };
+        // écart normalisé : au-delà de 1, le point est gardé (plan > eps ou altitude > SIMPLIFY_Z_M)
         let far = (a + 1..b)
-            .map(|i| (dist(xy[i]), i))
+            .map(|i| ((dist(xy[i]) / eps).max(dz(i) / SIMPLIFY_Z_M), i))
             .max_by(|x, y| x.0.total_cmp(&y.0));
-        if let Some((_, i)) = far.filter(|f| f.0 > eps) {
+        if let Some((_, i)) = far.filter(|f| f.0 > 1.0) {
             keep[i] = true;
             stack.push((a, i));
             stack.push((i, b));

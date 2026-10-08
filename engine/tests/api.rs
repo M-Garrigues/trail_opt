@@ -163,6 +163,33 @@ fn douglas_peucker() {
     assert_eq!(c["dist"][4], json!(100));
 }
 
+/// D67 : une bosse sur une ligne droite (en plan) n'est plus effacée : son sommet reste dès qu'il
+/// s'écarte de plus de 1 m du segment simplifié, une ondulation de 0,5 m disparaît.
+#[test]
+fn douglas_peucker_garde_le_relief() {
+    let n = 101;
+    let lat: Vec<f64> = (0..n).map(|i| 48.7 + 1e-5 * i as f64).collect();
+    let ele: Vec<f64> = (0..n)
+        .map(|i| match i {
+            50 => 103.0,
+            20 => 100.5,
+            _ => 100.0,
+        })
+        .collect();
+    let mut c =
+        json!({"lat": lat, "lon": vec![2.27; n], "ele": ele, "dist": (0..n).collect::<Vec<_>>()});
+    simplify(&mut c, 1.0);
+    let e: Vec<f64> = c["ele"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|v| v.as_f64().unwrap())
+        .collect();
+    assert!(e.contains(&103.0), "{e:?}");
+    assert!(!e.contains(&100.5), "{e:?}");
+    assert_eq!(e.len(), 5); // extrémités, sommet, ses deux voisins
+}
+
 #[test]
 fn turnstile_local_et_detail() {
     let never =

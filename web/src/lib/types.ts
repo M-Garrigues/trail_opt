@@ -26,6 +26,8 @@ export type Candidate = {
   sig?: string;
   /** api.md v1.5 : points de passage passés (ordre de passage), `dist_m` = abscisse sur la boucle */
   via?: { n: number; lat: number; lon: number; snap_m: number; dist_m: number }[];
+  /** api.md v1.5 : étapes départ → points → arrivée, D+ du moteur (D67) */
+  legs?: { from: number; to: number; length_m: number; dplus_m: number; dminus_m: number }[];
   /** api.md v1.5 : cols et sommets traversés ; `ele_m` approchée (peut être null) ; `lat`/`lon` = position du repère */
   landmarks?: { kind: 'col' | 'summit'; name: string; ele_m: number | null; dist_m: number; lat: number; lon: number }[];
 };

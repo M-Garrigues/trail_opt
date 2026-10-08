@@ -94,13 +94,16 @@ export function parseLatLon(s: string): { lat: number; lon: number } | null {
   return Math.abs(lat) <= 90 && Math.abs(lon) <= 180 ? { lat, lon } : null;
 }
 
-/** D+ d'un tronçon [a, b] par hystérésis h (comme le moteur, api.md : 5 m). */
-export function dplusBetween(ele: number[], a: number, b: number, h = 5): number {
-  let up = 0, ref = ele[a], climbing = false;
+/** D+ d'un tronçon [a, b] par hystérésis h, port de `prep::updown_hyst` du moteur (D67 : 3 m). Repli seulement :
+ *  le moteur rend `legs` (soldés par arête, sur le profil complet). */
+export function dplusBetween(ele: number[], a: number, b: number, h = 3): number {
+  let up = 0, r = ele[a], dir = 0; // 1 montée, −1 descente, 0 sens pas encore établi
   for (let i = a + 1; i <= b; i++) {
-    const e = ele[i];
-    if (climbing ? e > ref : e - ref >= h) { up += e - ref; ref = e; climbing = true; }
-    else if (climbing ? ref - e >= h : e < ref) { ref = e; climbing = false; }
+    const x = ele[i];
+    if (dir > 0 && x > r) { up += x - r; r = x; }
+    else if (dir < 0 && x < r) r = x;
+    else if (x - r >= h) { up += x - r; r = x; dir = 1; }
+    else if (r - x >= h) { r = x; dir = -1; }
   }
   return up;
 }

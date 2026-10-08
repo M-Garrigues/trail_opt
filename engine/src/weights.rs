@@ -320,6 +320,8 @@ pub fn compute(
             "non_praticable"
         } else if fer(i) {
             "via_ferrata"
+        } else if t.osm_access[i] == plan::ACCESS_CLOSED {
+            "acces_interdit"
         } else if !TRAIL_NATURES.contains(&nat) && !ROAD_NATURES.contains(&nat) {
             "nature_exclue"
         } else {

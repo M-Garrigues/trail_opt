@@ -25,3 +25,14 @@ describe('symboles des repères du profil (retour du fondateur, 2026-10-07)', ()
     expect(nearestMark([], 10)).toBe(-1);
   });
 });
+
+import { dplusBetween } from '../../src/lib/geo';
+
+describe('D+ des étapes (D67 : hystérésis de 3 m, comme le moteur)', () => {
+  it('compte une montée de 3 m, ignore les oscillations de moins de 3 m', () => {
+    expect(dplusBetween([100, 103, 101, 104], 0, 3)).toBe(4);
+    expect(dplusBetween([100, 102, 100, 102, 100], 0, 4)).toBe(0);
+    // sens pas encore établi : un creux de 1 m au départ ne sert pas de référence (comme `updown_hyst`)
+    expect(dplusBetween([100, 99, 101.5], 0, 2)).toBe(0);
+  });
+});

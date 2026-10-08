@@ -391,8 +391,19 @@ pub fn check_via(r: &Request) -> Result<(), Msg> {
 
 /// Codes de nature (manifeste) → tronçons gardés : toutes les voies praticables à pied (port de
 /// `ign.keep_mask`, type « all »), quel que soit le type de voie préféré. Exclus : non praticables
-/// (privé, ayants droit, hors service), « Type autoroutier », « Bac ou liaison maritime », nature inconnue.
+/// (privé, ayants droit, hors service), « Type autoroutier », « Bac ou liaison maritime », nature inconnue,
+/// via ferrata, accès interdit au piéton (D66, `osm_access` = 2).
 pub fn keep_mask(t: &Troncons, natures: &[String]) -> Vec<usize> {
+    let mut sel = walkable(t, natures);
+    sel.retain(|&i| t.osm_access[i] != ACCESS_CLOSED);
+    sel
+}
+
+/// `osm_access` (tiles.md, D66) : fermé au piéton, exclu du réseau dans tous les modes.
+pub const ACCESS_CLOSED: u8 = 2;
+
+/// `keep_mask` accès interdits compris (aller-retour d'un départ cliqué dans un lieu privé).
+fn walkable(t: &Troncons, natures: &[String]) -> Vec<usize> {
     let kept = |n: u8| {
         natures.get(n as usize).is_some_and(|x| {
             TRAIL_NATURES.contains(&x.as_str()) || ROAD_NATURES.contains(&x.as_str())
@@ -590,6 +601,8 @@ pub struct Access<'a> {
     net: Net<'a>,
     ids: Vec<usize>,
     s0: usize,
+    /// D66 : départ sur un accès interdit, qui peut alors servir à en sortir.
+    private: bool,
     snap0: f64,
     dist: Vec<f64>,
     prev: Vec<Option<(usize, usize)>>,
@@ -600,22 +613,26 @@ impl<'a> Access<'a> {
         t: &'a Troncons,
         frame: Frame,
         sel: &[usize],
+        closed: &[usize],
         cls_t: &[u8],
         region: &Region,
     ) -> Option<Access<'a>> {
         let mut net = Net::new(t, frame);
         net.cls_t = cls_t.to_vec();
-        let mut ids = net.build(sel, region);
+        let mut ids = net.build(&[sel, closed].concat(), region);
+        let (_, r, pi, _) = net.locate(&ids, [0.0, 0.0])?;
+        let private = t.osm_access[net.edges[ids[r]].pieces[pi].t as usize] == ACCESS_CLOSED;
         let (s0, snap0, _) = net.insert_start(&mut ids, [0.0, 0.0])?;
         if snap0 > ACCESS_MAX_START_M {
             return None;
         }
         let adj = prep::Adj::new(&net, &ids);
-        let (dist, prev) = prep::shortest(&adj, |e| net.edges[e].len, s0, None);
+        let (dist, prev) = prep::shortest(&adj, |e| access_cost(&net, e, private), s0, None);
         Some(Access {
             net,
             ids,
             s0,
+            private,
             snap0,
             dist,
             prev,
@@ -654,7 +671,13 @@ impl<'a> Access<'a> {
                 return None;
             }
             let adj = prep::Adj::new(&self.net, &ids);
-            let (dist, prev) = prep::shortest(&adj, |e| self.net.edges[e].len, self.s0, Some(t));
+            let private = self.private;
+            let (dist, prev) = prep::shortest(
+                &adj,
+                |e| access_cost(&self.net, e, private),
+                self.s0,
+                Some(t),
+            );
             if t == self.s0 || !dist[t].is_finite() {
                 return None;
             }
@@ -667,7 +690,11 @@ impl<'a> Access<'a> {
             add(&mut cls, &self.net.edges[e].cls, 1.0);
             add(&mut lab, &self.net.edges[e].lab, 1.0);
         }
-        let updown = z.windows(2).map(|w| (w[1] - w[0]).abs()).sum();
+        // D67 : somme des arêtes (hystérésis soldée par arête), comme le D+ de la boucle
+        let updown = path
+            .iter()
+            .map(|&(e, _, _)| 2.0 * self.net.edges[e].w)
+            .sum();
         Some(AccessPath {
             length,
             cls,
@@ -677,6 +704,24 @@ impl<'a> Access<'a> {
             updown,
             snap: self.snap0,
         })
+    }
+}
+
+/// Coût d'une arête du réseau d'accès : sa longueur ; infranchissable si elle passe par un accès
+/// interdit et que le départ n'est pas lui-même dans un lieu privé (D66).
+// ponytail: un départ privé ouvre tous les accès interdits de la zone au chemin d'accès (le plus
+// court sort en pratique du lieu) ; restreindre au lieu du départ si un cas terrain le demande.
+fn access_cost(net: &Net, e: usize, private: bool) -> f64 {
+    let ed = &net.edges[e];
+    let closed = || {
+        ed.pieces
+            .iter()
+            .any(|p| net.t.osm_access[p.t as usize] == ACCESS_CLOSED)
+    };
+    if !private && closed() {
+        f64::INFINITY
+    } else {
+        ed.len
     }
 }
 
@@ -1045,10 +1090,34 @@ pub struct Track {
     pub z: Vec<f64>,
     pub length: f64,
     pub dplus: f64,
+    /// D67 : D+ recalculé arête par arête sur le profil rendu (`prep::updown_hyst`, dans le sens de
+    /// parcours) : doit égaler `dplus` (Σ w), contrôle `profile_mismatch`.
+    pub dplus_profile: f64,
+    /// D+ cumulé à chaque point de `z` (`cumulative_up`) : étapes additives (Σ = `dplus`).
+    pub cup: Vec<f64>,
     /// Longueur par classe de voie, étiquettes (accès compris).
     pub cls: [f64; N_CLS],
     pub lab: [f64; N_LAB],
     pub feasible: bool,
+}
+
+/// D+ cumulé le long du profil : la montée de chaque segment (arête, aller ou retour d'accès) est
+/// répartie sur ses points au prorata des montées brutes (linéairement s'il n'y en a pas), de sorte
+/// que la valeur aux bouts de segment est la somme exacte des montées des arêtes (D67).
+fn cumulative_up(z: &[f64], segs: &[(usize, usize, f64)]) -> Vec<f64> {
+    let mut c = vec![0.0; z.len()];
+    for &(i, j, up) in segs {
+        let raw: f64 = (i..j).map(|k| (z[k + 1] - z[k]).max(0.0)).sum();
+        for k in i..j {
+            let inc = if raw > 0.0 {
+                up * (z[k + 1] - z[k]).max(0.0) / raw
+            } else {
+                up / (j - i) as f64
+            };
+            c[k + 1] = c[k] + inc;
+        }
+    }
+    c
 }
 
 /// Port de `assemble` : la boucle, précédée et suivie de l'aller-retour d'accès. Préférence de
@@ -1077,6 +1146,22 @@ fn assemble(
         })
         .collect();
     let (mut xy, mut z) = route_geometry(net, &arena_steps);
+    // contrôle D67 : montée de chaque arête dans le sens de parcours, avec la même hystérésis
+    // (boucle fermée : Σ montées = Σ w, quel que soit le sens)
+    // segments (premier point, dernier point, montée) du profil, un par arête, pour le D+ cumulé
+    // (étapes, contrôle) : montée dans le sens de parcours = w + Δz / 2 (`prep::hyst_w`)
+    let mut segs: Vec<(usize, usize, f64)> = Vec::new();
+    let mut at = 0;
+    for &(e, a, _) in &arena_steps {
+        let (_, mut ez) = net.edge_points(e);
+        if net.edges[e].u != net.edges[e].v && a != net.edges[e].u {
+            ez.reverse();
+        }
+        let up = prep::hyst_w(&ez) + (ez[ez.len() - 1] - ez[0]) / 2.0;
+        segs.push((at, at + ez.len() - 1, up));
+        at += ez.len() - 1;
+    }
+    let mut dplus_profile: f64 = segs.iter().map(|s| s.2).sum();
     if gamma != 0 {
         let a = gbar(&xy, &z);
         xy.reverse();
@@ -1085,6 +1170,14 @@ fn assemble(
         if (gamma > 0) == (a >= b) {
             xy.reverse();
             z.reverse();
+        } else {
+            // parcours inversé : montée de chaque arête = w − Δz / 2 = montée − Δz
+            let n = z.len() - 1;
+            segs = segs
+                .iter()
+                .rev()
+                .map(|&(i, j, up)| (n - j, n - i, up - (z[n - j] - z[n - i])))
+                .collect();
         }
     }
     let (mut length, mut dplus) = p.stats(loop_ids);
@@ -1113,14 +1206,25 @@ fn assemble(
             .chain(rev_z)
             .collect();
         length += 2.0 * a.length;
-        dplus += az.windows(2).map(|w| (w[1] - w[0]).abs()).sum::<f64>();
+        // aller-retour : la montée de l'aller plus celle du retour = montée + descente de l'accès
+        dplus += a.updown;
+        dplus_profile += a.updown;
+        let (na, dz) = (az.len() - 1, az[az.len() - 1] - az[0]);
+        let last = segs.last().map_or(0, |s| s.1) + na;
+        segs = std::iter::once((0, na, (a.updown + dz) / 2.0))
+            .chain(segs.iter().map(|&(i, j, up)| (i + na, j + na, up)))
+            .chain([(last, z.len() - 1, (a.updown - dz) / 2.0)])
+            .collect();
     }
+    let cup = cumulative_up(&z, &segs);
     let feasible = p.score(loop_ids).3;
     Ok(Track {
         xy,
         z,
         length,
         dplus,
+        dplus_profile,
+        cup,
         cls,
         lab,
         feasible,
@@ -1603,13 +1707,17 @@ pub fn plan_with(
     );
 
     let t1 = Instant::now();
-    let mut sel = keep_mask(&t, natures);
+    let mut sel = walkable(&t, natures);
     // D53 : en « Route », réseau revêtu seulement ; trop court = `paved_network_too_short`
     let road = r.surface == "road";
     if road {
         let pv = paved_mask(&t, natures);
         sel.retain(|&i| pv[i]);
     }
+    // D66 : accès interdits hors du réseau, gardés pour l'aller-retour d'un départ en lieu privé
+    let (sel, closed): (Vec<usize>, Vec<usize>) = sel
+        .into_iter()
+        .partition(|&i| t.osm_access[i] != ACCESS_CLOSED);
     let no_loop = if road {
         Code::PavedNetworkTooShort
     } else {
@@ -1750,7 +1858,7 @@ pub fn plan_with(
             let acc = if with_access {
                 let nearest = net.nearest_vertex(&sub);
                 if nearest > ACCESS_MIN_M && access_net.is_none() {
-                    access_net = Some(Access::new(&t, frame, &sel, &cls_t, &region));
+                    access_net = Some(Access::new(&t, frame, &sel, &closed, &cls_t, &region));
                 }
                 access_net.as_mut().and_then(|a| a.as_mut())
             } else {
@@ -1971,7 +2079,7 @@ pub fn plan_with(
         }
     }
     let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma)?;
-    let prof: f64 = main.z.windows(2).map(|w| (w[1] - w[0]).max(0.0)).sum();
+    let prof = main.dplus_profile;
     if (prof - main.dplus).abs() > 1e-6 * main.dplus.max(1.0) {
         warns.push(Msg::new(
             Code::ProfileMismatch,
@@ -2172,9 +2280,10 @@ fn via_legs(
     let legs: Vec<Value> = cuts
         .windows(2)
         .map(|w| {
-            let z = &tr.z[w[0].0..=w[1].0];
-            let up: f64 = z.windows(2).map(|d| (d[1] - d[0]).max(0.0)).sum();
-            let down: f64 = z.windows(2).map(|d| (d[0] - d[1]).max(0.0)).sum();
+            // D67 : D+ cumulé arête par arête (Σ des étapes = D+ de la sortie)
+            let (i, j) = (w[0].0, w[1].0);
+            let up = tr.cup[j] - tr.cup[i];
+            let down = up - (tr.z[j] - tr.z[i]);
             json!({"from": w[0].1, "to": w[1].1, "length_m": round1(dist[w[1].0] - dist[w[0].0]),
                    "dplus_m": round1(up), "dminus_m": round1(down)})
         })

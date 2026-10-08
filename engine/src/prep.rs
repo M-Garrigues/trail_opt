@@ -190,6 +190,65 @@ impl Piece {
 /// et au filtre `max_grade` des arêtes ; n'affecte pas le D+.
 pub const GRADE_WINDOW_M: f64 = 50.0;
 
+/// D67 (étude terrain_2026-10-08 § 2) : seuil d'hystérésis du D+ (m), calé sur les montres (sortie
+/// du fondateur : 399 m bruts, 373 m ici, 370 à la montre ; GoldenCheetah : 3 m, Strava : 2 m).
+pub const HYST_M: f64 = 3.0;
+
+/// (montée, descente) d'un profil (m) avec hystérésis de `HYST_M`, comme une montre : on ne change
+/// de sens (montée ↔ descente) qu'après un écart de `HYST_M` depuis le dernier extrême ; dans un sens
+/// établi, chaque nouvel extrême compte aussitôt. L'écart restant est soldé au dernier point, de
+/// sorte que montée − descente = z(fin) − z(début) (additif d'une arête à l'autre). La MÊME fonction
+/// donne le poids des arêtes, l'accès, les étapes et le contrôle du profil rendu. (Étude terrain
+/// § 2.4 : `hyst_ud`, sortie du fondateur par tronçon 373 m.)
+/// Poids d'une arête (D67) : ½ (montée + descente) avec hystérésis, moyenne des deux sens (une
+/// hystérésis n'est pas symétrique : à l'envers, le sens établi et le solde final changent ; sans la
+/// moyenne, le D+ d'une boucle dépendrait du sens de parcours). Montée dans le sens a → b :
+/// `w + (z(b) − z(a)) / 2`, de sorte que le D+ d'une boucle fermée vaut exactement Σ w.
+pub fn hyst_w(z: &[f64]) -> f64 {
+    let (uf, df) = updown_hyst(z);
+    let rev: Vec<f64> = z.iter().rev().copied().collect();
+    let (ur, dr) = updown_hyst(&rev);
+    (uf + df + ur + dr) / 4.0
+}
+
+pub fn updown_hyst(z: &[f64]) -> (f64, f64) {
+    let Some(&first) = z.first() else {
+        return (0.0, 0.0);
+    };
+    // sens établi : Some(true) montée, Some(false) descente, None pas encore
+    let (mut up, mut down, mut r, mut climbing) = (0.0, 0.0, first, None);
+    for &x in &z[1..] {
+        match climbing {
+            Some(true) if x > r => {
+                up += x - r;
+                r = x;
+            }
+            Some(false) if x < r => {
+                down += r - x;
+                r = x;
+            }
+            _ if x - r >= HYST_M => {
+                up += x - r;
+                r = x;
+                climbing = Some(true);
+            }
+            _ if r - x >= HYST_M => {
+                down += r - x;
+                r = x;
+                climbing = Some(false);
+            }
+            _ => {}
+        }
+    }
+    let rest = z[z.len() - 1] - r;
+    if rest > 0.0 {
+        up += rest;
+    } else {
+        down -= rest;
+    }
+    (up, down)
+}
+
 /// Pente max (fraction) sur une fenêtre glissante de `GRADE_WINDOW_M` ; profil plus court que la
 /// fenêtre : pente moyenne |Δz| / L.
 pub fn max_grade(z: &[f64], s: &[f64]) -> f64 {
@@ -322,26 +381,17 @@ impl<'a> Net<'a> {
         (xy, z)
     }
 
-    fn piece_stats(&self, p: &Piece) -> (f64, f64) {
+    fn piece_len(&self, p: &Piece) -> f64 {
         let t = p.t as usize;
-        let (lo, hi) = (p.lo as usize, p.hi as usize);
-        let len = (self.t.abscissa(t, hi) - self.t.abscissa(t, lo)) / self.frame.k;
-        let updown = if lo == 0 && hi + 1 == self.t.n_profile(t) {
-            (self.t.dplus_dm[t] + self.t.dminus_dm[t]) as f64
-        } else {
-            let z = &self.t.z_dm[self.t.poff[t] + lo..=self.t.poff[t] + hi];
-            z.windows(2).map(|w| (w[1] - w[0]).abs() as f64).sum()
-        };
-        (len, updown / 20.0)
+        (self.t.abscissa(t, p.hi as usize) - self.t.abscissa(t, p.lo as usize)) / self.frame.k
     }
 
     /// Ajoute une arête (statistiques calculées) ; renvoie son identifiant.
     pub fn add_edge(&mut self, u: usize, v: usize, pieces: Vec<Piece>, flat: bool) -> usize {
-        let (mut len, mut w, mut cls, mut lab) = (0.0, 0.0, [0.0; N_CLS], [0.0; N_LAB]);
+        let (mut len, mut cls, mut lab) = (0.0, [0.0; N_CLS], [0.0; N_LAB]);
         for p in &pieces {
-            let (l, x) = self.piece_stats(p);
+            let l = self.piece_len(p);
             len += l;
-            w += x;
             let t = p.t as usize;
             cls[self.cls_t.get(t).map_or(CLS_ROAD, |&c| c as usize)] += l;
             lab[LAB_NOISY] += l * (1.0 - f64::from(self.t.calm[t].min(15)) / 15.0);
@@ -353,7 +403,7 @@ impl<'a> Net<'a> {
             v,
             pieces,
             len,
-            w,
+            w: 0.0,
             grade: 0.0,
             flat,
             cls,
@@ -367,6 +417,8 @@ impl<'a> Net<'a> {
             s[i] = s[i - 1] + (xy[i][0] - xy[i - 1][0]).hypot(xy[i][1] - xy[i - 1][1]);
         }
         self.edges[e].grade = max_grade(&z, &s);
+        // D67 : D+ « montre » : hystérésis de `HYST_M` sur le profil de l'arête, soldée au bout
+        self.edges[e].w = hyst_w(&z);
         e
     }
 
@@ -1188,6 +1240,44 @@ pub fn crossing_pairs(net: &Net, ids: &[usize], c: [f64; 2]) -> Vec<[usize; 2]> 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// D67 : bruit de ±1 m (2 m crête à crête, sous le seuil de 3 m) → 0 m de D+ ; une marche de
+    /// 10 m → 10 m ; montée − descente = écart d'altitude entre les bouts (soldé), donc additif d'une
+    /// arête à l'autre.
+    #[test]
+    fn updown_hysteresis() {
+        let noise: Vec<f64> = (0..201)
+            .map(|i| if i % 2 == 0 { 1.0 } else { -1.0 })
+            .collect();
+        assert_eq!(updown_hyst(&noise), (0.0, 0.0));
+        let flat: Vec<f64> = (0..201)
+            .map(|i| if i % 2 == 0 { 0.0 } else { 2.0 })
+            .collect();
+        assert_eq!(updown_hyst(&flat), (0.0, 0.0));
+        // 4 m crête à crête (±2 m) : au-dessus du seuil, chaque oscillation compte
+        let big: Vec<f64> = (0..5)
+            .map(|i| if i % 2 == 0 { 2.0 } else { -2.0 })
+            .collect();
+        assert_eq!(updown_hyst(&big), (8.0, 8.0));
+        let step: Vec<f64> = (0..40)
+            .map(|i| if i < 20 { 100.0 } else { 110.0 })
+            .collect();
+        assert_eq!(updown_hyst(&step), (10.0, 0.0));
+        // pente régulière de 1 m par point : tout compte (soldé au bout)
+        let ramp: Vec<f64> = (0..=11).map(f64::from).collect();
+        assert_eq!(updown_hyst(&ramp), (11.0, 0.0));
+        // additivité : deux moitiés d'un profil bruité = écart total
+        let z: Vec<f64> = (0..300)
+            .map(|i| 0.05 * i as f64 + 2.0 * (i as f64 * 1.7).sin())
+            .collect();
+        let (a, b) = (updown_hyst(&z[..=150]), updown_hyst(&z[150..]));
+        assert!(((a.0 - a.1) + (b.0 - b.1) - (z[299] - z[0])).abs() < 1e-9);
+        assert_eq!(updown_hyst(&[]), (0.0, 0.0));
+        // poids symétrique : même valeur dans les deux sens
+        let rev: Vec<f64> = z.iter().rev().copied().collect();
+        assert!((hyst_w(&z) - hyst_w(&rev)).abs() < 1e-9);
+        assert_eq!(hyst_w(&step), 5.0);
+    }
 
     #[test]
     fn region_contains_and_area() {

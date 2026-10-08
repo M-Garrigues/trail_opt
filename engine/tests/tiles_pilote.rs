@@ -259,7 +259,9 @@ fn landmarks_within_distance() {
 /// axes), jamais d'avertissement de part.
 #[test]
 fn surface_preference_never_rejects() {
-    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 500.0)] {
+    // D67 : D+ « montre » (hystérésis 3 m) : 500 m bruts ≈ 460 m ; à 12 km, Bourg a un palier vers
+    // 466–480 m (500 n'y est plus atteignable)
+    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 460.0)] {
         let Some((_, store)) = common::tiles(&[site]) else {
             return;
         };
@@ -403,7 +405,9 @@ fn n_loops_returned_lyon_chartreuse() {
 /// la plus proche de la cible d'abord, sans message `target_not_reached`.
 #[test]
 fn target_holds_real_dplus_whatever_climbs() {
-    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 500.0)] {
+    // D67 : D+ « montre » (hystérésis 3 m) : 500 m bruts ≈ 460 m ; à 12 km, Bourg a un palier vers
+    // 466–480 m (500 n'y est plus atteignable)
+    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 460.0)] {
         let Some((_, store)) = common::tiles(&[site]) else {
             return;
         };
@@ -512,7 +516,8 @@ fn reduction_never_empties_network() {
 /// D62 : paquet « élégance » coupé (`smooth: false`) = chemin de calcul d'avant D52. Valeurs
 /// vérifiées identiques au binaire du commit 290e2c7 (dalle de test versionnée, cible) jusqu'à D63 ;
 /// D63 change volontairement les poids de confort de la Cible : valeurs régénérées avec `smooth: false`
-/// (garde contre toute dérive du calcul sans élégance). Le défaut de la cible est actif.
+/// (garde contre toute dérive du calcul sans élégance) ; D67 (D+ « montre ») : valeurs régénérées,
+/// Bourg à 460 m (≈ 500 m bruts). Le défaut de la cible est actif.
 #[test]
 fn smooth_off_is_stable() {
     let Ok(store) = engine::tiles::TileStore::open(std::path::Path::new("tests/data/tiles")) else {
@@ -523,13 +528,13 @@ fn smooth_off_is_stable() {
             MASSY,
             10.0,
             250.0,
-            [(10011.7, 249.0), (9987.2, 245.8), (10035.3, 246.4)],
+            [(9966.8, 247.2), (9937.1, 246.7), (10013.5, 245.6)],
         ),
         (
             BOURG,
             12.0,
-            500.0,
-            [(11996.8, 491.5), (11984.1, 491.3), (11994.0, 490.7)],
+            460.0,
+            [(11814.4, 459.3), (11946.7, 453.7), (12000.0, 460.0)],
         ),
     ];
     for (site, km, dplus, want) in cases {

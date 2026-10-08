@@ -22,7 +22,8 @@
 
   // D34 : tronçons départ → points de passage → arrivée (seulement s'il y a des points)
   const vi = $derived(viaIdx(c));
-  const rows = $derived(vi.length ? legs(c.dist, c.ele, vi) : []);
+  // D67 : étapes du moteur (même D+ que la sortie) ; recalcul local pour une sortie sans `legs`
+  const rows = $derived(vi.length ? (c.legs?.length === vi.length + 1 ? c.legs : legs(c.dist, c.ele, vi)) : []);
   const vs = $derived([...vi].sort((a, b) => a - b));
   const name = (k: number, n: number) => (k === 0 ? t().detail.start : k === n ? t().detail.finish : `P${k}`);
 

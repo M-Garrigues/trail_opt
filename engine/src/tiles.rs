@@ -181,6 +181,8 @@ pub struct Troncons {
     pub osm_major: Vec<u8>,
     /// `osm_flags` brut (bit 1 via ferrata, 2 éclairé, 4 eau potable, 8 sommet/vue), 0 si absent.
     pub osm_flags: Vec<u8>,
+    /// `osm_access` (D66) : 0 inconnu, 1 restreint, 2 fermé au piéton (exclu du réseau), 0 si absent.
+    pub osm_access: Vec<u8>,
     pub calm: Vec<u8>,
     pub hike: Vec<u8>,
     pub water: Vec<u8>,
@@ -352,6 +354,7 @@ impl Troncons {
         self.surf.push(SURF_UNKNOWN);
         self.osm_major.push(0);
         self.osm_flags.push(0);
+        self.osm_access.push(0);
         self.calm.push(15);
         self.hike.push(0);
         self.water.push(0);
@@ -874,6 +877,7 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         opt("osm_water")?,
         opt("osm_highway")?,
         opt("osm_flags")?,
+        opt("osm_access")?,
     ];
     let mut col = |name: &str| -> Result<Vec<i64>, String> {
         let file = z
@@ -933,6 +937,7 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         t.water.push(lab(4, 0));
         t.osm_major.push(lab(5, 0));
         t.osm_flags.push(lab(6, 0));
+        t.osm_access.push(lab(7, 0));
         let (mut x, mut y) = (ox, oy);
         for j in 0..geom_n[i] as usize {
             x += gx[gk + j];
