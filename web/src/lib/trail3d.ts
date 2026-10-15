@@ -60,6 +60,9 @@ export class Trail3D implements CustomLayerInterface {
   onError: (e: unknown) => void = () => {};
 
   setColor(c: string) { if (c !== this.color) { this.color = c; this.map?.triggerRepaint(); } }
+  /** halo sombre sous le liseré blanc (fonds photo et HD, T82) */
+  private halo = false;
+  setHalo(on: boolean) { if (on !== this.halo) { this.halo = on; this.map?.triggerRepaint(); } }
   /** au plus une passe par « arrêt » : les rafales d'événements (dalles, fin de mouvement) sont regroupées */
   private schedule = (e: object) => {
     const src = (e as { sourceId?: string }).sourceId;
@@ -184,6 +187,7 @@ export class Trail3D implements CustomLayerInterface {
     };
     const a = 0.35; // parties cachées par le relief : en transparence
     pass(this.widthPx, [r * a, g * a, b * a, a], false);
+    if (this.halo) pass(this.widthPx + 8, [0, 0, 0, 0.7], true); // prémultiplié : noir à 70 %
     pass(this.widthPx + 4, [1, 1, 1, 1], true);
     pass(this.widthPx, [r, g, b, 1], true);
     gl.bindVertexArray(null);

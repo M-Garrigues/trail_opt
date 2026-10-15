@@ -96,6 +96,8 @@ export const fr = {
   estimate: 'Durée estimée',
   options: { title: 'Options', done: 'Terminé' },
   sheet: { fold: 'Replier', unfold: 'Déplier' },
+  // D69 : fond de carte
+  base: { title: 'Fond de carte', plan: 'Plan IGN', hd: 'Plan IGN HD (bêta)', ortho: 'Satellite' },
   via: {
     button: 'Point de passage',
     short: 'Passage',
@@ -219,7 +221,7 @@ export const fr = {
       'Sur l’appareil : langue, réglages, historique des sorties et dernière position arrondie (~1 km) restent dans la mémoire du navigateur (localStorage) et ne sont jamais envoyés ; effaçables dans Réglages. Strictement nécessaires au service demandé, ils ne requièrent pas de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) : d’où l’absence de bandeau cookies.\n\n' +
       'Adresse IP : optrail ne l’enregistre pas, mais elle est vue par Amazon Web Services (hébergement), Cloudflare (Turnstile, vérification anti-robot au calcul et au partage ; intérêt légitime : sécurité), l’IGN (fond de carte ; recherche de lieux, qui reçoit aussi le texte saisi) et Mapterhorn (relief de la vue 3D). Amazon et Cloudflare sont des sociétés américaines : transferts encadrés par le cadre UE–États-Unis de protection des données et les clauses contractuelles types.\n\n' +
       'Droits : accès, rectification, effacement, opposition et limitation, par e-mail à contact@optrail.eu ; réclamation possible auprès de la CNIL (cnil.fr). Sans compte, optrail ne peut pas relier les journaux à une personne.',
-    attributionsText: 'Fond de carte : Plan IGN © IGN – Géoplateforme. Chemins et altitudes : © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, sous Licence Ouverte Etalab 2.0 ; cols et sommets : BD TOPO® IGN ; les données dérivées d’optrail sont publiées sous la même licence. Recherche de lieux : géocodage de la Géoplateforme IGN.\n\n' +
+    attributionsText: 'Fonds de carte : Plan IGN, Plan IGN HD et photographies aériennes (BD ORTHO®) © IGN – Géoplateforme, sous Licence Ouverte Etalab 2.0. Chemins et altitudes : © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, sous Licence Ouverte Etalab 2.0 ; cols et sommets : BD TOPO® IGN ; les données dérivées d’optrail sont publiées sous la même licence. Recherche de lieux : géocodage de la Géoplateforme IGN.\n\n' +
       'Relief 3D et décor en courbes de niveau (Chartreuse) : © Mapterhorn (mapterhorn.com/attribution), MNT © IGN.\n\n' +
       'Logiciels : MapLibre GL JS (BSD-3-Clause), terra-draw (MIT).',
   },

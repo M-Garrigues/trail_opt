@@ -32,6 +32,13 @@ test('CSP de prod bloquante : aucune violation sur le parcours principal', async
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible({ timeout: 20_000 }); // Turnstile réel (jusqu'à 8 s)
+  // D69 : fonds raster (photo aérienne, Plan IGN HD)
+  for (const b of ['Satellite', isFr() ? 'Plan IGN HD (bêta)' : 'IGN HD map (beta)']) {
+    await page.getByRole('button', { name: isFr() ? 'Fond de carte' : 'Base map' }).click();
+    await page.getByRole('radio', { name: b }).check();
+    await page.keyboard.press('Escape');
+    await page.waitForTimeout(1000);
+  }
   await page.getByRole('button', { name: isFr() ? 'Vue 3D' : '3D view' }).click();
   await expect(page.getByRole('button', { name: isFr() ? 'Vue 2D' : '2D view' })).toHaveAttribute('aria-pressed', 'true');
   await page.waitForTimeout(2000); // tuiles de relief (Mapterhorn)

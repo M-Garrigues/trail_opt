@@ -16,6 +16,12 @@ const SHADOW =
   'https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0' +
   '&LAYER=IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW&STYLE=normal&TILEMATRIXSET=PM' +
   '&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+// Fonds raster (D69) : WMTS Géoplateforme sans clé, Licence Ouverte Etalab 2.0 (BD ORTHO®, Plan IGN HD)
+const wmts = (layer: string, tms: string) =>
+  `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=normal&TILEMATRIXSET=${tms}` +
+  '&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
+export const BASES = ['plan', 'hd', 'ortho'] as const;
+export type Base = (typeof BASES)[number];
 
 // Spike 3D (D27) : MNT Terrarium de Mapterhorn (IGN RGE ALTI 1 m / LiDAR HD en France, Licence Ouverte 2.0), z ≤ 17, CORS *.
 const DEM = 'https://tiles.mapterhorn.com/{z}/{x}/{y}.webp';
@@ -49,7 +55,12 @@ export class TrailMap {
   private ready: Promise<void>;
   private loops: Candidate[] = [];
   /** ligne drapée du tracé choisi : affichée en 2D, et en 3D tant que le ruban n'est pas posé (relief en cours de chargement) */
-  private draped = (on: boolean) => { for (const l of ['loops-casing', 'loops-sel']) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none'); };
+  private drapedOn = true;
+  private draped = (on: boolean) => {
+    this.drapedOn = on;
+    for (const l of ['loops-casing', 'loops-sel']) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none');
+    this.map.setLayoutProperty('loops-halo', 'visibility', on && this.base !== 'plan' ? 'visible' : 'none');
+  };
   private trail3d = new Trail3D(LOOP_COLORS[0], EXAG, (shown) => { if (this.is3d) this.draped(!shown); });
   private viaMarkers: maplibregl.Marker[] = [];
   private coverageBounds: LngLatBoundsLike = COVERAGE_BOUNDS;
@@ -87,6 +98,24 @@ export class TrailMap {
     });
   }
   private markerLabel: string;
+  private base: Base = 'plan';
+  private baseHide: Record<Base, string[]> | null = null;
+
+  /** Fond de carte (D69), en 2D comme en 3D ; appliqué au chargement du style s'il n'est pas prêt. */
+  setBase(b: Base) { this.base = b; this.applyBase(); }
+
+  private applyBase() {
+    const hide = this.baseHide;
+    if (!hide) return;
+    const m = this.map, off = new Set(hide[this.base]);
+    for (const id of new Set([...hide.ortho, ...hide.hd])) m.setLayoutProperty(id, 'visibility', off.has(id) ? 'none' : 'visible');
+    m.setLayoutProperty('ortho', 'visibility', this.base === 'ortho' ? 'visible' : 'none');
+    for (const id of ['hd', 'hd-low']) m.setLayoutProperty(id, 'visibility', this.base === 'hd' ? 'visible' : 'none');
+    m.setLayoutProperty('loops-halo', 'visibility', this.drapedOn && this.base !== 'plan' ? 'visible' : 'none');
+    this.trail3d.setHalo(this.base !== 'plan');
+    // sorties non choisies : gris clair sur la photo sombre
+    m.setPaintProperty('loops-other', 'line-color', this.base === 'ortho' ? '#e6e6e6' : '#757575');
+  }
 
   private setup() {
     const m = this.map;
@@ -106,6 +135,21 @@ export class TrailMap {
     }
     m.addSource('shadow', { type: 'raster', tiles: [SHADOW], tileSize: 256, minzoom: 9, maxzoom: 18, attribution: '© IGN' }); // minzoom : le LiDAR répond 400 aux petits zooms
     m.addLayer({ id: 'shadow', type: 'raster', source: 'shadow', paint: { 'raster-opacity': 0.28 } }, firstSymbol);
+    // D69 : photo aérienne et Plan IGN HD juste au-dessus du fond uni ; les calques du Plan IGN qui les cacheraient
+    // sont masqués, ses libellés restent (hybride : toponymes, n° de route). Routes et chemins vectoriels retirés aussi
+    // sur photo (essai : leur réseau blanc concurrençait le tracé) ; le HD les dessine déjà, on n'y garde que les courbes.
+    const over = layers[1]?.id;
+    m.addSource('ortho', { type: 'raster', tiles: [wmts('ORTHOIMAGERY.ORTHOPHOTOS', 'PM')], tileSize: 256, maxzoom: 19, attribution: '© IGN – BD ORTHO®' });
+    m.addSource('hd', { type: 'raster', tiles: [wmts('IGNF_PLAN-IGN-HD', 'PM_6_18')], tileSize: 256, minzoom: 6, maxzoom: 18, attribution: '© IGN – Plan IGN HD' });
+    m.addLayer({ id: 'ortho', type: 'raster', source: 'ortho', layout: { visibility: 'none' } }, over);
+    m.addLayer({ id: 'hd-low', type: 'raster', source: 'ortho', maxzoom: 6, layout: { visibility: 'none' } }, over); // le HD commence à z6
+    m.addLayer({ id: 'hd', type: 'raster', source: 'hd', layout: { visibility: 'none' } }, over);
+    const shapes = layers.filter((l) => l.type !== 'symbol' && l.id !== 'bckgrd' && l.layout?.visibility !== 'none');
+    this.baseHide = {
+      plan: [],
+      ortho: ['shadow', ...shapes.map((l) => l.id)],
+      hd: ['shadow', ...shapes.filter((l) => !l.id.startsWith('oro - courbe')).map((l) => l.id)],
+    };
     // hors couverture grisé (sous le tracé et les libellés)
     m.addSource('outside', { type: 'geojson', data: empty() });
     m.addLayer({ id: 'outside', type: 'fill', source: 'outside', paint: { 'fill-color': '#455a64', 'fill-opacity': 0.35 } }, firstSymbol);
@@ -114,6 +158,10 @@ export class TrailMap {
     m.addSource('loops', { type: 'geojson', data: empty() });
     m.addLayer({ id: 'loops-other', type: 'line', source: 'loops', filter: ['!', ['get', 'sel']],
       layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#757575', 'line-width': 3, 'line-opacity': 0.85 } }, labels);
+    // halo sombre sous le liseré blanc, sur photo et HD (T82) : le blanc garde ≥ 3:1 contre lui quelle que soit la photo
+    // (noir à 70 % : pire cas photo blanche → 1,05 / 0,35 = 3:1) ; le cœur coloré (accent trail ou vélo) est jugé contre le blanc
+    m.addLayer({ id: 'loops-halo', type: 'line', source: 'loops', filter: ['get', 'sel'], layout: { 'line-join': 'round', 'line-cap': 'round', visibility: 'none' },
+      paint: { 'line-color': 'rgba(0,0,0,0.7)', 'line-width': 13 } }, labels);
     m.addLayer({ id: 'loops-casing', type: 'line', source: 'loops', filter: ['get', 'sel'],
       layout: { 'line-join': 'round', 'line-cap': 'round' }, paint: { 'line-color': '#ffffff', 'line-width': 9 } }, labels);
     m.addLayer({ id: 'loops-sel', type: 'line', source: 'loops', filter: ['get', 'sel'],
@@ -135,6 +183,7 @@ export class TrailMap {
       m.getCanvas().style.cursor = 'pointer';
     });
     m.on('mouseleave', 'loops-hit', () => { this.h.onLoopHover(-1, null); m.getCanvas().style.cursor = ''; });
+    this.applyBase();
     m.getContainer().dataset.ready = '1'; // tests e2e : carte et sources prêtes
   }
 

@@ -3,9 +3,9 @@
   import { app, top, has, current, compute, close, cancel, setStart, select, open as openLayer, dismissIntro, openShared, mapUi, level, loadCoverage, debug, addVia, moveVia, viaIdx, dismissNotice, applySuggest, suggestLabel, saveSession, restoreSession, toast } from './lib/app.svelte';
   import Profile, { profileMarks } from './components/Profile.svelte';
   import { sharedId } from './lib/share';
-  import { TrailMap } from './lib/map';
+  import { TrailMap, BASES, type Base } from './lib/map';
   import { nearestIndex } from './lib/geo';
-  import { load } from './lib/store';
+  import { load, save } from './lib/store';
   import { REJECTED, errorText, km, num } from './i18n/format';
   import { byId } from './lib/catalog';
   import { i18n, t, setLang } from './i18n/i18n.svelte';
@@ -34,6 +34,26 @@
     ? { top: 60, bottom: 40 + (app.dock ? DOCK_H : 0), left: 60, right: 60 }
     : { top: 60, bottom: resultH() + 20, left: 30, right: 30 };
   const cap = new URLSearchParams(location.search).get('cap') === 'km1' ? 'km1' : 'centroid';
+  // D69 : fond de carte mémorisé (valeur inconnue → Plan IGN)
+  const saved = load<string>('base', 'plan');
+  let base = $state<Base>(BASES.includes(saved as Base) ? (saved as Base) : 'plan');
+  let baseOpen = $state(false);
+  let baseEl = $state<HTMLDivElement>();
+  $effect(() => { tmap?.setBase(base); save('base', base); });
+  $effect(() => {
+    if (!baseOpen) return;
+    const out = (e: PointerEvent) => { if (!baseEl?.contains(e.target as Node)) baseOpen = false; };
+    // Échap ferme la liste avant tout le reste (capture : même si le focus n'y est pas, Safari ne focalise pas au clic)
+    const esc = (e: KeyboardEvent) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      baseOpen = false;
+      baseEl?.querySelector('button')?.focus();
+    };
+    addEventListener('pointerdown', out);
+    addEventListener('keydown', esc, true);
+    return () => { removeEventListener('pointerdown', out); removeEventListener('keydown', esc, true); };
+  });
   function toggle3d() {
     view3d = !view3d;
     void tmap?.set3D(view3d, current(), padding(), cap);
@@ -201,6 +221,23 @@
   <button class="icon-btn view3d" onclick={toggle3d} aria-pressed={view3d} aria-label={view3d ? t().detail.view2d : t().detail.view3d}
     title={view3d ? t().detail.view2d : t().detail.view3d}>{view3d ? '2D' : '3D'}</button>
 
+  <!-- D69 : sélecteur de fond de carte (photo aérienne, Plan IGN HD), sous le bouton 3D -->
+  <div class="basemap" class:open={baseOpen} bind:this={baseEl}>
+    <button class="icon-btn" onclick={() => (baseOpen = !baseOpen)} aria-expanded={baseOpen} aria-controls="basemap-pop"
+      aria-label={t().base.title} title={t().base.title}>
+      <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round">
+        <path d="M12 3 2 8.5 12 14l10-5.5L12 3Z" /><path d="m2 13.5 10 5.5 10-5.5" /></svg>
+    </button>
+    {#if baseOpen}
+      <fieldset id="basemap-pop" class="basemap-pop">
+        <legend>{t().base.title}</legend>
+        {#each BASES as b (b)}
+          <label><input type="radio" name="basemap" value={b} bind:group={base} /> {t().base[b]}</label>
+        {/each}
+      </fieldset>
+    {/if}
+  </div>
+
   {#if app.dock && current()}
     {@const lv = level(desktop)}
     <section class="dock" data-level={lv} aria-label={t().detail.legend}>
@@ -271,6 +308,7 @@
   /* mobile : pas de boutons zoom, menu et historique dans l'angle haut droit ; 3D dessous, toujours SOUS la feuille (z-index < 5) */
   .app:not(.desktop) .topbar { right: 8px; }
   .app:not(.desktop) .view3d { right: 8px; top: calc(62px + env(safe-area-inset-top)); z-index: 4; }
+  .app:not(.desktop) .basemap { right: 8px; top: calc(114px + env(safe-area-inset-top)); z-index: 4; }
   .topbar > * { pointer-events: auto; }
   .brand {
     display: inline-flex; align-items: center; gap: 8px; font-weight: 800; font-size: 1.05rem; letter-spacing: 0.14em; background: var(--bg); color: var(--accent-text); padding: 8px 12px; border-radius: 10px;
@@ -304,6 +342,17 @@
   }
   .view3d { position: absolute; z-index: 6; right: 10px; top: calc(108px + env(safe-area-inset-top)); background: var(--bg); font-weight: 800;
     box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); }
+  .basemap { position: absolute; z-index: 6; right: 10px; top: calc(160px + env(safe-area-inset-top)); }
+  /* ouvert : au-dessus de la feuille du bas (petits écrans : la liste la chevauche) */
+  .app .basemap.open { z-index: 7; }
+  .basemap > .icon-btn { background: var(--bg); box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); }
+  .basemap > .icon-btn[aria-expanded='true'] { border-color: var(--accent); color: var(--accent-text); }
+  .basemap-pop { position: absolute; right: 52px; top: 0; margin: 0; padding: 6px 4px 6px; min-width: 200px; background: var(--surface); color: var(--text);
+    border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 2px 10px rgb(0 0 0 / 0.3); }
+  .basemap-pop legend { float: left; width: 100%; padding: 4px 10px 2px; font-size: 0.8rem; font-weight: 700; color: var(--muted); }
+  .basemap-pop label { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 0 10px; border-radius: 8px; cursor: pointer; white-space: nowrap; }
+  .basemap-pop label:has(:checked) { font-weight: 700; }
+  .basemap-pop input { width: 20px; height: 20px; margin: 0; accent-color: var(--accent); }
   .view3d[aria-pressed='true'] { background: var(--accent); color: var(--on-accent); border-color: var(--accent); }
   .dock { position: absolute; left: 400px; right: 0; bottom: 0; height: var(--dock-h); z-index: 4; background: var(--lvl-2);
     box-shadow: 0 -1px 2px rgb(var(--sh-rgb) / 0.12), 0 -4px 10px rgb(var(--sh-rgb) / 0.12), 0 -12px 28px rgb(var(--sh-rgb) / 0.12); transition: background-color 0.4s; }

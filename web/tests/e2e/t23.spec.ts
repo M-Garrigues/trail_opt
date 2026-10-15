@@ -64,9 +64,10 @@ test('zone : le 51ᵉ sommet est refusé', async ({ page }) => {
   // terra-draw ferme le polygone si l'on touche (< 40 px) le 1er ou le dernier point : 1er point isolé en haut,
   // puis 49 points en zigzag entre deux rangées éloignées (loin du départ, au-dessus de la feuille)
   await zoneClick(page, ...P(0.5, 0.1), 1);
-  for (let i = 0; i < 49; i++) await zoneClick(page, ...P(0.05 + (0.85 * i) / 48, i % 2 ? 0.45 : 0.2), i + 2);
+  // x ≤ 0,8 : la colonne de boutons de droite (3D, fond de carte) prend les clics
+  for (let i = 0; i < 49; i++) await zoneClick(page, ...P(0.05 + (0.75 * i) / 48, i % 2 ? 0.45 : 0.2), i + 2);
   await expect(page.getByRole('alert')).toHaveText('50 points maximum.');
-  await page.mouse.click(...P(0.95, 0.2)); // 51ᵉ
+  await page.mouse.click(...P(0.8, 0.32)); // 51ᵉ
   await expect(page.locator('.count')).toHaveText('50/50');
   await page.mouse.click(...P(0.5, 0.1)); // fermeture : 50 sommets gardés
   await expect(page.getByTestId('zone-validate')).toBeEnabled();

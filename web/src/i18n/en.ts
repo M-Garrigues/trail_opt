@@ -94,6 +94,7 @@ export const en: Dict = {
   estimate: 'Estimated time',
   options: { title: 'Options', done: 'Done' },
   sheet: { fold: 'Collapse', unfold: 'Expand' },
+  base: { title: 'Base map', plan: 'IGN map', hd: 'IGN HD map (beta)', ortho: 'Satellite' },
   via: {
     button: 'Waypoint',
     short: 'Via',
@@ -215,7 +216,7 @@ export const en: Dict = {
       'On your device: language, settings, run history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
       'IP address: optrail does not record it, but it is seen by Amazon Web Services (hosting), Cloudflare (Turnstile bot check when planning and sharing; legitimate interest: security), IGN (base map; place search, which also receives what you type) and Mapterhorn (3D relief). Amazon and Cloudflare are US companies: transfers covered by the EU–US Data Privacy Framework and standard contractual clauses.\n\n' +
       'Your rights: access, rectification, erasure, objection and restriction, by e-mail to contact@optrail.eu; you may complain to the CNIL (cnil.fr). Without accounts, optrail cannot link logs to a person.',
-    attributionsText: 'Base map: Plan IGN © IGN – Géoplateforme. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
+    attributionsText: 'Base maps: Plan IGN, Plan IGN HD and aerial photographs (BD ORTHO®) © IGN – Géoplateforme, under the Etalab Open Licence 2.0. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
       '3D relief and contour-line backdrop (Chartreuse): © Mapterhorn (mapterhorn.com/attribution), DEM © IGN.\n\n' +
       'Software: MapLibre GL JS (BSD-3-Clause), terra-draw (MIT).',
   },
