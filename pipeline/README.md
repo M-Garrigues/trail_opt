@@ -86,8 +86,12 @@ Post-traitement d'un dossier de dalles déjà construites, sans requête IGN (co
 - `ign_cross` (bits u/v) : extrémité sur un nœud de route d'importance 1–2 (traversée à niveau), dalle + 8 voisines.
 - Avec `--osm` : `osm_hike`, `osm_water`, `osm_class` (classe de voie), `osm_highway` / `osm_surface` (valeurs
   brutes codées, tables au manifeste), `osm_rough`, `osm_sac`, `osm_visibility`, `osm_flags` (via ferrata,
-  éclairé, eau potable, sommet/col/vue) et `osm_forest` (raster 10 m des forêts). © les contributeurs
-  d'OpenStreetMap, ODbL ; étiquettes seulement, absence = neutre.
+  éclairé, eau potable, sommet/col/vue, escalier, informal, fermeture conditionnelle, rond-point), `osm_forest`
+  (raster 10 m des forêts) et les colonnes vélo (D70) `osm_bike`, `osm_cycleway`, `osm_oneway` (orienté u→v),
+  `osm_bike_route`, `osm_mtb_route`, `osm_mtb`, `osm_mtb_up`, `osm_tracktype`, `osm_smooth`, `osm_maxspeed`.
+  © les contributeurs d'OpenStreetMap, ODbL ; étiquettes seulement, absence = neutre.
+- Avec `--pn contours.geojson` : `pn_core` (cœur de parc national, 0/1), depuis « Contours des 11 Parcs nationaux de France »
+  (data.gouv.fr, Licence Ouverte 2.0, polygones `code_r_enp = CTPN` seulement) ; `enrich.yml` le télécharge (URL immuable + sha256).
 - `--osm` prend des extraits Geofabrik `.osm.pbf` (réduits par `osmium tags-filter` puis
   `add-locations-to-ways` en un texte `.opl`, et en `.foret.pbf` lu par `osmium export`, gardés à côté ;
   paquet `osmium-tool`, `brew install osmium-tool`), ou ces `.opl` / `.foret.pbf` (ou `.geojsonseq`) déjà faits.

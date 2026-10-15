@@ -16,6 +16,11 @@ telles quelles), le manifeste reçoit sha256/tailles, `columns` (source et licen
   autorisant), 1 = restreint (customers, destination…), posé dès 20 m appariés ; le moteur EXCLUT 2 (seule
   étiquette qui retire une voie, comme la via ferrata de `osm_flags`). Barrières des nœuds non lues (voir contrat).
 
+- Colonnes vélo (D70, `--osm` seulement, 0 = inconnu = neutre) : `osm_bike` (accès vélo 0–5, pire valeur sur ≥ 20 m),
+  `osm_cycleway` (aménagement 0–5), `osm_oneway` (sens unique vélo ORIENTÉ u→v, 0–3), `osm_bike_route` / `osm_mtb_route`
+  (réseaux `route=bicycle` / `route=mtb`), `osm_mtb` / `osm_mtb_up` (`mtb:scale`), `osm_tracktype`, `osm_smooth`,
+  `osm_maxspeed` ; bits 16–128 d'`osm_flags` (escalier, informal, fermeture conditionnelle, rond-point).
+
 Chaque valeur ne dépend que du tronçon et de ce qui l'entoure à 300 m au plus : le résultat est le même
 quel que soit l'ordre ou le lot de traitement, pourvu que les dalles voisines soient dans le dossier.
 """
@@ -58,6 +63,8 @@ MOTORWAY = "Type autoroutier"
 CROSS_IMPORTANCE = (1, 2)  # ign_cross : routes d'importance 1-2 (axes principaux)
 IGN = dict(source="dérivé des dalles (BD TOPO® IGN)", license="Licence Ouverte Etalab 2.0")
 OSM = dict(source="© les contributeurs d'OpenStreetMap", license="ODbL 1.0")
+PN = dict(source="Parcs nationaux de France, contours des 11 parcs nationaux (cœurs terrestres), data.gouv.fr",
+          license="Licence Ouverte 2.0")
 NOCLASS = 255              # osm_class : rien appris d'OSM, repli moteur sur la nature IGN
 OTHER = 255                # osm_highway, osm_surface : valeur OSM hors table
 # Tables figées (on n'ajoute qu'en fin de liste) ; code = rang, 0 = aucun way apparié ou tag absent.
@@ -81,7 +88,22 @@ ROUGH = {**{s: 1 for s in PAVED + ("compacted", "fine_gravel", "dirt", "earth", 
                            "shells", "snow")},
          **{s: 3 for s in ("rock", "stone", "scree", "ice")}}
 F_VIA, F_LIT, F_DRINK, F_VIEW = 1, 2, 4, 8     # bits de osm_flags
+F_STEPS, F_INFORMAL, F_COND, F_ROUND = 16, 32, 64, 128   # escalier, informal=yes, fermeture conditionnelle, rond-point
+STEPS_M = 10.0             # un escalier court (une volée) marque déjà le tronçon
 ACC_RESTRICTED, ACC_CLOSED = 1, 2              # osm_access (D66) : restreint, fermé au piéton
+# Vélo (D70). Accès : valeurs de `bicycle` qui autorisent, qui restreignent ; défauts France par type de voie.
+BIKE_OK = ("yes", "designated", "permissive")
+BIKE_RESTRICTED = ("destination", "customers", "delivery", "permit", "agricultural", "forestry")
+BIKE_BANNED = ("motorway", "motorway_link", "trunk", "trunk_link", "bridleway", "via_ferrata")
+CYCLEWAY = {"shared_lane": 1, "share_busway": 1, "lane": 2, "opposite_lane": 2, "track": 3, "opposite_track": 3}
+CYCLEWAY_KEYS = ("cycleway", "cycleway:both", "cycleway:left", "cycleway:right")
+ROUNDABOUT = ("roundabout", "circular")     # `junction` : sens unique implicite, bit F_ROUND
+BIKE_NETWORK = {"lcn": 1, "rcn": 2, "ncn": 3, "icn": 4}
+TRACKTYPE = {f"grade{i}": i for i in range(1, 6)}
+SMOOTHNESS = {s: i for i, s in enumerate(("excellent", "good", "intermediate", "bad", "very_bad", "horrible",
+                                          "very_horrible", "impassable"), 1)}
+SPEED = {"FR:urban": 50, "FR:rural": 80, "FR:zone30": 30, "FR:motorway": 130, "walk": 6}
+ROUTE_TYPE = {"hiking": "hike", "foot": "hike", "bicycle": "broute", "mtb": "mroute"}
 TRAILS = ("path", "track", "bridleway")
 PEDESTRIAN = ("pedestrian", "footway", "steps", "cycleway", "living_street", "corridor")
 NOT_STREET = ("path", "bridleway", "footway", "steps", "cycleway", "corridor", "via_ferrata")   # jamais appariés à une route IGN
@@ -97,13 +119,25 @@ COLUMNS = {
     "osm_rough": dict(dtype="uint8", range=[0, 3], **OSM),
     "osm_sac": dict(dtype="uint8", range=[0, 6], **OSM),
     "osm_visibility": dict(dtype="uint8", range=[0, 6], **OSM),
-    "osm_flags": dict(dtype="uint8", range=[0, 15], **OSM),
+    "osm_flags": dict(dtype="uint8", range=[0, 255], **OSM),
     "osm_forest": dict(dtype="uint8", range=[0, 15], **OSM),
     "osm_access": dict(dtype="uint8", range=[0, 2], **OSM),
+    "osm_bike": dict(dtype="uint8", range=[0, 5], **OSM),
+    "osm_cycleway": dict(dtype="uint8", range=[0, 5], **OSM),
+    "osm_oneway": dict(dtype="uint8", range=[0, 3], **OSM),
+    "osm_bike_route": dict(dtype="uint8", range=[0, 4], **OSM),
+    "osm_mtb_route": dict(dtype="uint8", range=[0, 2], **OSM),
+    "osm_mtb": dict(dtype="uint8", range=[0, 7], **OSM),
+    "osm_mtb_up": dict(dtype="uint8", range=[0, 6], **OSM),
+    "osm_tracktype": dict(dtype="uint8", range=[0, 5], **OSM),
+    "osm_smooth": dict(dtype="uint8", range=[0, 8], **OSM),
+    "osm_maxspeed": dict(dtype="uint8", range=[0, 254], **OSM),
+    "pn_core": dict(dtype="uint8", range=[0, 1], **PN),
 }
+PN_CORE = "CTPN"           # code_r_enp des cœurs terrestres (CMPN cœur marin, AAPN aire d'adhésion, AMAPN aire maritime : ignorés)
 ADDED = tuple(COLUMNS)
 # Extrait OSM réduit à ce qui sert : `osmium tags-filter` (ways porteurs de leurs coordonnées ensuite).
-OSM_FILTER = ("r/route=hiking,foot", "w/waterway=river,canal", "wr/natural=water", "w/natural=coastline",
+OSM_FILTER = ("r/route=hiking,foot,bicycle,mtb", "w/waterway=river,canal", "wr/natural=water", "w/natural=coastline",
               "w/highway", "w/via_ferrata_scale", "n/amenity=drinking_water", "n/drinking_water=yes",
               "n/natural=peak,saddle", "n/mountain_pass=yes", "n/tourism=viewpoint")
 FOREST_FILTER = ("wr/landuse=forest", "wr/natural=wood")
@@ -271,29 +305,137 @@ def access_level(tags: dict) -> int:
     return ACC_RESTRICTED if a in ("customers", "destination", "delivery", "permit") else 0
 
 
+def _unescape(v: str) -> str:
+    """Valeur de tag OPL : les caractères spéciaux y sont écrits %hex% (espace = %20%)."""
+    return re.sub(r"%([0-9a-f]+)%", lambda m: chr(int(m[1], 16)), v) if "%" in v else v
+
+
+def bike_level(tags: dict) -> int:
+    """Accès vélo d'un way (D70) : 5 interdit (`bicycle=no|private`, ou `access`/`vehicle=no|private`), 4 interdit par
+    défaut en France (autoroute, voie rapide, bridleway, via ferrata, `motorroad`, escalier sans rampe vélo), 3
+    `bicycle=use_sidepath`, 2 pied à terre (`dismount`, footway, escalier à rampe), 1 restreint (destination,
+    customers… ; aire piétonne), 0 admis ou rien de connu. `bicycle=yes|designated|permissive` l'emporte (0)."""
+    h, b = tags.get("highway"), tags.get("bicycle")
+    if h is None or b in BIKE_OK:
+        return 0
+    if b in ("no", "private"):
+        return 5
+    if b == "use_sidepath":
+        return 3
+    if b == "dismount":
+        return 2
+    acc = tags.get("vehicle") or tags.get("access")     # la clé la plus précise l'emporte (access=no + vehicle=yes : admis)
+    if b in BIKE_RESTRICTED:
+        return 1
+    if acc in ("no", "private"):
+        return 5
+    if h in BIKE_BANNED or tags.get("motorroad") == "yes":
+        return 4
+    if h == "steps":
+        return 2 if tags.get("ramp:bicycle") == "yes" else 4
+    if h == "footway":
+        return 2
+    return int(h == "pedestrian" or acc in BIKE_RESTRICTED)
+
+
+def cycleway_level(tags: dict) -> int:
+    """Aménagement cyclable propre au way : 1 voie partagée, 2 bande, 3 piste latérale (max des côtés), 4 voie dédiée
+    (`cycleway`, ou path|track|footway `bicycle=designated`), 5 vélorue."""
+    lv = max(CYCLEWAY.get(tags.get(k), 0) for k in CYCLEWAY_KEYS)
+    if tags.get("highway") == "cycleway" or (tags.get("highway") in ("path", "track", "footway")
+                                             and tags.get("bicycle") == "designated"):
+        lv = 4
+    return 5 if "yes" in (tags.get("bicycle_road"), tags.get("cyclestreet")) else lv
+
+
+def oneway_dir(tags: dict) -> int:
+    """Sens unique vélo RELATIF au way (le sens du tronçon IGN est posé à l'appariement) : 0 double sens ou inconnu,
+    1 vélo seulement dans le sens du way, 2 seulement à contre-sens, 3 voitures à sens unique mais vélo dans les deux
+    sens (`oneway:bicycle=no`, `cycleway*=opposite*`, ou `cycleway*:oneway` = `no` / à contre-sens des voitures).
+    Rond-point (`junction=roundabout|circular`) et autoroute impliquent `oneway=yes`."""
+    h, o = tags.get("highway"), tags.get("oneway")
+    if h is None:
+        return 0
+    if o is None and (tags.get("junction") in ROUNDABOUT or h in ("motorway", "motorway_link")):
+        o = "yes"
+    car = 1 if o in ("yes", "true", "1") else 2 if o in ("-1", "reverse") else 0
+    ob = tags.get("oneway:bicycle")
+    if ob == "no":
+        return 3 if car else 0
+    if ob in ("yes", "true", "1"):
+        return 1
+    if ob in ("-1", "reverse"):
+        return 2
+    contra = ("no", "-1" if car == 1 else "yes")        # piste ou bande à double sens, ou à contre-sens des voitures
+    return 3 if car and any(tags.get(k, "").startswith("opposite") or tags.get(k + ":oneway") in contra
+                            for k in CYCLEWAY_KEYS) else car
+
+
+def _scale(v, top: int) -> int:
+    """`mtb:scale` « 2+ » -> 3 : premier chiffre (0 à `top`) + 1 ; 0 si absent ou invalide."""
+    return int(v[0]) + 1 if v and v[0] in "0123456"[:top + 1] else 0
+
+
+def maxspeed(tags: dict) -> int:
+    """km/h (mph converti ; FR:urban, FR:rural… ; repli `zone:maxspeed`, « FR:30 » compris) ; 0 si inconnu, none,
+    signals, variable ; plafonné à 254."""
+    v = _unescape(tags.get("maxspeed") or tags.get("zone:maxspeed") or "")
+    if v in SPEED:
+        return SPEED[v]
+    m = re.fullmatch(r"(?:[A-Z]{2}:)?(\d+)(?: (mph|km/h))?", v)
+    return min(254, round(int(m[1]) * (1.609 if m[2] == "mph" else 1))) if m else 0
+
+
 def _way(tags: dict) -> tuple:
-    """Attributs d'un way : highway, surface (codes), classe, rue ?, roulant, sac, visibilité, bits via/éclairé, accès."""
+    """Attributs d'un way (ordre de WAY_KEYS) : highway, surface (codes), classe, rue ?, roulant, sac, visibilité,
+    bits d'osm_flags, accès piéton, puis vélo : accès, aménagement, sens, mtb, mtb montée, tracktype, smoothness, vitesse."""
     h, s = tags.get("highway"), tags.get("surface")
     rough = SMOOTH.get(tags.get("smoothness"), ROUGH.get(s, 0)) if h else 0
     via = h == "via_ferrata" or "via_ferrata_scale" in tags
+    cond = any("no @" in _unescape(tags.get(k + ":conditional", "")) for k in ("access", "vehicle", "bicycle", "motor_vehicle"))
+    wfl = F_VIA * via | F_LIT * (tags.get("lit") == "yes") | F_STEPS * (h == "steps") \
+        | F_INFORMAL * (tags.get("informal") == "yes") | F_COND * cond | F_ROUND * (tags.get("junction") in ROUNDABOUT)
     return (_code(HIGHWAYS, h), _code(SURFACES, s) if h else 0, way_class(tags),
             h is not None and h not in NOT_STREET, rough, SAC.get(tags.get("sac_scale"), 0),
-            VISIBILITY.get(tags.get("trail_visibility"), 0), F_VIA * via | F_LIT * (tags.get("lit") == "yes"),
-            access_level(tags) if h else 0)
+            VISIBILITY.get(tags.get("trail_visibility"), 0), wfl, access_level(tags) if h else 0,
+            bike_level(tags), cycleway_level(tags), oneway_dir(tags), _scale(tags.get("mtb:scale"), 6),
+            _scale(tags.get("mtb:scale:uphill"), 5), TRACKTYPE.get(tags.get("tracktype"), 0) if h else 0,
+            SMOOTHNESS.get(tags.get("smoothness"), 0) if h else 0, maxspeed(tags) if h else 0)
 
 
-WAY_KEYS = ("highway", "surface", "cls", "street", "rough", "sac", "vis", "wfl", "acc")
+WAY_KEYS = ("highway", "surface", "cls", "street", "rough", "sac", "vis", "wfl", "acc",
+            "bike", "cyc", "dir", "mtb", "mtbu", "trk", "smo", "spd")
+
+
+def _spread(routes: dict, subs: dict, rel_ways: dict) -> dict:
+    """way -> niveau le plus haut d'une relation de route qui le contient, directement ou par une sur-relation (une
+    véloroute ou un GR est souvent une relation de relations, à plusieurs étages). Niveaux décroissants : une relation
+    déjà atteinte à un niveau égal ou supérieur n'est pas reparcourue, ce qui coupe aussi les cycles."""
+    eff = {}
+    for rid, lv in sorted(routes.items(), key=lambda kv: -kv[1]):
+        stack = [rid]
+        while stack:
+            r = stack.pop()
+            if eff.get(r, 0) < lv:
+                eff[r] = lv
+                stack += subs.get(r, ())
+    ways = {}
+    for r, lv in eff.items():
+        for i in rel_ways.get(r, ()):
+            ways[i] = max(ways.get(i, 0), lv)
+    return ways
 
 
 def read_osm(paths) -> dict:
     """Ways et points utiles des fichiers OPL : lon, lat concaténés (float32, ~0,5 m), n sommets par way,
-    `hike` (0, 1 balisé, 2 régional ou plus), `water` (0, 1 rivière, canal, côte ou contour de multipolygone
+    `hike` (0, 1 balisé, 2 régional ou plus), `broute` (réseau vélo 0–4), `mroute` (réseau VTT 0–2), `water` (0, 1 rivière, canal, côte ou contour de multipolygone
     d'eau, 3 plan d'eau d'un seul tenant, à trier par surface), attributs `_way` ; points `p_lon`, `p_lat`,
     `p_kind` (F_DRINK eau potable, F_VIEW sommet, col, point de vue)."""
     lon, lat, n, wid, water = array("f"), array("f"), array("i"), array("q"), array("b")
     att = {k: array("B") for k in WAY_KEYS}
     plon, plat, pkind = array("d"), array("d"), array("B")
-    hike, lake, rel_ways, supers = {}, set(), {}, []   # way -> niveau ; ways de contour d'eau ; relations
+    routes = {t: {} for t in ROUTE_TYPE.values()}      # type -> relation -> niveau de réseau
+    lake, rel_ways, subs = set(), {}, {}                # ways de contour d'eau ; relation -> ways, -> sous-relations
     for path in paths:
         with open(path, encoding="utf-8") as f:
             for line in f:
@@ -335,21 +477,21 @@ def read_osm(paths) -> dict:
                     continue
                 mem = [m.split("@")[0] for m in fld.get("M", "").split(",")]
                 rel_ways[ident] = ways = [int(m[1:]) for m in mem if m[:1] == "w"]
-                if tags.get("route") in ("hiking", "foot"):
-                    lv = _LEVEL.get(tags.get("network"), 1)
-                    for i in ways:
-                        hike[i] = max(hike.get(i, 0), lv)
-                    supers += [(int(m[1:]), lv) for m in mem if m[:1] == "r"]
+                if any(m[:1] == "r" for m in mem):
+                    subs[ident] = [int(m[1:]) for m in mem if m[:1] == "r"]
+                if tags.get("route") in ROUTE_TYPE:
+                    net = tags.get("network")
+                    t = ROUTE_TYPE[tags["route"]]
+                    routes[t][ident] = _LEVEL.get(net, 1) if t == "hike" else BIKE_NETWORK.get(net, 1) if t == "broute" \
+                        else 2 if net in ("rcn", "ncn", "icn") else 1
                 elif tags.get("natural") == "water" and tags.get("intermittent") != "yes":
                     lake.update(ways)
-    for rid, lv in supers:      # un GR est souvent une relation de relations : le niveau descend sur les étapes
-        for i in rel_ways.get(rid, ()):
-            hike[i] = max(hike.get(i, 0), lv)
     wid_a, wat = np.array(wid, np.int64), np.array(water, np.uint8)
-    hk = np.array([hike.get(i, 0) for i in wid], np.uint8)
+    net = {t: _spread(r, subs, rel_ways) for t, r in routes.items()}
+    net = {t: np.array([m.get(i, 0) for i in wid], np.uint8) for t, m in net.items()}
     wat[(wat == 0) & np.isin(wid_a, np.fromiter(lake, np.int64, len(lake)))] = 1
     return dict(lon=np.frombuffer(lon, np.float32), lat=np.frombuffer(lat, np.float32), n=np.array(n, np.int64),
-                hike=hk, water=wat, **{k: np.array(v, np.uint8) for k, v in att.items()},
+                hike=net["hike"], broute=net["broute"], mroute=net["mroute"], water=wat, **{k: np.array(v, np.uint8) for k, v in att.items()},
                 p_lon=np.array(plon), p_lat=np.array(plat), p_kind=np.array(pkind, np.uint8))
 
 
@@ -368,7 +510,7 @@ def _project(osm: dict, zone: str) -> dict:
     for i in range(0, len(lon), 10_000_000):
         x[i:i + 10_000_000], y[i:i + 10_000_000] = t.transform(lon[i:i + 10_000_000].astype(np.float64),
                                                                lat[i:i + 10_000_000].astype(np.float64))
-    att = {k: osm[k][keep] for k in ("hike",) + WAY_KEYS}
+    att = {k: osm[k][keep] for k in ("hike", "broute", "mroute") + WAY_KEYS}
     water = osm["water"][keep].copy()
     if len(n):
         lake = water == 3
@@ -400,15 +542,16 @@ def _pick(W: dict, sel) -> tuple:
 def _matched(g: dict, W: dict, ww, sel, value):
     """Tronçons `sel` : points tous les 5 m, ways OSM `ww` à 15 m de même direction (|cos| ≥ 0,8, rangés du
     plus proche au plus loin) ; renvoie (valeur `value` du way par voisin et par point, 0 sans way, voisin
-    valide ?, rang du tronçon, longueur du pas)."""
+    valide ?, rang du tronçon, longueur du pas, way dans le sens du tronçon (u→v) ?)."""
     ox, oy, oux, ouy, oo, _ = _points(*_pick(W, ww), 5.0)
     px, py, ux, uy, ow, w = _points(g["x"], g["y"], g["n"], 5.0, sel)
     D, J = cKDTree(np.column_stack([ox, oy])).query(np.column_stack([px, py]), k=min(6, len(ox)),
                                                     distance_upper_bound=HIKE_BUF_M, workers=-1)
     D, J = D.reshape(len(px), -1), J.reshape(len(px), -1)
     Jc = np.where(np.isfinite(D), J, 0)
-    ok = np.isfinite(D) & (np.abs(oux[Jc] * ux[:, None] + ouy[Jc] * uy[:, None]) >= HIKE_COS)
-    return np.where(ok, value[ww][oo[Jc]], 0), ok, ow, w
+    dot = oux[Jc] * ux[:, None] + ouy[Jc] * uy[:, None]
+    ok = np.isfinite(D) & (np.abs(dot) >= HIKE_COS)
+    return np.where(ok, value[ww][oo[Jc]], 0), ok, ow, w, dot > 0
 
 
 def _majority(code, ow, w, ns) -> np.ndarray:
@@ -429,10 +572,10 @@ def _majority(code, ow, w, ns) -> np.ndarray:
     return out
 
 
-def _spot(level, ow, w, ns) -> np.ndarray:
-    """Plus haut niveau atteint sur au moins SPOT_M (ou la moitié du tronçon) de longueur appariée."""
+def _spot(level, ow, w, ns, metres=SPOT_M) -> np.ndarray:
+    """Plus haut niveau atteint sur au moins `metres` (ou la moitié du tronçon) de longueur appariée."""
     out = np.zeros(ns, np.uint8)
-    need = np.minimum(SPOT_M, 0.5 * np.bincount(ow, weights=w, minlength=ns))
+    need = np.minimum(metres, 0.5 * np.bincount(ow, weights=w, minlength=ns))
     for lv in range(1, int(level.max(initial=0)) + 1):
         out[np.bincount(ow, weights=w * (level >= lv), minlength=ns) >= np.maximum(need, 1e-9)] = lv
     return out
@@ -441,53 +584,75 @@ def _spot(level, ow, w, ns) -> np.ndarray:
 def osm_ways(g: dict, W: dict, natures, near) -> dict:
     """Colonnes tirées du way OSM apparié le plus proche (voir _matched) : chemins IGN (PATHS) avec tous les
     ways `highway`, routes IGN (ROADS) avec les seuls ways de type rue (pas un trottoir ni une piste cyclable
-    voisine). Autres natures : 0 (osm_class : NOCLASS)."""
+    voisine). Autres natures : 0 (osm_class : NOCLASS). Vélo : `osm_bike`, `osm_mtb*` et les bits d'escalier / informal
+    sont de la règle « pire sur ≥ 20 m » (escalier : 10 m), le reste est majoritaire ; `osm_oneway` est orienté
+    (sens du way contre sens du tronçon) ; une route IGN reçoit 3 à `osm_cycleway` si un way cyclable lui est parallèle."""
     ns = len(g["n"])
-    out = {k: np.zeros(ns, np.uint8) for k in ("osm_highway", "osm_surface", "osm_rough", "osm_sac",
-                                               "osm_visibility", "osm_flags", "osm_access")}
+    out = {k: np.zeros(ns, np.uint8) for k in ("osm_highway", "osm_surface", "osm_rough", "osm_sac", "osm_visibility",
+                                               "osm_flags", "osm_access", "osm_bike", "osm_cycleway", "osm_oneway",
+                                               "osm_mtb", "osm_mtb_up", "osm_tracktype", "osm_smooth", "osm_maxspeed")}
     out["osm_class"] = np.full(ns, NOCLASS, np.uint8)
     if not ns or not len(W["n"]):
         return out
     nat = list(natures)
     idx = np.arange(1, len(W["n"]) + 1)
-    for sel, ww in ((np.isin(g["nature"], _codes(nat, PATHS)), near & (W["highway"] > 0)),
-                    (np.isin(g["nature"], _codes(nat, ROADS)), near & W["street"].astype(bool))):
+    for sel, ww, trail in ((np.isin(g["nature"], _codes(nat, PATHS)), near & (W["highway"] > 0), True),
+                           (np.isin(g["nature"], _codes(nat, ROADS)), near & W["street"].astype(bool), False)):
         if not (sel.any() and ww.any()):
             continue
-        val, ok, ow, w = _matched(g, W, ww, sel, idx)
-        j = val[np.arange(len(val)), ok.argmax(axis=1)] - 1      # way apparié le plus proche, -1 sans
+        val, ok, ow, w, same = _matched(g, W, ww, sel, idx)
+        first = ok.argmax(axis=1)
+        j = val[np.arange(len(val)), first] - 1                  # way apparié le plus proche, -1 sans
         a = {k: np.where(j >= 0, W[k][j], 0).astype(np.int64) for k in WAY_KEYS}
-        for col, k in (("osm_highway", "highway"), ("osm_surface", "surface"), ("osm_rough", "rough")):
+        for col, k in (("osm_highway", "highway"), ("osm_surface", "surface"), ("osm_rough", "rough"),
+                       ("osm_cycleway", "cyc"), ("osm_tracktype", "trk"), ("osm_smooth", "smo"), ("osm_maxspeed", "spd")):
             out[col][sel] = _majority(a[k], ow, w, ns)[sel]
         c = _majority(np.where((j >= 0) & (a["cls"] != NOCLASS), a["cls"] + 1, 0), ow, w, ns)
         out["osm_class"][sel & (c > 0)] = (c - 1)[sel & (c > 0)]
-        out["osm_sac"][sel] = _spot(a["sac"], ow, w, ns)[sel]
-        out["osm_visibility"][sel] = _spot(a["vis"], ow, w, ns)[sel]
-        out["osm_access"][sel] = _spot(a["acc"], ow, w, ns)[sel]       # le plus fermé sur ≥ 20 m appariés
+        for col, k in (("osm_sac", "sac"), ("osm_visibility", "vis"), ("osm_access", "acc"), ("osm_bike", "bike")):
+            out[col][sel] = _spot(a[k], ow, w, ns)[sel]               # le plus fermé / difficile sur ≥ 20 m appariés
+        d, fwd = a["dir"], same[np.arange(len(same)), first]
+        out["osm_oneway"][sel] = _majority(np.where(d == 3, 3, np.where(d == 0, 0, 1 + ((d == 1) != fwd))), ow, w, ns)[sel]
         lit = _share(ow, w, a["wfl"] & F_LIT > 0, ns) >= HIKE_FRAC
-        out["osm_flags"][sel] |= (F_VIA * (_spot(a["wfl"] & F_VIA, ow, w, ns) > 0) | F_LIT * lit)[sel].astype(np.uint8)
+        bits = lambda bit, m=SPOT_M: _spot((a["wfl"] & bit) > 0, ow, w, ns, m) > 0
+        f = F_VIA * bits(F_VIA) | F_LIT * lit | F_COND * bits(F_COND) | F_ROUND * bits(F_ROUND)
+        if trail:
+            out["osm_mtb"][sel] = _spot(a["mtb"], ow, w, ns)[sel]
+            out["osm_mtb_up"][sel] = _spot(a["mtbu"], ow, w, ns)[sel]
+            f = f | F_STEPS * bits(F_STEPS, STEPS_M) | F_INFORMAL * bits(F_INFORMAL)
+        else:
+            cw = near & (W["cyc"] == 4)                              # piste latérale : way cyclable à ≤ 15 m, ≥ 60 %
+            if cw.any():
+                _, ok2, ow2, w2, _ = _matched(g, W, cw, sel, idx)
+                lat = _share(ow2, w2, ok2.any(axis=1), ns) >= HIKE_FRAC
+                out["osm_cycleway"][sel] = np.maximum(out["osm_cycleway"], 3 * lat)[sel]
+        out["osm_flags"][sel] |= f[sel].astype(np.uint8)
     return out
 
 
 def osm_labels(g: dict, W: dict, natures) -> dict:
     """Colonnes OSM (hors forêt) des tronçons `g` d'une dalle, d'après les ways et points OSM projetés `W`."""
     ns = len(g["n"])
-    hike, water = np.zeros(ns, np.uint8), np.zeros(ns, np.uint8)
+    net = {c: np.zeros(ns, np.uint8) for c in ("osm_hike", "osm_bike_route", "osm_mtb_route")}
+    water = np.zeros(ns, np.uint8)
     if not ns:
-        return dict(osm_ways(g, W, natures, None), osm_hike=hike, osm_water=water)
+        return dict(osm_ways(g, W, natures, None), osm_water=water, **net)
     m = max(WATER_M, DRINK_M) + 10
     near = (W["box"][1] >= g["x"].min() - m) & (W["box"][0] <= g["x"].max() + m) \
         & (W["box"][3] >= g["y"].min() - m) & (W["box"][2] <= g["y"].max() + m)
     out = osm_ways(g, W, natures, near)
-    # Balisage : points tous les 5 m, au moins un way balisé à 15 m de même direction.
-    hw = near & (W["hike"] > 0)
-    path = np.isin(g["nature"], _codes(list(natures), PATHS))
-    if hw.any() and path.any():
-        lv, _, ow, w = _matched(g, W, hw, path, W["hike"])
-        lv = lv.max(axis=1)
-        hike[_share(ow, w, lv >= 1, ns) >= HIKE_FRAC] = 1
-        hike[_share(ow, w, lv >= 2, ns) >= HIKE_FRAC] = 2
-        hike[~path] = 0
+    # Réseaux : points tous les 5 m, au moins un way membre à 15 m de même direction. Balisage de randonnée : chemins
+    # seulement ; véloroutes et itinéraires VTT passent aussi sur route.
+    nat = list(natures)
+    path, road = np.isin(g["nature"], _codes(nat, PATHS)), np.isin(g["nature"], _codes(nat, ROADS))
+    for col, key, top, sel in (("osm_hike", "hike", 2, path), ("osm_bike_route", "broute", 4, path | road),
+                               ("osm_mtb_route", "mroute", 2, path | road)):
+        hw = near & (W[key] > 0)
+        if hw.any() and sel.any():
+            lv, _, ow, w, _ = _matched(g, W, hw, sel, W[key])
+            lv = lv.max(axis=1)
+            for k in range(1, top + 1):
+                net[col][_share(ow, w, lv >= k, ns) >= HIKE_FRAC] = k
     px, py, _, _, ow, w = _points(g["x"], g["y"], g["n"], 10.0)
     Q = np.column_stack([px, py])
     # Eau : part de la longueur à moins de 50 m d'une rivière, d'un canal, d'un plan d'eau ou de la côte.
@@ -502,7 +667,7 @@ def osm_labels(g: dict, W: dict, natures) -> dict:
         if len(P):
             D, _ = cKDTree(P).query(Q, distance_upper_bound=r, workers=-1)
             out["osm_flags"][np.bincount(ow, weights=np.isfinite(D), minlength=ns) > 0] |= bit
-    return dict(out, osm_hike=hike, osm_water=water)
+    return dict(out, osm_water=water, **net)
 
 
 def _features(paths):
@@ -581,10 +746,54 @@ def forest(g: dict, R: dict, zone: str) -> np.ndarray:
     return np.round(15 * _share(ow, w, inside, ns)).astype(np.uint8)
 
 
+def pn_cores(path) -> dict:
+    """Cœurs terrestres de parc national du GeoJSON des contours des 11 parcs (champ `code_r_enp` = PN_CORE), projetés
+    dans le repère métrique de leur zone et préparés : zone -> polygones."""
+    import shapely
+    from shapely.geometry import shape
+    out = {}
+    for ft in json.loads(Path(path).read_text(encoding="utf-8"))["features"]:
+        if ft["properties"].get("code_r_enp") != PN_CORE:
+            continue
+        g = shape(ft["geometry"])
+        zone = _zone_of(*shapely.get_coordinates(g)[0])
+        g = shapely.transform(g, lambda c, t=transformers(zone)[1]: np.column_stack(t.transform(c[:, 0], c[:, 1])))
+        shapely.prepare(g)
+        out.setdefault(zone, []).append(g)
+    return out
+
+
+def pn_core(g: dict, cores: list) -> np.ndarray:
+    """pn_core = 1 si au moins la moitié de la longueur du tronçon (points tous les 10 m) est dans un cœur de parc national."""
+    import shapely
+    px, py, _, _, ow, w = _points(g["x"], g["y"], g["n"], 10.0)
+    inside = np.zeros(len(px), bool)
+    for poly in cores:
+        x0, y0, x1, y1 = poly.bounds
+        if len(px) and px.max() >= x0 and px.min() <= x1 and py.max() >= y0 and py.min() <= y1:
+            inside |= shapely.contains_xy(poly, px, py)
+    return (_share(ow, w, inside, len(g["n"])) >= 0.5).astype(np.uint8)
+
+
 # ----------------------------------------------------------------------------------------- dossier
 
 STATS = ("path_km", "osm_hike_km", "osm_water_km", "osm_mid_km", "osm_forest_km", "osm_closed_path_km",
-         "osm_closed_road_km")
+         "osm_closed_road_km", "osm_matched_km", "osm_bike_closed_path_km", "osm_bike_closed_road_km",
+         "osm_cycleway_km", "osm_oneway_km", "osm_oneway3_km", "osm_mtb_km", "osm_mtb_route_km", "osm_maxspeed_km",
+         "osm_steps_km", "pn_core_km") + tuple(f"osm_bike{c}_km" for c in range(1, 6)) + tuple(f"osm_bike_route{c}_km" for c in range(1, 5))
+
+
+def bike_stats(T: dict, km, path, road) -> dict:
+    """Km du manifeste pour les colonnes vélo : part appariée, accès par code, aménagement, sens uniques, réseaux, escaliers."""
+    def k(mask):
+        return round(float(km[mask].sum()), 1)
+    return dict({f"osm_bike{c}_km": k(T["osm_bike"] == c) for c in range(1, 6)},
+                **{f"osm_bike_route{c}_km": k(T["osm_bike_route"] == c) for c in range(1, 5)},
+                osm_matched_km=k(T["osm_highway"] > 0), osm_cycleway_km=k(T["osm_cycleway"] > 0),
+                osm_bike_closed_path_km=k(path & (T["osm_bike"] >= 4)), osm_bike_closed_road_km=k(road & (T["osm_bike"] >= 4)),
+                osm_oneway_km=k((T["osm_oneway"] == 1) | (T["osm_oneway"] == 2)), osm_oneway3_km=k(T["osm_oneway"] == 3),
+                osm_mtb_km=k(T["osm_mtb"] > 0), osm_mtb_route_km=k(T["osm_mtb_route"] > 0),
+                osm_maxspeed_km=k(T["osm_maxspeed"] > 0), osm_steps_km=k(T["osm_flags"] & F_STEPS > 0))
 
 
 def derived_version(v: str) -> str:
@@ -593,7 +802,7 @@ def derived_version(v: str) -> str:
     return f"{base}.{int(k or 0) + 1}"
 
 
-def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> dict:
+def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print, pn=None) -> dict:
     d = Path(tiles_dir)
     m = json.loads((d / "manifest.json").read_text())
     if m.get("format") != FORMAT:
@@ -606,13 +815,15 @@ def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> di
     osm = read_osm(opl) if opl else None
     if osm:
         log(f"OSM : {len(osm['n'])} ways, {len(osm['lon'])} sommets, {int((osm['hike'] > 0).sum())} balisés, "
+            f"{int((osm['broute'] > 0).sum())} véloroutes, {int((osm['mroute'] > 0).sum())} VTT, "
             f"{int((osm['water'] > 0).sum())} d'eau, {len(osm['p_kind'])} points, lus en {time.time() - t0:.0f} s")
+    cores = pn_cores(pn) if pn else None
     R = forest_rasters(forest_src, m["tiles"]) if forest_src else None
     if R is not None:
         log(f"forêt : {len(R)} dalles avec du couvert, {time.time() - t0:.0f} s")
     W = {}
     cols = ["calm", "ign_cross"] + ([c for c in COLUMNS if c.startswith("osm_") and c != "osm_forest"] if osm else []) \
-        + (["osm_forest"] if R is not None else [])
+        + (["osm_forest"] if R is not None else []) + (["pn_core"] if cores is not None else [])
     for key, info in sorted(m["tiles"].items()):
         t = time.time()
         zone, ix, iy = split_key(key)
@@ -628,6 +839,8 @@ def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> di
             T.update(osm_labels(g, W[zone], natures))
         if R is not None:
             T["osm_forest"] = forest(g, R, zone)
+        if cores is not None:
+            T["pn_core"] = pn_core(g, cores.get(zone, ()))
         buf = io.BytesIO()
         np.savez_compressed(buf, **T)
         data = buf.getvalue()
@@ -640,6 +853,8 @@ def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> di
             info.pop(k, None)
         if R is not None:
             info["osm_forest_km"] = round(float((km * T["osm_forest"]).sum() / 15), 1)
+        if cores is not None:
+            info["pn_core_km"] = round(float(km[T["pn_core"] > 0].sum()), 1)
         if osm:
             path = np.isin(T["nature"], _codes(natures, PATHS))
             info.update(path_km=round(float(km[path].sum()), 1), osm_hike_km=round(float(km[T["osm_hike"] > 0].sum()), 1),
@@ -647,12 +862,14 @@ def enrich(tiles_dir, osm_paths=(), version: str | None = None, log=print) -> di
                         osm_mid_km=round(float(km[T["osm_class"] == 1].sum()), 1),
                         osm_closed_path_km=round(float(km[path & (T["osm_access"] == ACC_CLOSED)].sum()), 1),
                         osm_closed_road_km=round(float(km[np.isin(T["nature"], _codes(natures, ROADS))
-                                                          & (T["osm_access"] == ACC_CLOSED)].sum()), 1))
+                                                          & (T["osm_access"] == ACC_CLOSED)].sum()), 1),
+                        **bike_stats(T, km, path, np.isin(T["nature"], _codes(natures, ROADS))))
         log(f"{key} : {info['n']} tronçons, {len(data)} octets, {time.time() - t:.1f} s")
     m["derived_from"] = m.get("derived_from") or m["data_version"]
     m["data_version"] = version or derived_version(m["data_version"])
     m["columns"] = {k: COLUMNS[k] for k in cols}
-    m["enriched"] = dict(date=datetime.date.today().isoformat(), osm=sorted(Path(p).name for p in osm_paths))
+    m["enriched"] = dict(date=datetime.date.today().isoformat(), osm=sorted(Path(p).name for p in osm_paths),
+                         **({"pn": Path(pn).name} if pn else {}))
     m["totals"] = totals(m["tiles"])
     for k in ("calm_km",) + STATS:
         if any(k in t for t in m["tiles"].values()):
@@ -679,6 +896,7 @@ def verify(tiles_dir, m: dict, skip=()) -> list[str]:
             got = {k: f[k] for k in cols if k in f.files}
             path = np.isin(f["nature"], _codes(m["natures"], PATHS))
             road = np.isin(f["nature"], _codes(m["natures"], ROADS))
+            km = f["len_dm"] / 1e4
         for k, c in cols.items():
             a = got.get(k)
             if a is None or len(a) != n or str(a.dtype) != c["dtype"]:
@@ -690,6 +908,14 @@ def verify(tiles_dir, m: dict, skip=()) -> list[str]:
         if "osm_class" in got and len(got["osm_class"]) == n and \
                 (got["osm_class"][~(path | road)] != NOCLASS).any():
             bad.append(f"{key} : osm_class posé hors chemins et routes")
+        if all(len(got.get(k, ())) == n for k in ("osm_mtb", "osm_mtb_up", "osm_flags")):
+            if got["osm_mtb"][~path].any() or got["osm_mtb_up"][~path].any() or (got["osm_flags"][~path] & F_INFORMAL).any():
+                bad.append(f"{key} : osm_mtb, osm_mtb_up ou bit informal posé hors chemin")
+        if n > 1000 and "osm_highway" in got and len(got["osm_highway"]) == n:      # avertissements : règle cassée ?
+            if not got["osm_highway"].any():
+                print(f"avertissement {key} : aucun tronçon apparié à OSM sur {n} tronçons", file=sys.stderr)
+            if "osm_bike" in got and len(got["osm_bike"]) == n and km[got["osm_bike"] >= 4].sum() > 0.5 * km.sum():
+                print(f"avertissement {key} : osm_bike >= 4 sur plus de la moitié des km", file=sys.stderr)
         if "calm" in got and len(got["calm"]) == n:
             dif = int((calm(d, key, m["natures"]) != got["calm"]).sum())
             if dif:

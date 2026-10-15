@@ -1,4 +1,4 @@
-"""Étiquettes `pipeline enrich` (calm, osm_hike, osm_water) sur deux mini-dalles synthétiques voisines, hors ligne."""
+"""Étiquettes `pipeline enrich` (calm, osm_hike, osm_water, colonnes vélo) sur deux mini-dalles synthétiques voisines, hors ligne."""
 import json
 
 import numpy as np
@@ -7,7 +7,8 @@ from pyproj import Transformer
 
 from pipeline.build import tile_columns
 from pipeline.check import check
-from pipeline.enrich import NOCLASS, calm, derived_version, enrich, way_class
+from pipeline.enrich import (F_COND, F_INFORMAL, F_ROUND, F_STEPS, NOCLASS, bike_level, calm, cycleway_level, derived_version,
+                             enrich, maxspeed, oneway_dir, verify, way_class, _scale)
 from trailopt import ign
 
 A, B = "32_342", "33_342"                      # B est à l'est de A
@@ -62,7 +63,7 @@ def _opl(path, ways, rels, nodes=None):
         lon, lat = to_wgs.transform([(X0 + x) / 10 for x, _ in pts], [(Y0 + y) / 10 for _, y in pts])
         out.append(f"w{i} T{tags} N" + ",".join(f"n{k}x{a:.7f}y{b:.7f}" for k, (a, b) in enumerate(zip(lon, lat))))
     for i, (tags, mem) in rels.items():
-        out.append(f"r{i} T{tags} M" + ",".join(f"w{w}@" for w in mem))
+        out.append(f"r{i} T{tags} M" + ",".join(f"{w}@" if isinstance(w, str) else f"w{w}@" for w in mem))
     path.write_text("\n".join(out) + "\n")
     return path
 
@@ -214,3 +215,190 @@ def test_osm_access(tiles, tmp_path):
 def test_derived_version():
     assert derived_version("bdtopo-wfs-2026-10e") == "bdtopo-wfs-2026-10e.1"
     assert derived_version("bdtopo-wfs-2026-10e.9") == "bdtopo-wfs-2026-10e.10"
+
+
+# ------------------------------------------------------------------------------------------------ vélo (D70)
+
+def _lab(tiles, tmp_path, ways, rels=None, nodes=None, name="v"):
+    """Étiquette le dossier avec un OPL synthétique ; renvoie (colonnes de la dalle A, manifeste)."""
+    m = enrich(tiles, [_opl(tmp_path / f"{name}.opl", ways, rels or {}, nodes)], log=lambda s: None)
+    return np.load(tiles / f"{A}.npz"), m
+
+
+def test_bike_tag_rules():
+    assert bike_level({"highway": "trunk"}) == 4 and bike_level({"highway": "bridleway"}) == 4
+    assert bike_level({"highway": "residential", "motorroad": "yes"}) == 4
+    assert bike_level({"highway": "footway"}) == 2 and bike_level({"highway": "footway", "bicycle": "designated"}) == 0
+    assert bike_level({"highway": "trunk", "bicycle": "yes"}) == 0 and bike_level({"highway": "path"}) == 0
+    assert bike_level({"highway": "steps"}) == 4 and bike_level({"highway": "steps", "ramp:bicycle": "yes"}) == 2
+    assert bike_level({"highway": "path", "bicycle": "no"}) == 5 and bike_level({"highway": "path", "access": "private"}) == 5
+    assert bike_level({"highway": "service", "vehicle": "no", "bicycle": "permissive"}) == 0
+    assert bike_level({"highway": "primary", "bicycle": "use_sidepath"}) == 3
+    assert bike_level({"highway": "path", "bicycle": "dismount"}) == 2
+    assert bike_level({"highway": "residential", "access": "destination"}) == 1 and bike_level({"highway": "pedestrian"}) == 1
+    assert bike_level({"highway": "residential"}) == 0 and bike_level({"bicycle": "no"}) == 0     # pas une voie
+    assert cycleway_level({"highway": "residential", "cycleway:left": "lane", "cycleway:right": "track"}) == 3
+    assert cycleway_level({"highway": "path", "bicycle": "designated"}) == 4 and cycleway_level({"cyclestreet": "yes"}) == 5
+    assert oneway_dir({"highway": "residential", "oneway": "-1"}) == 2 and oneway_dir({"highway": "motorway"}) == 1
+    assert oneway_dir({"highway": "residential", "oneway": "yes", "oneway:bicycle": "no"}) == 3
+    assert oneway_dir({"highway": "residential", "oneway:bicycle": "no"}) == 0
+    assert bike_level({"highway": "service", "access": "no", "vehicle": "yes"}) == 0                # vehicle plus précis
+    assert bike_level({"highway": "service", "access": "no", "vehicle": "destination"}) == 1
+    assert oneway_dir({"highway": "residential", "junction": "circular"}) == 1
+    assert oneway_dir({"highway": "residential", "oneway": "yes", "cycleway:left": "lane", "cycleway:left:oneway": "-1"}) == 3
+    assert oneway_dir({"highway": "residential", "oneway": "yes", "cycleway:right": "lane", "cycleway:right:oneway": "yes"}) == 1
+    assert oneway_dir({"highway": "residential", "oneway": "-1", "cycleway:right:oneway": "yes"}) == 3
+    assert _scale("2+", 6) == 3 and _scale("0", 6) == 1 and _scale("x", 6) == 0 and _scale("6", 5) == 0
+    assert maxspeed({"maxspeed": "30"}) == 30 and maxspeed({"maxspeed": "FR:zone30"}) == 30
+    assert maxspeed({"maxspeed": "50%20%mph"}) == 80 and maxspeed({"zone:maxspeed": "FR:30"}) == 30
+    assert maxspeed({"maxspeed": "none", "zone:maxspeed": "FR:30"}) == 0 and maxspeed({"maxspeed": "999"}) == 254
+
+
+def test_osm_bike_worst_on_20m(tiles, tmp_path):
+    """Pire valeur dès 20 m appariés (25 m de bicycle=no : 5 ; 15 m : 0) ; défauts France ; bicycle=yes l'emporte."""
+    f, m = _lab(tiles, tmp_path, {
+        11: ("highway=path,bicycle=no", [(1000, 60030), (1250, 60030)]),                   # 25 m sur le sentier 3
+        12: ("highway=path", [(1250, 60030), (6000, 60030)]),
+        13: ("highway=track,bicycle=no", [(E - 5000, 100030), (E - 4850, 100030)]),        # 15 m sur le chemin 4
+        14: ("highway=track", [(E - 4850, 100030), (E - 100, 100030)]),
+        15: ("highway=trunk", [(1000, 1330), (6000, 1330)]),                                # route 2
+        16: ("highway=footway", [(1000, 1010), (6000, 1010)]),                              # sentier 1 : pied à terre
+        17: ("highway=bridleway", [(1000, 80030), (6000, 80030)]),                          # route 6 : non appariée (pas une rue)
+        18: ("highway=unclassified,bicycle=yes", [(1000, 90030), (6000, 90030)]),
+    })
+    b = f["osm_bike"]
+    assert b[SENTIER_LOIN] == 5 and b[CHEMIN_BORD] == 0 and b[ROUTE] == 4 and b[SENTIER_PRES] == 2
+    assert b[PETITE_ROUTE] == 0 and b[DESSERTE] == 0
+    t = m["tiles"][A]
+    assert t["osm_bike5_km"] == 0.5 and t["osm_bike2_km"] == 0.5 and t["osm_bike_closed_road_km"] == 0.5
+    assert t["osm_matched_km"] > 0 and m["totals"]["osm_bike4_km"] == 0.5 and check(tiles) == []
+    # chemin barré par bridleway à pied d'œuvre : un bridleway sur un CHEMIN vaut 4
+    f, _ = _lab(tiles, tmp_path, {21: ("highway=bridleway", [(1000, 60030), (6000, 60030)])}, name="w")
+    assert f["osm_bike"][SENTIER_LOIN] == 4
+
+
+def test_osm_oneway_oriented(tiles, tmp_path):
+    """Sens unique vélo orienté u→v du tronçon, quel que soit le sens de numérisation du way."""
+    fwd, rev = [(1000, 80030), (6000, 80030)], [(6000, 80030), (1000, 80030)]
+    f, m = _lab(tiles, tmp_path, {
+        31: ("highway=residential,oneway=yes", fwd),                                        # route 6 : 1
+        32: ("highway=residential,oneway=yes", [(6000, 90030), (1000, 90030)]),              # route 7, numérisée à l'envers : 2
+        33: ("highway=residential,oneway=yes,oneway:bicycle=no", [(1000, 1330), (6000, 1330)]),     # route 2 : 3
+    })
+    o = f["osm_oneway"]
+    assert (o[PETITE_ROUTE], o[DESSERTE], o[ROUTE]) == (1, 2, 3) and f["osm_oneway"].dtype == np.uint8
+    assert m["tiles"][A]["osm_oneway_km"] == 1.0 and m["tiles"][A]["osm_oneway3_km"] == 0.5
+    f, _ = _lab(tiles, tmp_path, {
+        34: ("highway=residential,oneway=-1", fwd),                                         # 2
+        35: ("highway=residential,junction=roundabout", [(1000, 90030), (6000, 90030)]),     # rond-point implicite : 1 + bit
+        36: ("highway=residential,oneway=yes,cycleway:left=opposite_lane", [(6000, 1330), (1000, 1330)]),   # 3
+    }, name="w")
+    assert (f["osm_oneway"][PETITE_ROUTE], f["osm_oneway"][DESSERTE], f["osm_oneway"][ROUTE]) == (2, 1, 3)
+    assert f["osm_flags"][DESSERTE] & F_ROUND and not f["osm_flags"][PETITE_ROUTE] & F_ROUND
+
+
+def test_osm_networks(tiles, tmp_path):
+    """Véloroute : niveau max du réseau, sur chemins ET routes, hérité à travers plusieurs étages de relations
+    (et sans boucle infinie si deux relations se contiennent) ; route=mtb ; GR hérité de la même façon."""
+    f, m = _lab(tiles, tmp_path, {
+        41: ("highway=path", [(1000, 60030), (6000, 60030)]),
+        42: ("highway=residential", [(1000, 80030), (6000, 80030)]),
+        43: ("highway=path", [(1000, 1030), (6000, 1030)]),
+        44: ("highway=residential", [(1000, 90030), (6000, 90030)]),
+        45: ("highway=track", [(E - 5000, 100030), (E - 100, 100030)]),
+    }, {
+        1: ("route=bicycle,network=icn,type=route", ["r2"]),                                  # EuroVelo -> étape -> sous-étape -> way
+        2: ("route=bicycle,network=ncn,type=route", ["r3"]),
+        3: ("route=bicycle,network=lcn,type=route", [41]),
+        4: ("route=bicycle,type=route", [42]),                                                # sans network : local
+        5: ("route=mtb,network=rcn,type=route", [43]),
+        6: ("route=mtb,type=route", [44]),
+        7: ("route=bicycle,network=ncn,type=route", ["r8", 45]),                              # deux relations qui se contiennent
+        8: ("route=bicycle,network=lcn,type=route", ["r7"]),
+        9: ("route=hiking,network=rwn,type=route", ["r10"]),                                  # GR sur deux étages
+        10: ("route=hiking,type=route", ["r11"]),
+        11: ("route=hiking,type=route", [41]),
+    })
+    assert f["osm_bike_route"][SENTIER_LOIN] == 4 and f["osm_bike_route"][PETITE_ROUTE] == 1
+    assert f["osm_bike_route"][CHEMIN_BORD] == 3 and f["osm_bike_route"][ROUTE] == 0
+    assert f["osm_mtb_route"][SENTIER_PRES] == 2 and f["osm_mtb_route"][DESSERTE] == 1 and f["osm_mtb_route"][SENTIER_LOIN] == 0
+    assert f["osm_hike"][SENTIER_LOIN] == 2
+    t = m["tiles"][A]
+    assert t["osm_bike_route4_km"] == 0.5 and t["osm_bike_route1_km"] == 0.5 and t["osm_mtb_route_km"] == 1.0
+    assert m["columns"]["osm_bike_route"]["range"] == [0, 4] and check(tiles) == []
+
+
+def test_osm_cycleway_mtb_and_attributes(tiles, tmp_path):
+    f, m = _lab(tiles, tmp_path, {
+        51: ("highway=cycleway", [(1000, 60030), (6000, 60030)]),                           # sentier 3 = voie dédiée
+        52: ("highway=path,mtb:scale=2+,mtb:scale:uphill=1,smoothness=very_bad,informal=yes", [(1000, 1010), (1120, 1010)]),
+        53: ("highway=steps", [(1120, 1010), (6000, 1010)]),
+        54: ("highway=track,tracktype=grade3,surface=gravel", [(E - 5000, 100010), (E - 4920, 100010)]),   # 8 m d'escalier plus bas
+        55: ("highway=tertiary,maxspeed=FR:urban,cycleway:right=lane", [(1000, 80030), (6000, 80030)]),
+        56: ("highway=residential,maxspeed=50%20%mph,bicycle_road=yes", [(1000, 90030), (6000, 90030)]),
+        57: ("highway=primary,vehicle:conditional=no%20%@%20%(Nov%20%1-Apr%20%1)", [(1000, 1330), (6000, 1330)]),
+        58: ("highway=track,tracktype=grade3", [(E - 4920, 100010), (E - 100, 100010)]),
+    })
+    assert f["osm_cycleway"][SENTIER_LOIN] == 4 and f["osm_bike"][SENTIER_LOIN] == 0
+    assert f["osm_mtb"][SENTIER_PRES] == 0                                  # 12 m de mtb:scale, puis escalier : < 20 m
+    assert f["osm_flags"][SENTIER_PRES] & F_STEPS and not f["osm_flags"][CHEMIN_BORD] & F_STEPS
+    assert f["osm_tracktype"][CHEMIN_BORD] == 3 and f["osm_flags"][SENTIER_PRES] & F_INFORMAL == 0
+    assert (f["osm_cycleway"][PETITE_ROUTE], f["osm_maxspeed"][PETITE_ROUTE]) == (2, 50)
+    assert (f["osm_cycleway"][DESSERTE], f["osm_maxspeed"][DESSERTE]) == (5, 80)
+    assert f["osm_flags"][ROUTE] & F_COND and not f["osm_flags"][PETITE_ROUTE] & F_COND
+    assert m["columns"]["osm_flags"]["range"] == [0, 255] and m["tiles"][A]["osm_cycleway_km"] == 1.5 and check(tiles) == []
+    f, m = _lab(tiles, tmp_path, {                                          # 25 m d'un chemin : mtb:scale, smoothness, informal
+        61: ("highway=path,mtb:scale=2+,mtb:scale:uphill=1,smoothness=very_bad,informal=yes", [(1000, 60030), (1250, 60030)]),
+        62: ("highway=path", [(1250, 60030), (6000, 60030)]),
+    }, name="w")
+    assert (f["osm_mtb"][SENTIER_LOIN], f["osm_mtb_up"][SENTIER_LOIN]) == (3, 2) and f["osm_flags"][SENTIER_LOIN] & F_INFORMAL
+    assert f["osm_smooth"][SENTIER_LOIN] == 0                               # smoothness : majoritaire, 25 m sur 500 m
+    assert m["tiles"][A]["osm_mtb_km"] == 0.5
+
+
+def test_osm_lateral_cycleway(tiles, tmp_path):
+    """Route IGN : way cyclable parallèle à ≤ 15 m sur ≥ 60 % -> 3 ; à 25 m, ou trottoir non désigné -> 0."""
+    f, _ = _lab(tiles, tmp_path, {
+        71: ("highway=residential", [(1000, 1330), (6000, 1330)]),
+        72: ("highway=cycleway", [(1000, 1380), (6000, 1380)]),                             # à 8 m de la route 2
+        73: ("highway=tertiary", [(1000, 80030), (6000, 80030)]),
+        74: ("highway=cycleway", [(1000, 80250), (6000, 80250)]),                           # à 25 m de la route 6
+        75: ("highway=residential", [(1000, 90030), (6000, 90030)]),
+        76: ("highway=footway", [(1000, 90080), (6000, 90080)]),                            # trottoir non désigné
+    })
+    c = f["osm_cycleway"]
+    assert c[ROUTE] == 3 and c[PETITE_ROUTE] == 0 and c[DESSERTE] == 0
+
+
+def test_bike_columns_absent_without_osm_and_verify(tiles, tmp_path):
+    m = enrich(tiles, log=lambda s: None)
+    assert not any(k.startswith("osm_") for k in np.load(tiles / f"{A}.npz").files) and "osm_bike" not in m["columns"]
+    f, m = _lab(tiles, tmp_path, {81: ("highway=path", [(1000, 60030), (6000, 60030)])})
+    assert verify(tiles, m) == []
+    T = {k: v for k, v in np.load(tiles / f"{A}.npz").items()}
+    T["osm_mtb"] = T["osm_mtb"].copy()
+    T["osm_mtb"][ROUTE] = 1                                                  # mtb:scale sur une route : impossible
+    np.savez_compressed(tiles / f"{A}.npz", **T)
+    assert any("hors chemin" in b for b in verify(tiles, m))
+
+
+def test_pn_core(tiles, tmp_path):
+    """pn_core : au moins la moitié du tronçon dans un cœur terrestre (CTPN) ; aire d'adhésion, cœur marin ignorés ; sans fichier, colonne absente."""
+    def feat(code, x0, x1, y0, y1):
+        ring = [TO_WGS.transform((X0 + x) / 10, (Y0 + y) / 10) for x, y in ((x0, y0), (x1, y0), (x1, y1), (x0, y1), (x0, y0))]
+        return {"type": "Feature", "properties": {"code_r_enp": code}, "geometry": {"type": "MultiPolygon", "coordinates": [[ring]]}}
+    pn = tmp_path / "pn.geojson"
+    pn.write_text(json.dumps({"type": "FeatureCollection", "features": [
+        feat("CTPN", 0, 10000, 59000, 61000),        # sentier 3 entièrement dedans
+        feat("CTPN", 0, 3400, 79000, 81000),         # route 6 : 48 % seulement
+        feat("CTPN", 0, 4000, 89000, 91000),         # route 7 : 60 %
+        feat("AAPN", 0, 10000, 0, 2000),             # aire d'adhésion sur sentier 1 et route 2 : ignorée
+        feat("CMPN", 0, 10000, 99000, 101000)]}))
+    m = enrich(tiles, pn=pn, log=lambda s: None)
+    c = np.load(tiles / f"{A}.npz")["pn_core"]
+    assert c.dtype == np.uint8 and c[SENTIER_LOIN] == 1 and c[DESSERTE] == 1
+    assert c[PETITE_ROUTE] == 0 and c[SENTIER_PRES] == 0 and c[ROUTE] == 0 and c[CHEMIN_BORD] == 0
+    assert m["tiles"][A]["pn_core_km"] == 1.0 and m["totals"]["pn_core_km"] == 1.0
+    assert m["columns"]["pn_core"]["license"] == "Licence Ouverte 2.0" and m["enriched"]["pn"] == "pn.geojson" and check(tiles) == []
+    m = enrich(tiles, log=lambda s: None)
+    assert "pn_core" not in np.load(tiles / f"{A}.npz").files and "pn_core" not in m["columns"]

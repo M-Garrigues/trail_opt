@@ -88,7 +88,18 @@ jobs:
           du -sh tiles
           df -h . | tail -1
 
-      # osmium-tool : réduit l'extrait aux relations de randonnée et à l'eau (pipeline/enrich.py, OSM_FILTER)
+      # Cœurs de parc national (colonne pn_core) : GeoJSON des contours des 11 parcs nationaux, Parcs nationaux de France,
+      # Licence Ouverte 2.0 (https://www.data.gouv.fr/datasets/contours-des-11-parcs-nationaux-de-france). URL de la
+      # version du 2026-02-11 (immuable) + somme de contrôle ; une nouvelle version = changer l'URL et la somme ici. Avant les
+      # extraits OSM : un fichier changé ou disparu arrête le run tout de suite.
+      - name: Contours des parcs nationaux (data.gouv.fr)
+        run: |
+          mkdir -p pn
+          curl -fsSL --retry 3 -o pn/pnx-coeur-aa-ama.geojson \
+            https://static.data.gouv.fr/resources/contours-des-11-parcs-nationaux-de-france/20260211-094019/pnx-coeur-aa-ama.geojson
+          echo "08079d80a0badec10304044a883ed00630f5bfd7a9f23d28e0bec64eedd597c3  pn/pnx-coeur-aa-ama.geojson" | sha256sum -c -
+
+      # osmium-tool : réduit l'extrait aux voies, aux relations de randonnée, vélo et VTT et à l'eau (pipeline/enrich.py, OSM_FILTER)
       - run: sudo apt-get update && sudo apt-get install -y --no-install-recommends osmium-tool
 
       - name: Extraits OSM (Geofabrik)
@@ -106,9 +117,9 @@ jobs:
           ls -l osm
           df -h . | tail -1
 
-      - name: Étiquettes (calm, ign_cross ; colonnes osm_* si des extraits sont donnés)
+      - name: Étiquettes (calm, ign_cross, pn_core ; colonnes osm_* si des extraits sont donnés)
         run: |
-          args=(--tiles tiles --version "$V")
+          args=(--tiles tiles --version "$V" --pn pn/pnx-coeur-aa-ama.geojson)
           if [ -n "$OSM" ]; then
             args+=(--osm osm/*.opl osm/*.foret.pbf)
           fi
@@ -161,5 +172,5 @@ jobs:
         run: |
           gh release create "tiles-$V" -R "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
             --title "Dalles $V" \
-            --notes "Dalles tiles/1 $V = tiles-$BASE + étiquettes par tronçon (pipeline enrich). Colonnes d'origine, calm et ign_cross : BD TOPO® IGN, RGE ALTI®, LiDAR HD — Licence Ouverte Etalab 2.0. Colonnes osm_* : © les contributeurs d'OpenStreetMap, sous licence ODbL 1.0 (https://www.openstreetmap.org/copyright). Licence par colonne : clé columns de manifest.json. Fichiers : tiles-$V-NN.zip, manifest.json, pois.json, coverage.geojson. Copie S3 : scripts/tiles_to_s3.sh." \
+            --notes "Dalles tiles/1 $V = tiles-$BASE + étiquettes par tronçon (pipeline enrich). Colonnes d'origine, calm et ign_cross : BD TOPO® IGN, RGE ALTI®, LiDAR HD — Licence Ouverte Etalab 2.0. pn_core : Parcs nationaux de France, contours des 11 parcs nationaux (data.gouv.fr, version du 2026-02-11), Licence Ouverte 2.0. Colonnes osm_* : © les contributeurs d'OpenStreetMap, sous licence ODbL 1.0 (https://www.openstreetmap.org/copyright). Licence par colonne : clé columns de manifest.json. Fichiers : tiles-$V-NN.zip, manifest.json, pois.json, coverage.geojson. Copie S3 : scripts/tiles_to_s3.sh." \
             out/*

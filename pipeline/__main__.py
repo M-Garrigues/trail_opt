@@ -51,10 +51,11 @@ def main(argv=None):
     e = sub.add_parser("enrich", help="ajoute les étiquettes calm (et osm_hike, osm_water avec --osm) aux dalles d'un dossier")
     e.add_argument("--tiles", required=True, help="dossier de dalles déjà construites, réécrit en place (travailler sur une copie)")
     e.add_argument("--osm", nargs="+", default=[], help="extraits OSM : .osm.pbf Geofabrik (filtrés par osmium) ou .opl déjà filtrés")
+    e.add_argument("--pn", help="GeoJSON des contours des parcs nationaux (data.gouv.fr) : colonne pn_core")
     e.add_argument("--version", help="data_version dérivée (défaut : <version du dossier>.<n+1>)")
     a = ap.parse_args(argv)
     if a.cmd == "enrich":
-        m = enrich(a.tiles, a.osm, a.version, log=lambda s: print(s, flush=True))
+        m = enrich(a.tiles, a.osm, a.version, log=lambda s: print(s, flush=True), pn=a.pn)
         print(json.dumps(m["totals"], ensure_ascii=False))
         return
     if a.cmd == "merge":
