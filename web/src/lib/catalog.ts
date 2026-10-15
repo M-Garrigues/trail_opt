@@ -44,8 +44,8 @@ const BIKE_GRADES = [5, 10, 12, 15, 18, 20, 22, 25, 30, 35, 40];
 export const PROFILES: Record<Sport, Partial<Record<Surface, Profile>>> = {
   trail: { trail: TRAIL, any: TRAIL, road: TRAIL },
   bike: {
-    mtb: { dist: { def: 30, min: 5, max: 100, presets: [20, 30, 40, 50, 60, 80] }, grade: 22, grades: BIKE_GRADES, speed: 15, climb: 600 },
-    gravel: { dist: { def: 50, min: 10, max: 200, presets: [30, 50, 80, 100, 150, 200] }, grade: 20, grades: BIKE_GRADES, speed: 20, climb: 800 },
+    mtb: { dist: { def: 30, min: 5, max: 100, presets: [20, 30, 40, 50, 60, 80] }, grade: 25, grades: BIKE_GRADES, speed: 15, climb: 600 },
+    gravel: { dist: { def: 50, min: 10, max: 200, presets: [30, 50, 80, 100, 150, 200] }, grade: 22, grades: BIKE_GRADES, speed: 20, climb: 800 },
     road: { dist: { def: 60, min: 10, max: 200, presets: [50, 80, 100, 120, 150, 200] }, grade: 0, grades: [...BIKE_GRADES, 0], speed: 27, climb: 1200 }, // D78 : route = aucune pente max (0 = sans limite)
   },
 };

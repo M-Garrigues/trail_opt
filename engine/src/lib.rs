@@ -10,6 +10,7 @@ pub mod l93;
 pub mod plan;
 pub mod prep;
 pub mod problem;
+pub mod profile;
 pub mod share;
 pub mod solve;
 pub mod tiles;

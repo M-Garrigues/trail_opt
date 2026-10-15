@@ -67,6 +67,8 @@ pub enum Code {
     // « Route » = voies revêtues seulement (D53, api.md v1.8)
     PavedNetworkTooShort,
     PavedNetworkMajorRoads,
+    // Route vélo : part de grands axes (D72, D54 non bloquant en vélo)
+    MajorRoadsShare,
     // Admin (contracts/admin.md, D47)
     AdminDenied,
     AdminLocked,
@@ -80,7 +82,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 48] = {
+    pub const ALL: [Code; 49] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -129,6 +131,7 @@ impl Code {
             LowSurfaceShare,
             PavedNetworkTooShort,
             PavedNetworkMajorRoads,
+            MajorRoadsShare,
             AdminDenied,
             AdminLocked,
         ]
@@ -185,7 +188,7 @@ impl Code {
             // null : sans objet (mode max : pas de D+ demandé)
             TargetNotReached => (Warning, &["dplus_m", "best_dplus_m", "km", "best_km"]),
             FewerLoops => (Warning, &["asked", "got"]),
-            LowSurfaceShare => (Warning, &["pct"]),
+            LowSurfaceShare | MajorRoadsShare => (Warning, &["pct"]),
         }
     }
 }

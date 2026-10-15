@@ -386,11 +386,21 @@ pub fn post(
     if let Err(e) = put(&id, &data) {
         return fail(Msg::error(Code::Busy, e), "post");
     }
-    let log = json!({"msg": "share", "op": "post", "status": 201, "bytes": data.len(), "internal": internal});
+    let mut log = json!({"msg": "share", "op": "post", "status": 201, "bytes": data.len(), "internal": internal});
+    add_mode(&mut log, &data);
     Reply {
         status: 201,
         body: json!({ "id": id }),
         log,
+    }
+}
+
+/// Ajoute au journal `sport`, `goal`, `surface` de la boucle (admin : partages par mode). `request`
+/// n'est pas signé : liste blanche de l'admin (`admin::mode_fields`), champ omis sinon.
+fn add_mode(log: &mut Value, data: &[u8]) {
+    let req = serde_json::from_slice::<Value>(data).map_or(Value::Null, |v| v["request"].clone());
+    if let Some(o) = log.as_object_mut() {
+        o.extend(crate::admin::mode_fields(&req));
     }
 }
 
@@ -403,11 +413,15 @@ pub fn get(id: &str, load: impl FnOnce(&str) -> Result<Option<Vec<u8>>, String>)
     }
     match load(id) {
         Ok(Some(b)) => match serde_json::from_slice::<Value>(&b) {
-            Ok(body) => Reply {
-                status: 200,
-                body,
-                log: json!({"msg": "share", "op": "get", "status": 200}),
-            },
+            Ok(body) => {
+                let mut log = json!({"msg": "share", "op": "get", "status": 200});
+                add_mode(&mut log, &b);
+                Reply {
+                    status: 200,
+                    body,
+                    log,
+                }
+            }
             Err(e) => fail(
                 Msg::error(Code::Busy, format!("stored loop unreadable: {e}")),
                 "get",
@@ -719,4 +733,47 @@ pub fn sigv4(
     }
     let sig = hex(mac(k.as_ref(), &to_sign).as_ref());
     format!("AWS4-HMAC-SHA256 Credential={key_id}/{scope}, SignedHeaders={signed}, Signature={sig}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Journal du partage (admin, partages par mode) : liste blanche seule, `request` n'étant pas signé.
+    #[test]
+    fn journal_du_partage_par_mode() {
+        let stored = |req: Value| {
+            json!({"request": req, "candidate": {}})
+                .to_string()
+                .into_bytes()
+        };
+        // GET d'une boucle stockée : valeurs valides journalisées
+        let b =
+            stored(json!({"sport": "bike", "goal": "target", "surface": "gravel", "lat": "45.1"}));
+        let g = get("abcdefghijkl", |_| Ok(Some(b.clone())));
+        assert_eq!(g.status, 200);
+        assert_eq!(
+            g.log,
+            json!({"msg": "share", "op": "get", "status": 200, "sport": "bike", "goal": "target", "surface": "gravel"})
+        );
+        // hors liste, injection, mauvais type, voie d'un autre sport : omis
+        let mut log = json!({"msg": "share"});
+        let bad = json!({"sport": "bike\" or 1=1", "goal": 3, "surface": "trail", "x": "y"});
+        add_mode(&mut log, &stored(bad));
+        assert_eq!(log, json!({"msg": "share"}));
+        // lien d'avant D70 (sans sport) : voie du trail gardée, sport omis (l'admin le compte en trail)
+        let mut log = json!({});
+        add_mode(
+            &mut log,
+            &stored(json!({"goal": "max_dplus", "surface": "any"})),
+        );
+        assert_eq!(log, json!({"goal": "max_dplus", "surface": "any"}));
+        let mut log = json!({});
+        add_mode(&mut log, &stored(json!({"surface": "mtb"})));
+        assert_eq!(log, json!({}));
+        // corps illisible : rien
+        let mut log = json!({});
+        add_mode(&mut log, b"not json");
+        assert_eq!(log, json!({}));
+    }
 }

@@ -1,10 +1,11 @@
-//! `GET /api/plan` (contrat `.team/contracts/api.md` v1.7 ; `diagnose=1` est traité à part, hors `KNOWN`) : paramètres de requête → statut HTTP,
+//! `GET /api/plan` (contrat `.team/contracts/api.md` v2.0 ; `diagnose=1` est traité à part, hors `KNOWN`) : paramètres de requête → statut HTTP,
 //! corps JSON et ligne de log. Logique pure, sans dépendance Lambda (testée par `cargo test`) ;
 //! le binaire `lambda` ne fait que la glue (événement, Turnstile, réponse).
 use serde_json::{Map, Value, json};
 
 use crate::codes::{Code, Msg};
 use crate::plan::{self, Request};
+use crate::profile::Profile;
 use crate::tiles::TileStore;
 
 /// Plafond de calcul en temps réel (D8 : ~15 s, timeout Lambda 30 s).
@@ -17,16 +18,13 @@ pub const MANY_MAX_N: usize = 2;
 /// Jeton Turnstile : au-delà, refus local sans appel à siteverify (E3).
 pub const MAX_TOKEN_LEN: usize = 2048;
 pub const SEED_MAX: u64 = 999;
-pub const GRADE_PCT: (f64, f64) = (5.0, 60.0);
-/// Filtre de pente par défaut (D31, sur 50 m glissants) ; `max_grade_pct=0` : sans limite.
-pub const DEFAULT_GRADE_PCT: f64 = 60.0;
 /// D+ du mode cible (m) ; min_distance : bornes du moteur (`plan::MD_DPLUS_M`).
 pub const TARGET_DPLUS_M: (f64, f64) = (10.0, 5000.0);
 /// Simplification Douglas–Peucker en plan (m).
 pub const SIMPLIFY_M: f64 = 1.0;
 /// Tolérance d'altitude de la simplification (m, D67) : un point qui s'écarte davantage du segment simplifié est gardé.
 pub const SIMPLIFY_Z_M: f64 = 1.0;
-const KNOWN: [&str; 17] = [
+const KNOWN: [&str; 18] = [
     "lat",
     "lon",
     "goal",
@@ -35,6 +33,7 @@ const KNOWN: [&str; 17] = [
     "max_distance_km",
     "climbs",
     "max_grade_pct",
+    "sport",
     "surface",
     "roads",
     "no_repeat_junction",
@@ -137,23 +136,40 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
             json!({"min_m": TARGET_DPLUS_M.0, "max_m": TARGET_DPLUS_M.1}),
         ));
     }
-    // v1.7 : `surface` (préférence) ; l'ancien filtre `roads` (liens partagés, historique) est
-    // encore lu et traduit, `surface` l'emporte. Comme la migration des réglages du front : seul
-    // « toutes routes » (choisi exprès) devient `any`, l'ancien défaut `minor` devient `trail`.
-    let surface = match (s("surface"), s("roads")) {
-        (Some(x @ ("trail" | "any" | "road")), _) => x,
-        (None, None) => "trail",
-        (None, Some("unpaved" | "pedestrian" | "minor")) => "trail",
-        (None, Some("all")) => "any",
-        (x, y) => return Err(Msg::error(Code::RoadsUnknown, x.or(y).unwrap_or(""))),
+    // D70 : `sport` (absent = trail) ; `surface` a ses valeurs propres au sport (`Profile::of`).
+    // v1.7 : l'ancien filtre `roads` (liens partagés, historique, trail seulement) est encore lu et
+    // traduit, `surface` l'emporte. Comme la migration des réglages du front : seul « toutes
+    // routes » (choisi exprès) devient `any`, l'ancien défaut `minor` devient `trail`.
+    let sport = s("sport").unwrap_or("trail");
+    if !["trail", "bike"].contains(&sport) {
+        return Err(bad("sport: trail or bike expected"));
+    }
+    let surface = match (sport, s("surface"), s("roads")) {
+        ("bike", _, Some(y)) => return Err(Msg::error(Code::RoadsUnknown, y)),
+        (_, Some(x), _) => x,
+        ("trail", None, None) => "trail",
+        ("trail", None, Some("unpaved" | "pedestrian" | "minor")) => "trail",
+        ("trail", None, Some("all")) => "any",
+        ("trail", None, Some(y)) => return Err(Msg::error(Code::RoadsUnknown, y)),
+        _ => "road", // vélo sans type de voie
     };
-    let grade = match num("max_grade_pct")?.unwrap_or(DEFAULT_GRADE_PCT) {
-        0.0 => None,
-        g if (GRADE_PCT.0..=GRADE_PCT.1).contains(&g) => Some(g),
+    let profile = Profile::of(sport, surface)?;
+    // trail : 0 = sans limite, sinon 5–60 % ; vélo : limite de montée 5–40 % ; défaut du profil
+    let (lo, hi) = profile.grade_pct;
+    // (Route vélo : limite par défaut infinie, donc aucune ; D78)
+    let default_pct = if profile.grade_up_max.is_finite() {
+        (profile.grade_up_max * 100.0).round()
+    } else {
+        0.0
+    };
+    let grade = match num("max_grade_pct")?.unwrap_or(default_pct) {
+        0.0 if profile.grade_unlimited => None,
+        g if (lo..=hi).contains(&g) => Some(g),
         _ => {
+            let zero = if profile.grade_unlimited { "0 or " } else { "" };
             return Err(Msg::error(
                 Code::MaxGradeInvalid,
-                "max_grade_pct must be 0 or 5..60",
+                format!("max_grade_pct must be {zero}{lo}..{hi}"),
             ));
         }
     };
@@ -174,7 +190,7 @@ pub fn parse(query: &[(String, String)]) -> Result<(Request, bool), Msg> {
         "max_distance_km": num("max_distance_km")?,
         "climbs": s("climbs").unwrap_or("balanced"),
         "max_grade": grade.map(|g| g / 100.0),
-        "surface": surface,
+        "sport": sport, "surface": surface,
         "node_simple": flag("no_repeat_junction", true)?,
         "n_candidates": n,
         "polygon": polygon,
@@ -461,6 +477,7 @@ pub fn handle(
     // revue F2 : seulement des valeurs validées dans les journaux (climbs est validé plus loin)
     let climbs = ["short", "balanced", "long"].contains(&req.climbs.as_str());
     log["climbs"] = json!(climbs.then_some(&req.climbs));
+    log["sport"] = json!(req.sport);
     log["surface"] = json!(req.surface);
     log["max_grade_pct"] = json!(req.max_grade.map_or(0.0, |g| (g * 100.0).round()));
     log["via_n"] = json!(req.via.len());

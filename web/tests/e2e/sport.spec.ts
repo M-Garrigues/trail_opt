@@ -35,7 +35,7 @@ test('bascule de sport : accent vert, voies et réglages du vélo, sport mémori
   await expect(page.locator('#surface label.on')).toHaveText(isFr() ? 'VTT' : 'MTB');
   await expect(page.getByRole('button', { name: find() })).toBeVisible();
 
-  // VTT : 30 km, pente de la montée par défaut (22 %) non envoyée, sport=bike
+  // VTT : 30 km, pente de la montée par défaut (25 %) non envoyée, sport=bike
   await page.getByRole('button', { name: find() }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   let q = calls[0].searchParams;
@@ -85,7 +85,7 @@ test('pente max vélo : « sans limite » par défaut en Route seulement (D78)',
   await placeStart(page);
   const none = isFr() ? 'sans limite' : 'no limit';
   await openOptions(page);
-  await expect(page.locator('#max-grade option', { hasText: none })).toHaveCount(0); // VTT : 22 %, pas de « sans limite »
+  await expect(page.locator('#max-grade option', { hasText: none })).toHaveCount(0); // VTT : 25 %, pas de « sans limite »
   await closeOptions(page);
   await surfaces(page).nth(2).click();
   await openOptions(page);

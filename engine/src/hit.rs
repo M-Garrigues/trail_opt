@@ -59,12 +59,12 @@ fn referrer(r: &str, own: &[String]) -> Option<String> {
 /// de leur tranche (5 km, 250 m) ou à l'entier (tranche 1 : temps à la seconde) : jamais de valeur
 /// exacte qui rattacherait l'événement à la ligne `plan` du calcul (revue M4).
 const NUMS: [(&str, f64, f64, f64); 11] = [
-    ("km", 0.0, 300.0, 5.0),
+    ("km", 0.0, 500.0, 5.0),
     ("dplus_m", 0.0, 10_000.0, 250.0),
     ("max_grade_pct", 0.0, 60.0, 1.0),
     ("via_n", 0.0, 5.0, 1.0),
     ("rank", 1.0, 4.0, 1.0),
-    ("got_km", 0.0, 300.0, 5.0),
+    ("got_km", 0.0, 500.0, 5.0),
     ("got_dplus_m", 0.0, 20_000.0, 250.0),
     ("trail_pct", 0.0, 100.0, 1.0),
     ("mixed_pct", 0.0, 100.0, 1.0),
@@ -72,14 +72,15 @@ const NUMS: [(&str, f64, f64, f64); 11] = [
     ("compute_s", 0.0, 60.0, 1.0),
 ];
 /// Champs texte d'un événement : valeurs permises (liste blanche).
-const ENUMS: [(&str, &[&str]); 5] = [
+const ENUMS: [(&str, &[&str]); 6] = [
     (
         "event",
         &["share_click", "share_created", "gpx", "shared_open"],
     ),
     ("lang", &["fr", "en"]),
     ("goal", &["max_dplus", "target", "min_distance"]),
-    ("surface", &["trail", "any", "road"]),
+    ("sport", &["trail", "bike"]),
+    ("surface", &["trail", "any", "road", "mtb", "gravel"]),
     ("climbs", &["short", "balanced", "long"]),
 ];
 
@@ -345,6 +346,24 @@ mod tests {
             (json!(true), json!(25))
         );
         assert!(event(&json!({"event": "gpx", "smooth": "oui"})).is_none());
+        // D70 : sport, surfaces vélo, sorties jusqu'à 500 km (tranche de 5 km)
+        let e = event(
+            &json!({"event": "gpx", "sport": "bike", "surface": "mtb", "km": 300,
+            "got_km": 315.5}),
+        )
+        .unwrap();
+        assert_eq!(
+            (&e["sport"], &e["surface"], &e["km"], &e["got_km"]),
+            (&json!("bike"), &json!("mtb"), &json!(300), &json!(315))
+        );
+        assert!(event(&json!({"event": "gpx", "sport": "trail", "surface": "gravel"})).is_some());
+        for bad in [
+            json!({"event": "gpx", "sport": "ski"}),
+            json!({"event": "gpx", "km": 501}),
+            json!({"event": "gpx", "got_km": 501}),
+        ] {
+            assert!(event(&bad).is_none(), "{bad}");
+        }
     }
 
     #[test]

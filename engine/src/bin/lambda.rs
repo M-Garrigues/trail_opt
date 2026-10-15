@@ -292,9 +292,10 @@ async fn handler(ctx: Arc<Ctx>, req: Request) -> Result<Response<Body>, Error> {
                 let region = std::env::var("AWS_REGION").unwrap_or_else(|_| "eu-north-1".into());
                 // local (build de développement + AWS_PROFILE) : AWS CLI, sinon API signée
                 let cli = cfg!(debug_assertions) && std::env::var_os("AWS_PROFILE").is_some();
-                // quotas Logs : 5 appels/s (API) ; AWS CLI : ~1 s par appel, tout en parallèle
+                // quotas Logs : 5 appels/s (API) ; AWS CLI : ~1 s par appel. Avec `aws login`, chaque processus
+                // rafraîchit son jeton : à 9 en parallèle, CreateOAuth2Token répond 429 et casse le profil (2026-10-15)
                 let pace = if cli {
-                    (9, Duration::from_millis(300))
+                    (3, Duration::from_secs(1))
                 } else {
                     (5, Duration::from_secs(1))
                 };

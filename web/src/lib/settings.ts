@@ -89,7 +89,7 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   if (t.goal !== 'max_dplus') q.set('dplus_m', String(v.dplus_m));
   if (t.goal === 'min_distance' && v.max_distance_km != null) q.set('max_distance_km', String(v.max_distance_km));
   q.set('climbs', s.climbs);
-  if (s.maxGrade !== gradeDefault(sport, s.surface)) q.set('max_grade_pct', String(s.maxGrade)); // absent = défaut du profil (60 trail, 22/20/20 vélo)
+  if (s.maxGrade !== gradeDefault(sport, s.surface)) q.set('max_grade_pct', String(s.maxGrade)); // absent = défaut du profil (60 trail, 25/22/0 vélo, D81)
   q.set('surface', s.surface);
   q.set('no_repeat_junction', String(s.noRepeat));
   if (s.smooth !== 'auto') q.set('smooth', String(s.smooth === 'on')); // D62 : absent = défaut du mode

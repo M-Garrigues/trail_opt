@@ -31,8 +31,8 @@ describe('profils par sport (api.md § Sports, synthèse § 2)', () => {
     const t = md('trail', 'trail'), base = byId('shortest').fields[1];
     expect([t.min, t.max, t.presets, t.auto!({ dplus_m: 500 })]).toEqual([base.min, base.max, base.presets, base.auto!({ dplus_m: 500 })]);
   });
-  it('pente : défauts 60 / 22 / 20 / 0 (D78 : route sans limite), vélo 5–40, « sans limite » en route seulement, le défaut est proposé', () => {
-    expect([profile('trail', 'trail').grade, profile('bike', 'mtb').grade, profile('bike', 'gravel').grade, profile('bike', 'road').grade]).toEqual([60, 22, 20, 0]);
+  it('pente : défauts 60 / 25 / 22 / 0 (D78, D81 : route sans limite), vélo 5–40, « sans limite » en route seulement, le défaut est proposé', () => {
+    expect([profile('trail', 'trail').grade, profile('bike', 'mtb').grade, profile('bike', 'gravel').grade, profile('bike', 'road').grade]).toEqual([60, 25, 22, 0]);
     for (const sf of SURFACES.bike) {
       const g = gradeChoices('bike', sf);
       expect([Math.min(...g.filter(Boolean)), Math.max(...g)]).toEqual([5, 40]);
@@ -51,8 +51,8 @@ describe('requête vélo', () => {
     expect(['mtb', 'gravel', 'road'].map((sf) => q(bike(sf as Surface)).get('surface'))).toEqual(['mtb', 'gravel', 'road']);
   });
   it('max_grade_pct absent au défaut du profil, envoyé sinon', () => {
-    expect(q(bike('mtb')).has('max_grade_pct')).toBe(false); // 22
-    expect(q(bike('gravel', { maxGrade: 20 })).has('max_grade_pct')).toBe(false);
+    expect(q(bike('mtb')).has('max_grade_pct')).toBe(false); // 25
+    expect(q(bike('gravel', { maxGrade: 22 })).has('max_grade_pct')).toBe(false);
     expect(q(bike('mtb', { maxGrade: 20 })).get('max_grade_pct')).toBe('20');
     expect(q(bike('road', { maxGrade: 0 })).has('max_grade_pct')).toBe(false); // route : sans limite par défaut (D78)
     expect(q(bike('road', { maxGrade: 25 })).get('max_grade_pct')).toBe('25');
@@ -60,22 +60,22 @@ describe('requête vélo', () => {
 });
 
 describe('réglages par sport', () => {
-  it('défauts vélo : VTT, 30 km, pente 22 ; une clé par sport, la clé trail ne change pas', () => {
+  it('défauts vélo : VTT, 30 km, pente 25 ; une clé par sport, la clé trail ne change pas', () => {
     const s = defaultSettings('bike');
-    expect([s.surface, s.maxGrade, s.values.target.distance_km, s.values.max_dplus.distance_km]).toEqual(['mtb', 22, 30, 30]);
+    expect([s.surface, s.maxGrade, s.values.target.distance_km, s.values.max_dplus.distance_km]).toEqual(['mtb', 25, 30, 30]);
     expect(defaultSettings().surface).toBe('trail');
   });
   it('réglages d’un autre sport ou corrompus → défauts du sport demandé', () => {
-    expect(mergeSettings({ surface: 'any', maxGrade: 0 }, 'bike')).toMatchObject({ surface: 'mtb', maxGrade: 22 });
+    expect(mergeSettings({ surface: 'any', maxGrade: 0 }, 'bike')).toMatchObject({ surface: 'mtb', maxGrade: 25 });
     expect(mergeSettings({ surface: 'gravel', maxGrade: 25 }, 'bike')).toMatchObject({ surface: 'gravel', maxGrade: 25 });
     expect(mergeSettings({ surface: 'mtb', maxGrade: 22 }, 'trail')).toMatchObject({ surface: 'trail', maxGrade: 60 });
-    expect(mergeSettings({ surface: 'gravel', maxGrade: 0 }, 'bike').maxGrade).toBe(20); // « sans limite » : route seulement
+    expect(mergeSettings({ surface: 'gravel', maxGrade: 0 }, 'bike').maxGrade).toBe(22); // « sans limite » : route seulement
     expect(mergeSettings({ surface: 'road', maxGrade: 0 }, 'bike').maxGrade).toBe(0);
   });
   it('changer de type de voie : le défaut suit, une valeur choisie est ramenée dans les bornes', () => {
     const s = defaultSettings('bike');
     setSurface(s, 'bike', 'gravel');
-    expect([s.surface, s.values.target.distance_km, s.maxGrade]).toEqual(['gravel', 50, 20]);
+    expect([s.surface, s.values.target.distance_km, s.maxGrade]).toEqual(['gravel', 50, 22]);
     setSurface(s, 'bike', 'road');
     expect([s.values.target.distance_km, s.maxGrade]).toEqual([60, 0]); // D78 : route sans limite
     s.values.target.distance_km = 180; // choisi
@@ -102,7 +102,7 @@ describe('lien partagé et historique : le sport', () => {
     expect(s).toMatchObject({ typeId: 'target', surface: 'gravel', maxGrade: 25, climbs: 'long' });
     expect(s.values.target).toEqual({ distance_km: 80, dplus_m: 900 });
     // pente absente = défaut du profil (gravel 20), voie du trail refusée en vélo
-    expect(settingsFromRequest({ sport: 'bike', goal: 'target', surface: 'gravel' }, defaultSettings('bike')).maxGrade).toBe(20);
+    expect(settingsFromRequest({ sport: 'bike', goal: 'target', surface: 'gravel' }, defaultSettings('bike')).maxGrade).toBe(22);
     expect(settingsFromRequest({ sport: 'bike', goal: 'target', surface: 'any' }, defaultSettings('bike')).surface).toBe('mtb');
   });
   it('lien sans sport = trail, comme avant', () => {
@@ -177,7 +177,7 @@ describe('événements, GPX', () => {
     expect('sport' in eventBody('shared_open', {}, null, null, 0, 'fr')).toBe(false);
   });
   it('pente max des événements : défaut du profil quand la requête ne la porte pas', () => {
-    expect(eventBody('gpx', { ...req, sport: 'bike', surface: 'mtb' }, null, 1, 3, 'fr').max_grade_pct).toBe(22);
+    expect(eventBody('gpx', { ...req, sport: 'bike', surface: 'mtb' }, null, 1, 3, 'fr').max_grade_pct).toBe(25);
     expect(eventBody('gpx', { ...req, sport: 'bike', surface: 'road' }, null, 1, 3, 'fr').max_grade_pct).toBe(0);
     expect(eventBody('gpx', { ...req, surface: 'trail' }, null, 1, 3, 'fr').max_grade_pct).toBe(60);
   });

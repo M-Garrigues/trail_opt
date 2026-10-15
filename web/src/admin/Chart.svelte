@@ -1,5 +1,6 @@
 <script lang="ts">
   // Graphique canvas maison (comme le profil) : courbes, ou barres empilées. `values` alignées sur `labels`.
+  // `color` : couleur CSS ou `var(--jeton)` (résolu au dessin, donc clair/sombre).
   import { fmt } from './stats';
 
   type Series = { name: string; color: string; values: number[] };
@@ -9,6 +10,12 @@
 
   let canvas = $state<HTMLCanvasElement>();
   let width = $state(600);
+  let theme = $state(0); // redessin au changement de thème système
+  $effect(() => {
+    const m = matchMedia('(prefers-color-scheme: dark)'), f = () => theme++;
+    m.addEventListener('change', f);
+    return () => m.removeEventListener('change', f);
+  });
   const empty = $derived(!labels.length || series.every((s) => s.values.every((v) => !v)));
 
   function draw() {
@@ -19,6 +26,7 @@
     const c = canvas.getContext('2d')!;
     c.scale(r, r);
     const css = getComputedStyle(canvas);
+    const col = (c: string) => (c.startsWith('var(') ? css.getPropertyValue(c.slice(4, -1).trim()).trim() || '#888' : c);
     const muted = css.getPropertyValue('--muted').trim() || '#555', grid = css.getPropertyValue('--border').trim() || '#ddd';
     const L = 48, R = 8, T = 8, B = 22, n = labels.length;
     const tops = labels.map((_, i) => (kind === 'bar' ? series.reduce((a, s) => a + (s.values[i] ?? 0), 0) : Math.max(...series.map((s) => s.values[i] ?? 0))));
@@ -46,25 +54,25 @@
         let base = 0;
         for (const s of series) {
           const v = s.values[i] ?? 0;
-          c.fillStyle = s.color;
+          c.fillStyle = col(s.color);
           c.fillRect(X(i) - bw / 2, Y(base + v), bw, Y(base) - Y(base + v));
           base += v;
         }
       });
     } else {
       for (const s of series) {
-        c.strokeStyle = s.color;
+        c.strokeStyle = col(s.color);
         c.lineWidth = 2;
         c.beginPath();
         // valeur absente (NaN) : la courbe s'interrompt
         s.values.forEach((v, i) => (Number.isFinite(v) && i && Number.isFinite(s.values[i - 1]) ? c.lineTo(X(i), Y(v)) : c.moveTo(X(i), Y(v))));
         c.stroke();
-        if (n < 60) { c.fillStyle = s.color; s.values.forEach((v, i) => { if (Number.isFinite(v)) { c.beginPath(); c.arc(X(i), Y(v), 2.5, 0, 7); c.fill(); } }); }
+        if (n < 60) { c.fillStyle = col(s.color); s.values.forEach((v, i) => { if (Number.isFinite(v)) { c.beginPath(); c.arc(X(i), Y(v), 2.5, 0, 7); c.fill(); } }); }
       }
     }
   }
 
-  $effect(() => { void [labels, series, width, kind, canvas]; draw(); });
+  $effect(() => { void [labels, series, width, kind, canvas, theme]; draw(); });
 </script>
 
 <figure>

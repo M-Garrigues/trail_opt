@@ -10,25 +10,23 @@ use serde_json::{Value, json};
 use crate::codes::{Code, Msg};
 use crate::l93::Frame;
 use crate::prep::{
-    self, CLS_MAJOR, CLS_MIXED, CLS_ROAD, CLS_TRAIL, Edge, FREE_RADIUS, LAB_HIKE, LAB_NOISY,
-    LAB_WATER, N_CLS, N_LAB, Net, REDUCE_K, REDUCE_MIN_EDGES, Region,
+    self, CLS_MAJOR, CLS_MIXED, CLS_ROAD, CLS_TRAIL, Edge, FREE_RADIUS, Grade, LAB_HIKE, LAB_NOISY,
+    LAB_PREF, LAB_WATER, N_CLS, N_LAB, Net, REDUCE_K, REDUCE_MIN_EDGES, Region,
 };
 use crate::problem::{
     COMFORT_MD, MAJOR_K, MAJOR_K_MAX, MAJOR_PRICE_MAX, SURF_MAX, SURF_TARGET, SURF_TARGET_BAND,
 };
+use crate::profile::{Profile, TRAIL_ANY};
 use crate::tiles::{TileStore, Troncons};
 use crate::{Budget, Problem, optimize};
 
 pub const DIST_KM: (f64, f64) = (2.0, 100.0);
 pub const TIME_S: (f64, f64) = (5.0, 180.0);
-/// Disque de 25 km de rayon.
-pub const MAX_AREA_KM2: f64 = 1965.0;
 /// Plafonds de tronçons dans la zone (comptés avant téléchargement en Python) : IGN mode max,
 /// et autres modes. Au-delà, la zone est réduite autour du départ.
 pub const MAX_WAYS_MAX: usize = 650_000;
 pub const MAX_WAYS: usize = 110_000;
 pub const FALLBACK_AREA_KM2: f64 = 150.0;
-pub const LONG_KM: f64 = 25.0;
 pub const START_BUFFER_M: f64 = 50.0;
 pub const BBOX_MARGIN_M: f64 = 200.0;
 /// Au-delà, on cherche un accès par la route depuis le point cliqué.
@@ -39,13 +37,13 @@ pub const ACCESS_MAX_START_M: f64 = 100.0;
 pub const ACCESS_MAX_SHARE: f64 = 0.6;
 pub const MIN_ATTEMPT_S: f64 = 3.0;
 pub const MAX_ATTEMPTS: usize = 8;
-/// Mode min_distance : bornes du D+ visé (m) et distance max par défaut clamp(X/25, 3, 60) km.
+/// Mode min_distance : bornes du D+ visé (m) et distance max par défaut clamp(X/25, 3, 60) km
+/// en trail (`Profile::md_cap` ; vélo : valeurs propres au type de voie).
 pub const MD_DPLUS_M: (f64, f64) = (50.0, 10_000.0);
-pub const MD_CAP_PER_KM: f64 = 25.0;
 /// I2 : en plaine (relief de la dalle du départ < `MD_FLAT_RELIEF_M`, z max − z min du manifeste),
 /// distance max par défaut X/15 : X/25 rendait `dplus_not_reached` (Massy X = 150 m : 6 km < 6,6).
 pub const MD_FLAT_RELIEF_M: f64 = 600.0;
-pub const MD_CAP_PER_KM_FLAT: f64 = 15.0;
+/// Plancher de la distance max par défaut (km) ; le plafond est `Profile::md_cap.2`.
 pub const MD_CAP_KM: (f64, f64) = (3.0, 60.0);
 /// Points de passage (T34, api.md v1.5) : au plus 5, accrochés à une voie à <= 150 m.
 pub const VIA_MAX: usize = 5;
@@ -100,6 +98,9 @@ pub struct Request {
     /// Type de voie préféré : "trail" (chemins) | "any" | "road" (routes). Jamais un filtre.
     #[serde(default = "default_surface")]
     pub surface: String,
+    /// D70 : "trail" | "bike" (`Profile::of`). Absent : trail.
+    #[serde(default = "default_sport")]
+    pub sport: String,
     #[serde(default)]
     pub seed: u64,
     #[serde(default)]
@@ -136,11 +137,31 @@ impl Request {
         self.mode == "min_distance"
     }
 
+    /// Profil (sport, type de voie) ; valide après `check` (repli trail « Tout » sinon).
+    pub fn profile(&self) -> Profile {
+        Profile::of(&self.sport, &self.surface).unwrap_or(TRAIL_ANY)
+    }
+
+    /// D73 : limites de pente (montée, descente), SEULE source de ces valeurs. Trail : la valeur de
+    /// la requête dans les deux sens (aucune : sans limite). Vélo : montée demandée ou du profil ;
+    /// v1 : descente = montée. Lot 2 (asymétrie) : `down: up.max(p.grade_down_max)` ici, et ailleurs
+    /// rien (`Grade::keeps` / `two_way` / `climb_violation` s'en chargent).
+    pub fn grade(&self, p: &Profile) -> Option<Grade> {
+        if p.bike() {
+            // (Route vélo : `grade_up_max` infini = aucune limite, D78 ; le filtre revêtu suffit)
+            let up = self.max_grade.unwrap_or(p.grade_up_max);
+            Some(Grade { up, down: up })
+        } else {
+            self.max_grade.map(|g| Grade { up: g, down: g })
+        }
+    }
+
     /// Lcap (km) du mode min_distance.
     pub fn cap_km(&self) -> f64 {
+        let p = self.profile();
         let x = self.target_dplus.unwrap_or(0.0);
         self.max_distance_km
-            .unwrap_or((x / MD_CAP_PER_KM).clamp(MD_CAP_KM.0, MD_CAP_KM.1))
+            .unwrap_or((x / p.md_cap.0).clamp(MD_CAP_KM.0.max(p.dist_km.0), p.md_cap.2))
     }
 
     /// Distance qui dimensionne zone et budget : Lcap en mode min_distance.
@@ -181,6 +202,9 @@ fn default_tol() -> f64 {
 fn default_surface() -> String {
     "trail".into()
 }
+fn default_sport() -> String {
+    "trail".into()
+}
 fn one() -> usize {
     1
 }
@@ -207,7 +231,7 @@ pub fn check(r: &Request) -> Result<(), Msg> {
     r.time_s = r.time_s.or_else(|| {
         r.sizing_km()
             .is_finite()
-            .then(|| suggested_time(r.sizing_km(), r.n_candidates))
+            .then(|| suggested_time(r.sizing_km().min(DIST_KM.1), r.n_candidates))
     });
     validate(&r)
 }
@@ -235,9 +259,7 @@ fn validate(r: &Request) -> Result<(), Msg> {
     if r.gamma().is_none() {
         return Err(err(Code::ClimbsUnknown, &r.climbs));
     }
-    if !matches!(r.surface.as_str(), "trail" | "any" | "road") {
-        return Err(err(Code::RoadsUnknown, &r.surface));
-    }
+    let profile = crate::profile::Profile::of(&r.sport, &r.surface)?;
     if r.mode != "max" && !r.target_dplus.is_some_and(|d| d > 0.0) {
         return Err(err(Code::TargetDplusRequired, ""));
     }
@@ -265,10 +287,11 @@ fn validate(r: &Request) -> Result<(), Msg> {
     if !r.enforce_limits {
         return Ok(());
     }
-    if !(DIST_KM.0..=DIST_KM.1).contains(&r.sizing_km()) {
+    let (dmin, dmax) = profile.dist_km;
+    if !(dmin..=dmax).contains(&r.sizing_km()) {
         return Err(Msg::new(
             Code::DistanceOutOfRange,
-            json!({"min_km": DIST_KM.0, "max_km": DIST_KM.1}),
+            json!({"min_km": dmin, "max_km": dmax}),
         ));
     }
     let t = r.time_s.unwrap_or(0.0);
@@ -281,16 +304,17 @@ fn validate(r: &Request) -> Result<(), Msg> {
     Ok(())
 }
 
-/// Rayon du disque par défaut : D/2, plafonné pour respecter MAX_AREA_KM2 (marge 1 %).
-fn default_radius(distance_m: f64) -> f64 {
-    (distance_m / 2.0).min((0.99 * MAX_AREA_KM2 * 1e6 / std::f64::consts::PI).sqrt())
+/// Rayon du disque par défaut : `radius_frac` × D (D/2 en trail, D/4 en vélo), plafonné pour
+/// respecter l'aire max du profil (marge 1 % : 24,9 km en trail, 49,7 km en vélo).
+fn default_radius(distance_m: f64, p: &Profile) -> f64 {
+    (distance_m * p.radius_frac).min((0.99 * p.max_area_km2 * 1e6 / std::f64::consts::PI).sqrt())
 }
 
 /// Polygone local effectif (polygone dessiné réparé, ou disque), coupé au disque Lmax/2.
 fn build_region(r: &Request, frame: &Frame, lmax: f64, l: f64) -> Result<Region, Msg> {
     let reach = MultiPolygon::new(vec![prep::disk(lmax / 2.0, 128)]);
     let Some(poly) = &r.polygon else {
-        let d = MultiPolygon::new(vec![prep::disk(default_radius(l), 64)]);
+        let d = MultiPolygon::new(vec![prep::disk(default_radius(l, &r.profile()), 64)]);
         return Ok(Region::new(d.intersection(&reach)));
     };
     if poly.len() < 3 {
@@ -354,7 +378,7 @@ pub fn check_zone(store: &TileStore, r: &Request) -> Result<(), Msg> {
         ));
     }
     if let Some(i) = r.via.iter().position(|&[lat, lon]| other(lat, lon)) {
-        let max_km = round1(default_radius(lengths(r).0) / 1000.0);
+        let max_km = round1(default_radius(lengths(r).0, &r.profile()) / 1000.0);
         return Err(Msg::new(
             Code::ViaTooFar,
             json!({"n": i + 1, "max_km": max_km}),
@@ -389,45 +413,83 @@ pub fn check_via(r: &Request) -> Result<(), Msg> {
     Ok(())
 }
 
-/// Codes de nature (manifeste) → tronçons gardés : toutes les voies praticables à pied (port de
-/// `ign.keep_mask`, type « all »), quel que soit le type de voie préféré. Exclus : non praticables
-/// (privé, ayants droit, hors service), « Type autoroutier », « Bac ou liaison maritime », nature inconnue,
-/// via ferrata, accès interdit au piéton (D66, `osm_access` = 2).
-pub fn keep_mask(t: &Troncons, natures: &[String]) -> Vec<usize> {
-    let mut sel = walkable(t, natures);
-    sel.retain(|&i| t.osm_access[i] != ACCESS_CLOSED);
-    sel
-}
-
-/// `osm_access` (tiles.md, D66) : fermé au piéton, exclu du réseau dans tous les modes.
+/// `osm_access` (tiles.md, D66) : fermé au piéton, exclu du réseau dans tous les modes (trail).
 pub const ACCESS_CLOSED: u8 = 2;
 
-/// `keep_mask` accès interdits compris (aller-retour d'un départ cliqué dans un lieu privé).
-fn walkable(t: &Troncons, natures: &[String]) -> Vec<usize> {
-    let kept = |n: u8| {
-        natures.get(n as usize).is_some_and(|x| {
-            TRAIL_NATURES.contains(&x.as_str()) || ROAD_NATURES.contains(&x.as_str())
-        })
-    };
+/// Praticable à pied (natures gardées, via ferrata exclues) : base commune à tous les sports.
+/// Exclus : non praticables (privé, ayants droit, hors service), « Type autoroutier », « Bac ou
+/// liaison maritime », nature inconnue, via ferrata (D48/D50, `osm_flags` bit 1).
+pub fn walkable_i(t: &Troncons, i: usize, natures: &[String]) -> bool {
+    let kept = natures
+        .get(t.nature[i] as usize)
+        .is_some_and(|x| TRAIL_NATURES.contains(&x.as_str()) || ROAD_NATURES.contains(&x.as_str()));
+    t.flags[i] & 2 != 0 && t.osm_flags[i] & 1 == 0 && kept && t.n_vertices(i) >= 2
+}
+
+fn nature_of<'a>(t: &Troncons, i: usize, natures: &'a [String]) -> &'a str {
+    natures.get(t.nature[i] as usize).map_or("", String::as_str)
+}
+
+/// D72 : exclusions vélo SANS exception, par type de voie : escaliers (nature ou OSM `steps`, bit 16),
+/// technicité (`osm_mtb` = mtb:scale + 1, `osm_sac`, `osm_smooth`), cœurs de parc national pour les
+/// chemins (VTT et gravel : Sentier, Chemin, Route empierrée ; une route ouverte à la circulation
+/// reste). Route : le revêtu suffit (filtre `paved`, `usable`).
+fn bike_ok(t: &Troncons, i: usize, natures: &[String], p: &Profile) -> bool {
+    let n = nature_of(t, i, natures);
+    let core = t.pn_core[i] == 1 && ["Sentier", "Chemin", "Route empierrée"].contains(&n);
+    let (mtb, sac, smooth) = (t.osm_mtb[i], t.osm_sac[i], t.osm_smooth[i]);
+    let stairs = n == "Escalier" || t.osm_flags[i] & 16 != 0;
+    !stairs
+        && match p.surface {
+            "mtb" => mtb < 5 && !(mtb == 0 && sac >= 4) && smooth != 8 && !core,
+            "gravel" => mtb < 3 && sac < 3 && smooth < 6 && !core,
+            _ => true,
+        }
+}
+
+/// Exclusions SANS exception (natures, via ferrata, revêtu en « Route » D53, vélo : `bike_ok`).
+fn usable(t: &Troncons, i: usize, natures: &[String], p: &Profile, paved: &[bool]) -> bool {
+    walkable_i(t, i, natures)
+        && (p.surface != "road" || paved[i])
+        && (!p.bike() || bike_ok(t, i, natures, p))
+}
+
+/// Exclusion que l'aller-retour d'accès d'un départ peut seul emprunter. Trail : accès interdit au
+/// piéton (D66, `osm_access` = 2). Vélo (D72) : `osm_bike` ≥ 4 (interdit explicite ou implicite :
+/// autoroute, trunk, bridleway…), 2 (pied à terre : footway) ; sens unique (1, 2) sauf ronds-points
+/// (bit 128, nature) et double sens cyclable (3). `osm_access` (piéton) est ignoré en vélo.
+pub fn closed(t: &Troncons, i: usize, natures: &[String], p: &Profile) -> bool {
+    if !p.bike() {
+        return t.osm_access[i] == ACCESS_CLOSED;
+    }
+    let round = t.osm_flags[i] & 128 != 0 || nature_of(t, i, natures) == "Rond-point";
+    t.osm_bike[i] >= 4 || t.osm_bike[i] == 2 || (matches!(t.osm_oneway[i], 1 | 2) && !round)
+}
+
+/// Codes de nature (manifeste) → (réseau bouclable, tronçons fermés réservés à l'accès) : voies
+/// praticables du sport (port de `ign.keep_mask`), dans l'ordre des indices. Source unique de
+/// `plan_with`, `weights` et des tests.
+pub fn network(t: &Troncons, natures: &[String], p: &Profile) -> (Vec<usize>, Vec<usize>) {
+    let paved = paved_mask(t, natures);
     (0..t.len())
-        // D48/D50 : via ferrata (OSM, `osm_flags` bit 1) jamais empruntées
-        .filter(|&i| {
-            t.flags[i] & 2 != 0
-                && t.osm_flags[i] & 1 == 0
-                && kept(t.nature[i])
-                && t.n_vertices(i) >= 2
-        })
-        .collect()
+        .filter(|&i| usable(t, i, natures, p, &paved))
+        .partition(|&i| !closed(t, i, natures, p))
+}
+
+/// Réseau trail « Tout » (tests C4) : `network` du profil `TRAIL_ANY`.
+pub fn keep_mask(t: &Troncons, natures: &[String]) -> Vec<usize> {
+    network(t, natures, &TRAIL_ANY).0
 }
 
 /// Par tronçon : classe de voie (`prep::CLS_*`, demande du fondateur 2026-10-07) : colonne
 /// `osm_class` des dalles (0 chemin naturel, 1 intermédiaire), sinon nature IGN (Sentier, Chemin,
 /// Route empierrée : chemin ; Escalier, Piste cyclable : intermédiaire ; le reste : route) ;
-/// route d'importance 1 à 3, ou OSM trunk/primary, = grand axe (D50, D54).
-pub fn class_mask(t: &Troncons, natures: &[String]) -> Vec<u8> {
+/// route d'importance 1 à 3, ou OSM trunk/primary, = grand axe (D50, D54). Vélo (D72) : importance 1
+/// à 2, OSM trunk/primary, ou « Route à 2 chaussées » (l'importance 3 est une route vélo ordinaire).
+pub fn class_mask(t: &Troncons, natures: &[String], bike: bool) -> Vec<u8> {
     (0..t.len())
         .map(|i| {
-            let n = natures.get(t.nature[i] as usize).map_or("", String::as_str);
+            let n = nature_of(t, i, natures);
             let c = match t.osm_class[i] {
                 0 => CLS_TRAIL,
                 1 => CLS_MIXED,
@@ -435,7 +497,14 @@ pub fn class_mask(t: &Troncons, natures: &[String]) -> Vec<u8> {
                 _ if ["Escalier", "Piste cyclable"].contains(&n) => CLS_MIXED,
                 _ => CLS_ROAD,
             };
-            if c == CLS_ROAD && ((1..=3).contains(&t.importance[i]) || t.osm_major[i] == 1) {
+            let major = if bike {
+                (1..=2).contains(&t.importance[i])
+                    || t.osm_major[i] == 1
+                    || n == "Route à 2 chaussées"
+            } else {
+                (1..=3).contains(&t.importance[i]) || t.osm_major[i] == 1
+            };
+            if c == CLS_ROAD && major {
                 CLS_MAJOR as u8
             } else {
                 c as u8
@@ -448,10 +517,10 @@ pub fn class_mask(t: &Troncons, natures: &[String]) -> Vec<u8> {
 /// connu (bois : sur un pont seulement), sinon nature IGN : routes et pistes cyclables revêtues ;
 /// Sentier, Chemin, Route empierrée, Escalier non revêtus.
 pub fn paved_mask(t: &Troncons, natures: &[String]) -> Vec<bool> {
-    use crate::tiles::{SURF_PAVED, SURF_UNPAVED, SURF_WOOD};
+    use crate::tiles::{SURF_PAVED, SURF_SETT, SURF_UNPAVED, SURF_WOOD};
     (0..t.len())
         .map(|i| match t.surf[i] {
-            SURF_PAVED => true,
+            SURF_PAVED | SURF_SETT => true,
             SURF_UNPAVED => false,
             SURF_WOOD => t.flags[i] & 1 != 0,
             _ => natures
@@ -459,6 +528,159 @@ pub fn paved_mask(t: &Troncons, natures: &[String]) -> Vec<bool> {
                 .is_some_and(|n| ROAD_NATURES.contains(&n.as_str())),
         })
         .collect()
+}
+
+/// Vélo (D72, études b, c, d ; valeurs [E] à régler au banc B1) : par tronçon, coût de confort en
+/// dixièmes de mètre par mètre (0–15 : unité D63, borné à 1,5), posé sur `Net::pref_t` ; vide en
+/// trail. Voie = type OSM (`osm_hw`) si apparié, sinon nature IGN et importance ; `cls` : classes
+/// de `class_mask`, dont le grand axe.
+///
+/// | voie                         | VTT | Gravel                    | Route             |
+/// | sentier (path)               | 0   | 0,3 / 0,5 / 0,8 selon mtb:scale 0 / 1 / autre (0 si cycleway = 4, D78) | 0,2 (revêtu) |
+/// | chemin, route empierrée      | 0,2 | 0                         | 0,2               |
+/// | piste cyclable               | 0,5 | 0,5 revêtue, 0 sinon      | 0,2               |
+/// | pedestrian, living_street    | 0,5 | 1,5                       | 1                 |
+/// | route mineure (imp. 4–5)     | 0,5 (D78) | 1 (0 non revêtue)   | 0                 |
+/// | secondaire, residential      | 1   | 1                         | 0,3               |
+/// | service                      | 1   | 1                         | 0,5               |
+/// | grand axe                    | 1,5 (D78) | 1                   | 0,6 (1 si imp. 1) |
+pub fn pref_mask(t: &Troncons, natures: &[String], p: &Profile, cls: &[u8]) -> Vec<u8> {
+    use crate::tiles::*;
+    if !p.bike() {
+        return Vec::new();
+    }
+    let paved = paved_mask(t, natures);
+    (0..t.len())
+        .map(|i| {
+            let hw = if t.osm_hw[i] != 0 {
+                t.osm_hw[i]
+            } else {
+                match nature_of(t, i, natures) {
+                    "Sentier" | "Escalier" => HW_PATH,
+                    "Chemin" | "Route empierrée" => HW_TRACK,
+                    "Piste cyclable" => HW_CYCLEWAY,
+                    _ => match t.importance[i] {
+                        1 | 2 => HW_MAJOR,
+                        3 => HW_SECOND,
+                        _ => HW_MINOR,
+                    },
+                }
+            };
+            let hw = if cls[i] == CLS_MAJOR as u8 {
+                HW_MAJOR
+            } else {
+                hw
+            };
+            let pv = paved[i];
+            let (mtb, gravel) = (p.surface == "mtb", p.surface == "gravel");
+            let (cw, smooth) = (t.osm_cycleway[i], t.osm_smooth[i]);
+            let mut c: f64 = match hw {
+                HW_PATH if mtb => 0.0,
+                // gravel : sentier selon la cotation VTT (D78) : scale 0 → 0,3 ; 1 → 0,5 ; sinon 0,8
+                HW_PATH if gravel => match (cw, t.osm_mtb[i]) {
+                    (4, _) => 0.0,
+                    (_, 1) => 0.3,
+                    (_, 2) => 0.5,
+                    _ => 0.8,
+                },
+                HW_PATH => 0.2,
+                HW_TRACK if mtb || !gravel => 0.2,
+                HW_TRACK => 0.0,
+                HW_CYCLEWAY if mtb => 0.5,
+                HW_CYCLEWAY if gravel => {
+                    if pv {
+                        0.5
+                    } else {
+                        0.0
+                    }
+                }
+                HW_CYCLEWAY => 0.2,
+                HW_PEDESTRIAN if mtb => 0.5,
+                HW_PEDESTRIAN if gravel => 1.5,
+                HW_PEDESTRIAN => 1.0,
+                HW_MINOR if mtb => 0.5, // D78 : liaisons entre chemins acceptées
+                HW_MINOR if gravel => {
+                    if pv {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                HW_MINOR => 0.0,
+                HW_SECOND if mtb || gravel => 1.0,
+                HW_SECOND => 0.3,
+                HW_SERVICE if mtb || gravel => 1.0,
+                HW_SERVICE => 0.5,
+                _ if mtb => 1.5, // D78 : grand axe au plafond en VTT
+                _ if gravel => 1.0,
+                _ if t.importance[i] == 1 => 1.0,
+                _ => 0.6,
+            };
+            if gravel {
+                let track = match t.osm_tracktype[i] {
+                    3 => 0.2,
+                    4 => 0.6,
+                    5 => 1.2,
+                    _ => 0.0,
+                };
+                let sm = match smooth {
+                    4 => 0.5,
+                    5.. => 1.5,
+                    _ => 0.0,
+                };
+                // (un sentier coté mtb:scale 1 a déjà son coût : 0,5, D78)
+                let tech = f64::from(u8::from(
+                    (t.osm_mtb[i] == 2 && hw != HW_PATH) || t.osm_sac[i] == 2,
+                ));
+                c = c.max(track).max(sm).max(tech);
+            } else if !mtb {
+                // Route : vitesse, pavés, état, aménagement et itinéraire cyclables
+                if t.osm_maxspeed[i] >= 90 && hw != HW_MAJOR {
+                    c += 0.2;
+                }
+                if t.surf[i] == SURF_SETT {
+                    c += 0.8;
+                }
+                c += match smooth {
+                    4 => 0.3,
+                    5.. => 0.8,
+                    _ => 0.0,
+                };
+                c -= match cw {
+                    2 => 0.2,
+                    3 => 0.3,
+                    _ => 0.0,
+                };
+                if t.osm_bike_route[i] >= 2 {
+                    c -= 0.1;
+                }
+            }
+            // `use_sidepath` (+1) ; restreint (+0,3), sauf `pedestrian` : déjà dans la table
+            c += match t.osm_bike[i] {
+                3 => 1.0,
+                1 if hw != HW_PEDESTRIAN => 0.3,
+                _ => 0.0,
+            };
+            (c.clamp(0.0, 1.5) * 10.0).round() as u8
+        })
+        .collect()
+}
+
+/// Réseau balisé du sport (vélo) : remplace `osm_hike` par `osm_mtb_route` (VTT) ou `osm_bike_route`
+/// (gravel) ; Route : rien (l'itinéraire cyclable est dans `pref_mask`). À appeler après le
+/// chargement des dalles. Trail : sans effet.
+pub fn profile_labels(t: &mut Troncons, p: &Profile) {
+    use crate::tiles::{HAS_BIKE_ROUTE, HAS_HIKE, HAS_MTB_ROUTE};
+    if !p.bike() {
+        return;
+    }
+    let (col, bit) = match p.surface {
+        "mtb" => (t.osm_mtb_route.clone(), HAS_MTB_ROUTE),
+        "gravel" => (t.osm_bike_route.clone(), HAS_BIKE_ROUTE),
+        _ => (vec![0; t.len()], 0),
+    };
+    t.hike = col;
+    t.has = (t.has & !HAS_HIKE) | if t.has & bit != 0 { HAS_HIKE } else { 0 };
 }
 
 /// Étiquettes (demande 4) en « Chemins » et « Tout », hors min_distance, en mètres « hors type » par
@@ -473,12 +695,15 @@ pub const WATER_W: f64 = 0.15;
 pub const LABELS_K_TARGET: f64 = 3.0;
 
 /// Longueur « hors type » pondérée (m) d'un parcours (longueurs par classe `cls`, étiquettes
-/// `lab`) : la part hors du type de voie voulu (`Request::surface`, pas en min_distance), les
+/// `lab`) : la part hors du type de voie voulu (profil, pas en min_distance), les
 /// étiquettes, plus `MAJOR_K` fois la longueur sur grand axe dans tous les modes (D50 : forte
 /// pénalité, jamais un filtre).
-fn off_len(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, goal: Goal) -> f64 {
-    off_parts(cls, lab, surface, goal).total()
+fn off_len(cls: &[f64; N_CLS], lab: &[f64; N_LAB], p: &Profile, goal: Goal) -> f64 {
+    off_parts(cls, lab, p, goal).total()
 }
+
+/// D72 : en Max D+ vélo, un mètre de grand axe coûte 1 m de confort de plus (en trail, D64 : rien).
+pub const MAJOR_K_MAX_BIKE: f64 = 1.0;
 
 /// Mode de calcul vu par les poids (le grand axe pèse moins en max, D57).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -518,17 +743,21 @@ impl OffParts {
     }
 }
 
-pub fn off_parts(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, goal: Goal) -> OffParts {
+pub fn off_parts(cls: &[f64; N_CLS], lab: &[f64; N_LAB], p: &Profile, goal: Goal) -> OffParts {
     // D63 : mètres de confort (type de voie, étiquettes), au prix du mode (`problem::SURF_MAX`,
     // `SURF_TARGET`, `COMFORT_MD`) ; Le plus court : un peu de préférence (prix `COMFORT_MD`)
     let ck = if goal == Goal::Md { COMFORT_MD } else { 1.0 };
+    // trail : bras recopiés tels quels (ordre d'addition, résultats identiques au bit près) ;
+    // vélo : coût par type de voie des dalles (`pref_mask`, `lab[LAB_PREF]`)
     let pref = ck
-        * match surface {
-            "trail" => cls[CLS_ROAD] + cls[CLS_MAJOR] + 0.5 * cls[CLS_MIXED],
-            "road" => cls[CLS_TRAIL] + 0.5 * cls[CLS_MIXED],
-            _ => 0.0,
+        * match (p.sport, p.surface) {
+            ("trail", "trail") => cls[CLS_ROAD] + cls[CLS_MAJOR] + 0.5 * cls[CLS_MIXED],
+            ("trail", "road") => cls[CLS_TRAIL] + 0.5 * cls[CLS_MIXED],
+            ("trail", _) => 0.0,
+            _ => lab[LAB_PREF],
         };
-    let labels = surface != "road";
+    // vélo : le calme compte aussi en Route
+    let labels = p.bike() || p.surface != "road";
     // D58 : en cible, la distance et le D+ sont tenus de toute façon, les étiquettes pèsent 3 fois plus
     let lk = ck
         * if goal == Goal::Target {
@@ -542,6 +771,7 @@ pub fn off_parts(cls: &[f64; N_CLS], lab: &[f64; N_LAB], surface: &str, goal: Go
     // mètres de confort au prix `SURF_TARGET` ; avant D63 il ne pesait que 1,8 % d'erreur par km) ;
     // max : prix fixe `MAJOR_PRICE_MAX` × `MAJOR_K_MAX` (D57) converti au prix `SURF_MAX`.
     let major_k = match goal {
+        Goal::Max if p.bike() => MAJOR_K_MAX_BIKE,
         Goal::Max => MAJOR_K_MAX * MAJOR_PRICE_MAX / SURF_MAX,
         Goal::Target => MAJOR_K / SURF_TARGET,
         Goal::Md => MAJOR_K,
@@ -567,17 +797,17 @@ pub fn off_price(net: &Net, edges: &[usize], lmax: f64) -> f64 {
 }
 
 /// Poids de recherche d'une arête pour la réduction aux arêtes pentues (D+ plus prime de type).
-pub fn search_weight(ed: &Edge, off_price: f64, surface: &str, goal: Goal) -> f64 {
-    ed.w + off_price * (ed.len - off_len(&ed.cls, &ed.lab, surface, goal))
+pub fn search_weight(ed: &Edge, off_price: f64, p: &Profile, goal: Goal) -> f64 {
+    ed.w + off_price * (ed.len - off_len(&ed.cls, &ed.lab, p, goal))
 }
 
 /// Prix « hors type » dans la recherche : préférence de voie (hors min_distance) ou grands axes
 /// dans la zone (D50) ; sans l'un ni l'autre, recherche sur le seul D+ comme avant.
-pub fn off_on(net: &Net, edges: &[usize], surface: &str, goal: Goal) -> bool {
-    (surface != "any" && goal != Goal::Md)
+pub fn off_on(net: &Net, edges: &[usize], p: &Profile, goal: Goal) -> bool {
+    (p.pref_on() && goal != Goal::Md)
         || edges
             .iter()
-            .any(|&e| off_len(&net.edges[e].cls, &net.edges[e].lab, surface, goal) != 0.0)
+            .any(|&e| off_len(&net.edges[e].cls, &net.edges[e].lab, p, goal) != 0.0)
 }
 
 fn add<const N: usize>(a: &mut [f64; N], b: &[f64; N], k: f64) {
@@ -601,38 +831,51 @@ pub struct Access<'a> {
     net: Net<'a>,
     ids: Vec<usize>,
     s0: usize,
+    /// Tronçons réservés à l'accès (fermés : D66 en trail, D72 en vélo).
+    closed_t: Vec<bool>,
     /// D66 : départ sur un accès interdit, qui peut alors servir à en sortir.
     private: bool,
+    /// Vélo : l'aller-retour d'accès ne prend que des arêtes parcourables dans les deux sens.
+    two_way: Option<Grade>,
     snap0: f64,
     dist: Vec<f64>,
     prev: Vec<Option<(usize, usize)>>,
 }
 
 impl<'a> Access<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         t: &'a Troncons,
         frame: Frame,
         sel: &[usize],
         closed: &[usize],
         cls_t: &[u8],
+        pref_t: &[u8],
         region: &Region,
+        two_way: Option<Grade>,
     ) -> Option<Access<'a>> {
         let mut net = Net::new(t, frame);
         net.cls_t = cls_t.to_vec();
+        net.pref_t = pref_t.to_vec();
+        let mut closed_t = vec![false; t.len()];
+        closed.iter().for_each(|&i| closed_t[i] = true);
         let mut ids = net.build(&[sel, closed].concat(), region);
         let (_, r, pi, _) = net.locate(&ids, [0.0, 0.0])?;
-        let private = t.osm_access[net.edges[ids[r]].pieces[pi].t as usize] == ACCESS_CLOSED;
+        let private = closed_t[net.edges[ids[r]].pieces[pi].t as usize];
         let (s0, snap0, _) = net.insert_start(&mut ids, [0.0, 0.0])?;
         if snap0 > ACCESS_MAX_START_M {
             return None;
         }
         let adj = prep::Adj::new(&net, &ids);
-        let (dist, prev) = prep::shortest(&adj, |e| access_cost(&net, e, private), s0, None);
+        let cost = |e| access_cost(&net, e, &closed_t, private, two_way);
+        let (dist, prev) = prep::shortest(&adj, cost, s0, None);
         Some(Access {
             net,
             ids,
             s0,
+            closed_t,
             private,
+            two_way,
             snap0,
             dist,
             prev,
@@ -671,13 +914,9 @@ impl<'a> Access<'a> {
                 return None;
             }
             let adj = prep::Adj::new(&self.net, &ids);
-            let private = self.private;
-            let (dist, prev) = prep::shortest(
-                &adj,
-                |e| access_cost(&self.net, e, private),
-                self.s0,
-                Some(t),
-            );
+            let (private, two_way) = (self.private, self.two_way);
+            let cost = |e| access_cost(&self.net, e, &self.closed_t, private, two_way);
+            let (dist, prev) = prep::shortest(&adj, cost, self.s0, Some(t));
             if t == self.s0 || !dist[t].is_finite() {
                 return None;
             }
@@ -711,14 +950,17 @@ impl<'a> Access<'a> {
 /// interdit et que le départ n'est pas lui-même dans un lieu privé (D66).
 // ponytail: un départ privé ouvre tous les accès interdits de la zone au chemin d'accès (le plus
 // court sort en pratique du lieu) ; restreindre au lieu du départ si un cas terrain le demande.
-fn access_cost(net: &Net, e: usize, private: bool) -> f64 {
+fn access_cost(
+    net: &Net,
+    e: usize,
+    closed_t: &[bool],
+    private: bool,
+    two_way: Option<Grade>,
+) -> f64 {
     let ed = &net.edges[e];
-    let closed = || {
-        ed.pieces
-            .iter()
-            .any(|p| net.t.osm_access[p.t as usize] == ACCESS_CLOSED)
-    };
-    if !private && closed() {
+    let closed = || ed.pieces.iter().any(|p| closed_t[p.t as usize]);
+    // vélo : l'aller-retour d'accès se parcourt dans les deux sens, donc sous la limite de montée
+    if (!private && closed()) || two_way.is_some_and(|g| !g.two_way(ed.climb)) {
         f64::INFINITY
     } else {
         ed.len
@@ -795,13 +1037,16 @@ pub struct Candidate {
 /// possible, avec les arêtes du réseau trop court autour de ce départ (vide pour un autre motif).
 /// `x` : D+ visé du mode min_distance ; None (statut `dplus_unreachable`) si la borne
 /// inférieure de distance dépasse Lmax. `weight` : poids de recherche d'une arête (réduction).
+/// `max_grade` (D73) : filtre `Grade::keeps` ; `bike` : les passages uniques ne sont doublés que
+/// s'ils sont parcourables dans les deux sens (`Grade::two_way`), trail : jamais de contrôle.
 #[allow(clippy::too_many_arguments)]
 pub fn build_candidate(
     net: &mut Net,
     sub: &[usize],
     mut lmin: f64,
     mut lmax: f64,
-    max_grade: Option<f64>,
+    max_grade: Option<Grade>,
+    bike: bool,
     access: Option<&mut Access>,
     reduce: bool,
     x: Option<f64>,
@@ -849,7 +1094,8 @@ pub fn build_candidate(
             _ => {}
         }
     }
-    let (near, mut doubled, mut len) = net.duplicate_unique(&mut ids, pos, s, FREE_RADIUS);
+    let two_way = max_grade.filter(|_| bike);
+    let (near, mut doubled, mut len) = net.duplicate_unique(&mut ids, pos, s, FREE_RADIUS, two_way);
     info.insert("edges_doubled_near_start".into(), json!(near));
     info.insert("edges_doubled".into(), json!(doubled));
     let mut ids = prep::prune(net, ids, s, lmax);
@@ -870,9 +1116,9 @@ pub fn build_candidate(
         return Err(ids);
     }
     if let Some(g) = max_grade {
-        ids.retain(|&e| net.edges[e].grade <= g);
+        ids.retain(|&e| g.keeps(net.edges[e].climb));
         // le filtre de pente crée de nouveaux passages uniques
-        let (_, n2, l2) = net.duplicate_unique(&mut ids, pos, s, FREE_RADIUS);
+        let (_, n2, l2) = net.duplicate_unique(&mut ids, pos, s, FREE_RADIUS, two_way);
         (doubled, len) = (doubled + n2, len + l2);
         ids = prep::prune(net, ids, s, lmax);
         if net.total_len(&ids) < lmin {
@@ -1136,6 +1382,38 @@ pub struct Track {
     pub cls: [f64; N_CLS],
     pub lab: [f64; N_LAB],
     pub feasible: bool,
+    /// D73 : la boucle est permise dans les deux sens (`climb_violation`) ; calculé, pas encore
+    /// sérialisé (le bouton « Inverser » le lira). Toujours vrai en v1.
+    pub reversible: bool,
+}
+
+/// D73 : longueur (m) des pas du circuit non permis (`Grade::allows`) dans le sens du circuit [0] et
+/// dans le sens inverse [1]. Seul endroit où le sens d'une boucle est contraint par la pente ;
+/// généralisable en « interdit par sens » (sens uniques, lot 2).
+fn climb_violation(net: &Net, steps: &[(usize, usize, usize)], g: Grade) -> [f64; 2] {
+    let mut v = [0.0; 2];
+    for &(e, a, _) in steps {
+        let ed = &net.edges[e];
+        let dir = usize::from(ed.u != ed.v && a != ed.u);
+        for (k, d) in [dir, 1 - dir].into_iter().enumerate() {
+            if !g.allows(ed.climb, d) {
+                v[k] += ed.len;
+            }
+        }
+    }
+    v
+}
+
+/// D73 : sens permis d'après `climb_violation` (`v`). v1 (down == up) : toute arête gardée est
+/// permise dans les deux sens ; seules des moitiés d'arête réinsérées après le filtre (points de
+/// passage) peuvent violer, et alors dans les deux sens : tolérées (les deux sens, γ choisit).
+/// Lot 2 (down > up) : aucun sens permis = `None` (invariant D73 violé).
+fn allowed_dirs(v: [f64; 2], g: Grade) -> Option<[bool; 2]> {
+    match v.map(|x| x == 0.0) {
+        [false, false] if g.down > g.up => None,
+        [false, false] => Some([true; 2]),
+        a => Some(a),
+    }
 }
 
 /// Port de `assemble` : la boucle, précédée et suivie de l'aller-retour d'accès. Préférence de
@@ -1147,6 +1425,7 @@ fn assemble(
     loop_ids: &[usize],
     acc: Option<&AccessPath>,
     gamma: i8,
+    grade: Option<Grade>,
 ) -> Result<Track, Msg> {
     let circuit = p
         .euler(loop_ids)
@@ -1164,15 +1443,31 @@ fn assemble(
         })
         .collect();
     let (mut xy, mut z) = route_geometry(net, &arena_steps);
-    if gamma != 0 {
-        let a = gbar(&xy, &z);
-        xy.reverse();
-        z.reverse();
-        let b = gbar(&xy, &z);
-        if (gamma > 0) == (a >= b) {
+    // D73 : sens permis par la pente (vélo ; trail : `None`, les deux). γ choisit parmi eux.
+    let allowed = grade
+        .map_or(Some([true; 2]), |g| {
+            allowed_dirs(climb_violation(net, &arena_steps, g), g)
+        })
+        .ok_or_else(|| {
+            err(
+                Code::InvariantViolated,
+                "no travel direction within grade limits",
+            )
+        })?;
+    if allowed[0] && allowed[1] {
+        if gamma != 0 {
+            let a = gbar(&xy, &z);
             xy.reverse();
             z.reverse();
+            let b = gbar(&xy, &z);
+            if (gamma > 0) == (a >= b) {
+                xy.reverse();
+                z.reverse();
+            }
         }
+    } else if allowed[1] {
+        xy.reverse();
+        z.reverse();
     }
     let mut length = p.stats(loop_ids).0;
     let (mut cls, mut lab) = ([0.0; N_CLS], [0.0; N_LAB]);
@@ -1213,11 +1508,12 @@ fn assemble(
         cls,
         lab,
         feasible,
+        reversible: allowed[0] && allowed[1],
     })
 }
 
-/// Mode min_distance sans distance max : défaut clamp(X / k, 3, 60) km, k = 25 m/km en relief,
-/// `MD_CAP_PER_KM_FLAT` en plaine (relief de la dalle du départ, I2). Pose aussi la zone de
+/// Mode min_distance sans distance max : défaut clamp(X / k, 3, max) km, k = 25 m/km en relief,
+/// `MD_CAP_PER_KM_FLAT` en plaine (relief de la dalle du départ, I2) ; valeurs du profil. Pose aussi la zone de
 /// dalles du départ (`Request::zone`). Sinon, requête inchangée.
 pub fn resolve_cap(store: &TileStore, req: &Request) -> Request {
     let mut r = req.clone();
@@ -1226,13 +1522,15 @@ pub fn resolve_cap(store: &TileStore, req: &Request) -> Request {
         let relief = store
             .tile_in(&r.zone, r.lat, r.lon)
             .and_then(|t| Some(t["z_max_m"].as_f64()? - t["z_min_m"].as_f64()?));
+        let p = r.profile();
         let k = if relief.is_some_and(|z| z < MD_FLAT_RELIEF_M) {
-            MD_CAP_PER_KM_FLAT
+            p.md_cap.1
         } else {
-            MD_CAP_PER_KM
+            p.md_cap.0
         };
-        r.max_distance_km =
-            Some((r.target_dplus.unwrap_or(0.0) / k).clamp(MD_CAP_KM.0, MD_CAP_KM.1));
+        r.max_distance_km = Some(
+            (r.target_dplus.unwrap_or(0.0) / k).clamp(MD_CAP_KM.0.max(p.dist_km.0), p.md_cap.2),
+        );
     }
     r
 }
@@ -1299,14 +1597,14 @@ fn widen_cap(run: impl FnOnce(&Request) -> Result<Value, Msg>, req: &mut Request
     let cap = req.cap_km();
     if !req.min_distance()
         || out["candidates"][0]["feasible"] != json!(false)
-        || cap >= MD_CAP_KM.1
+        || cap >= req.profile().md_cap.2
         || req.max_compute_s.is_some_and(|c| c - spent < MIN_ATTEMPT_S)
     {
         return;
     }
     let t = Instant::now();
     let mut r = req.clone();
-    r.max_distance_km = Some((MD_WIDEN * cap).min(MD_CAP_KM.1));
+    r.max_distance_km = Some((MD_WIDEN * cap).min(req.profile().md_cap.2));
     r.max_compute_s = req.max_compute_s.map(|c| c - spent);
     if let Ok(o) = run(&r)
         && o["candidates"][0]["feasible"] == json!(true)
@@ -1403,7 +1701,8 @@ fn diagnose_with(
         f(&mut r);
         (r, s)
     };
-    if req.max_grade.is_some() {
+    // « sans limite de pente » (0) n'existe qu'en trail ; en vélo, la montée est toujours limitée
+    if req.max_grade.is_some() && req.profile().grade_unlimited {
         relax.push(with(&|r| r.max_grade = None, json!({"max_grade_pct": 0})));
     }
     if req.polygon.is_some() {
@@ -1418,9 +1717,9 @@ fn diagnose_with(
     if !req.via.is_empty() {
         relax.push(with(&|r| r.via.clear(), json!({"via": null})));
     }
-    let cap = req.cap_km();
-    if req.min_distance() && !auto_cap && cap < MD_CAP_KM.1 {
-        let v = (2.0 * cap).min(MD_CAP_KM.1);
+    let (cap, cap_max) = (req.cap_km(), req.profile().md_cap.2);
+    if req.min_distance() && !auto_cap && cap < cap_max {
+        let v = (2.0 * cap).min(cap_max);
         relax.push(with(
             &|r| r.max_distance_km = Some(v),
             json!({"max_distance_km": v}),
@@ -1487,9 +1786,11 @@ pub fn plan(store: &TileStore, req: &Request, prep_only: bool) -> Result<Value, 
         // chemins minoritaires sur la première boucle en « Chemins » (le réseau n'en offre pas
         // plus) ; pas en min_distance (la préférence n'y agit pas), ni en « Route » (D53 : tout
         // est revêtu par construction)
-        let share = out["candidates"][0]["trail_frac"]
-            .as_f64()
-            .filter(|&s| req.surface == "trail" && !req.min_distance() && s < LOW_SURFACE_SHARE);
+        let share = out["candidates"][0]["trail_frac"].as_f64().filter(|&s| {
+            (req.surface == "trail" || req.surface == "mtb")
+                && !req.min_distance()
+                && s < LOW_SURFACE_SHARE
+        });
         if let (Some(s), Some(w)) = (share, out["warnings"].as_array_mut()) {
             w.push(json!(Msg::new(
                 Code::LowSurfaceShare,
@@ -1608,17 +1909,21 @@ pub fn plan_with(
     let t_all = Instant::now();
     let mut r = req.clone();
     if r.time_s.is_none() {
-        r.time_s = Some(suggested_time(r.sizing_km(), r.n_candidates));
+        r.time_s = Some(suggested_time(r.sizing_km().min(DIST_KM.1), r.n_candidates));
     }
     validate(&r)?;
     let time_s = r.time_s.unwrap();
+    // D70 : tout ce qui change selon (sport, type de voie) vient de `prof` (et de `grade`, D73)
+    let prof = r.profile();
+    let grade = r.grade(&prof);
+    let bike = prof.bike();
     let mut warns: Vec<Msg> = Vec::new();
     let mut dbg = serde_json::Map::new();
     let md = r.min_distance();
     let goal = Goal::of(&r.mode);
     let gamma = r.gamma().unwrap_or(0);
-    if !md && r.distance_km > LONG_KM {
-        warns.push(Msg::new(Code::LongDistance, json!({"km": LONG_KM})));
+    if let Some(km) = prof.long_km.filter(|&km| !md && r.distance_km > km) {
+        warns.push(Msg::new(Code::LongDistance, json!({"km": km})));
     }
     // min_distance : zone et bornes de la distance max Lcap (Lmin = 0).
     let (l, lmax) = lengths(&r);
@@ -1626,10 +1931,10 @@ pub fn plan_with(
     check_via(&r)?;
     let mut region = build_region(&r, &frame, lmax, l)?;
     let area_km2 = region.area() / 1e6;
-    if r.enforce_limits && area_km2 > MAX_AREA_KM2 {
+    if r.enforce_limits && area_km2 > prof.max_area_km2 {
         return Err(Msg::new(
             Code::ZoneTooLarge,
-            json!({"area_km2": area_km2.round(), "max_km2": MAX_AREA_KM2}),
+            json!({"area_km2": area_km2.round(), "max_km2": prof.max_area_km2}),
         ));
     }
     let l93_box = |reg: &Region| {
@@ -1639,7 +1944,7 @@ pub fn plan_with(
         [x0, y0, x1, y1]
     };
     let t0 = Instant::now();
-    let t = load(l93_box(&region)).map_err(|e| {
+    let mut t = load(l93_box(&region)).map_err(|e| {
         // source de dalles distante en panne : transitoire (503), pas une erreur de calcul
         let code = if e.starts_with(crate::tiles::REMOTE_ERR) {
             Code::Busy
@@ -1653,6 +1958,10 @@ pub fn plan_with(
     if t.is_empty() {
         return Err(err(Code::OutsideCoverage, "no tile around the start"));
     }
+    profile_labels(&mut t, &prof);
+    // réseau du sport (D72) : exclusions sans exception, AVANT le plafond de tronçons (vélo : il se
+    // compte sur le réseau filtré) ; trail : les mêmes tronçons que toujours, dans le même ordre
+    let (sel, closed) = network(&t, natures, &prof);
     // Grande zone : on compte les tronçons et on réduit si c'est trop dense (MAX_WAYS).
     let mut reduced_radius = None;
     if r.enforce_limits && area_km2 > FALLBACK_AREA_KM2 {
@@ -1661,16 +1970,27 @@ pub fn plan_with(
         } else {
             MAX_WAYS_MAX
         };
+        // vélo : seuls les tronçons du réseau comptent (`sel`, `closed` en sont écartés)
+        let in_net: Vec<bool> = if bike {
+            let mut v = vec![false; t.len()];
+            sel.iter().for_each(|&i| v[i] = true);
+            v
+        } else {
+            Vec::new()
+        };
+        let count = |b: &[f64; 4]| {
+            (0..t.len())
+                .filter(|&i| {
+                    let (x, y) = t.vertex(i, 0);
+                    (!bike || in_net[i]) && x >= b[0] && x < b[2] && y >= b[1] && y < b[3]
+                })
+                .count()
+        };
         let radius0 = region.radius();
         let mut radius = radius0;
         for _ in 0..4 {
             let b = l93_box(&region);
-            let n = (0..t.len())
-                .filter(|&i| {
-                    let (x, y) = t.vertex(i, 0);
-                    x >= b[0] && x < b[2] && y >= b[1] && y < b[3]
-                })
-                .count();
+            let n = count(&b);
             if n <= cap {
                 break;
             }
@@ -1692,25 +2012,19 @@ pub fn plan_with(
     );
 
     let t1 = Instant::now();
-    let mut sel = walkable(&t, natures);
     // D53 : en « Route », réseau revêtu seulement ; trop court = `paved_network_too_short`
+    // (D66, D72 : `closed` = accès interdits, gardés pour l'aller-retour d'un départ en lieu privé)
     let road = r.surface == "road";
-    if road {
-        let pv = paved_mask(&t, natures);
-        sel.retain(|&i| pv[i]);
-    }
-    // D66 : accès interdits hors du réseau, gardés pour l'aller-retour d'un départ en lieu privé
-    let (sel, closed): (Vec<usize>, Vec<usize>) = sel
-        .into_iter()
-        .partition(|&i| t.osm_access[i] != ACCESS_CLOSED);
     let no_loop = if road {
         Code::PavedNetworkTooShort
     } else {
         Code::NoLoopOfDistance
     };
-    let cls_t = class_mask(&t, natures);
+    let cls_t = class_mask(&t, natures, bike);
+    let pref_t = pref_mask(&t, natures, &prof, &cls_t);
     let mut net = Net::new(&t, frame);
     net.cls_t = cls_t.clone();
+    net.pref_t = pref_t.clone();
     let mut edges = net.build(&sel, &region);
     dbg.insert("source_ways".into(), json!(sel.len()));
     dbg.insert("edges_simplified".into(), json!(edges.len()));
@@ -1743,10 +2057,9 @@ pub fn plan_with(
     // préférence de type de voie (mode max) : prime par mètre sur le bon type, à l'échelle de la
     // densité moyenne de D+ du réseau de la zone
     let off_price = off_price(&net, &edges, lmax);
-    let surface = r.surface.clone();
-    let weight = |ed: &Edge| search_weight(ed, off_price, &surface, goal);
-    let weight: Option<&dyn Fn(&Edge) -> f64> = (surface != "any" && !md).then_some(&weight);
-    let off_on = off_on(&net, &edges, &surface, goal);
+    let weight = |ed: &Edge| search_weight(ed, off_price, &prof, goal);
+    let weight: Option<&dyn Fn(&Edge) -> f64> = (prof.pref_on() && !md).then_some(&weight);
+    let off_on = off_on(&net, &edges, &prof, goal);
     let mut access_net: Option<Option<Access>> = None;
 
     // search_loop
@@ -1796,7 +2109,7 @@ pub fn plan_with(
             let ok: Vec<usize> = edges
                 .iter()
                 .copied()
-                .filter(|&e| r.max_grade.is_none_or(|g| net.edges[e].grade <= g))
+                .filter(|&e| grade.is_none_or(|g| g.keeps(net.edges[e].climb)))
                 .collect();
             for c in prep::loop_components(&net, &ok) {
                 let d = mind(&net, &c);
@@ -1843,7 +2156,16 @@ pub fn plan_with(
             let acc = if with_access {
                 let nearest = net.nearest_vertex(&sub);
                 if nearest > ACCESS_MIN_M && access_net.is_none() {
-                    access_net = Some(Access::new(&t, frame, &sel, &closed, &cls_t, &region));
+                    access_net = Some(Access::new(
+                        &t,
+                        frame,
+                        &sel,
+                        &closed,
+                        &cls_t,
+                        &pref_t,
+                        &region,
+                        grade.filter(|_| bike),
+                    ));
                 }
                 access_net.as_mut().and_then(|a| a.as_mut())
             } else {
@@ -1856,7 +2178,8 @@ pub fn plan_with(
                 &sub,
                 lmin,
                 lmax,
-                r.max_grade,
+                grade,
+                bike,
                 acc,
                 r.mode != "target",
                 x_md,
@@ -1950,7 +2273,7 @@ pub fn plan_with(
                 .map(|&e| {
                     let (ed, o) = (
                         &net.edges[e],
-                        off_len(&net.edges[e].cls, &net.edges[e].lab, &r.surface, goal),
+                        off_len(&net.edges[e].cls, &net.edges[e].lab, &prof, goal),
                     );
                     // mode max : le retour d'un aller-retour (copie d'un passage unique) ne rapporte
                     // ni prime de type ni bonus, sinon la recherche « remplit » la distance d'allers-
@@ -2069,7 +2392,8 @@ pub fn plan_with(
             warns.push(Msg::new(Code::ViaMissed, json!({"n": j + 1})));
         }
     }
-    let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma)?;
+    let dir = grade.filter(|_| bike);
+    let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma, dir)?;
     if r.mode == "target" {
         let d = r.target_dplus.unwrap();
         if d > ub {
@@ -2089,14 +2413,14 @@ pub fn plan_with(
     }
     let mut loops = vec![main];
     for a in &out.alternatives {
-        loops.push(assemble(&net, &ids, &p, a, acc.as_ref(), gamma)?);
+        loops.push(assemble(&net, &ids, &p, a, acc.as_ref(), gamma, dir)?);
     }
     match r.mode.as_str() {
         // D+ décroissant ; avec un type de voie préféré, D+ plus sa prime (ce que la recherche maximise)
         "max" => {
             let val = |t: &Track| {
                 if off_on {
-                    t.dplus + off_price * (t.length - off_len(&t.cls, &t.lab, &r.surface, goal))
+                    t.dplus + off_price * (t.length - off_len(&t.cls, &t.lab, &prof, goal))
                 } else {
                     t.dplus
                 }
@@ -2106,7 +2430,7 @@ pub fn plan_with(
         // réalisables d'abord, puis par longueur croissante
         // (grands axes : comptés `MAJOR_K` fois en plus, comme dans `Problem::score`)
         "min_distance" => {
-            let len = |t: &Track| t.length + off_len(&t.cls, &t.lab, &r.surface, goal);
+            let len = |t: &Track| t.length + off_len(&t.cls, &t.lab, &prof, goal);
             loops.sort_by(|a, b| b.feasible.cmp(&a.feasible).then(len(a).total_cmp(&len(b))))
         }
         // cible : la plus proche de la demande d'abord ; si elle la tient (à `DIAG_TOL`), celles
@@ -2117,8 +2441,7 @@ pub fn plan_with(
             let err = |t: &Track| {
                 let e = ((t.length - l) / l).abs() + ((t.dplus - d) / d).abs();
                 if off_on {
-                    e.max(SURF_TARGET_BAND)
-                        + SURF_TARGET * off_len(&t.cls, &t.lab, &r.surface, goal) / l
+                    e.max(SURF_TARGET_BAND) + SURF_TARGET * off_len(&t.cls, &t.lab, &prof, goal) / l
                 } else {
                     e
                 }
@@ -2140,7 +2463,15 @@ pub fn plan_with(
     // D54 : en « Route », une sortie qui passe plus de `ROAD_MAJOR_MAX` de sa longueur sur grands
     // axes n'est pas rendue ; si c'est la meilleure, aucune ne l'est (erreur explicite)
     let major = |t: &Track| t.cls[CLS_MAJOR] / t.length.max(1.0);
-    if road && !loops.is_empty() {
+    if road && bike && !loops.is_empty() {
+        // D72 : en vélo, D54 ne bloque plus : la part de grands axes de la meilleure sortie est signalée
+        if major(&loops[0]) > ROAD_MAJOR_MAX {
+            warns.push(Msg::new(
+                Code::MajorRoadsShare,
+                json!({"pct": (100.0 * major(&loops[0])).round()}),
+            ));
+        }
+    } else if road && !loops.is_empty() {
         if major(&loops[0]) > ROAD_MAJOR_MAX {
             return Err(Msg::with_detail(
                 Code::PavedNetworkMajorRoads,
@@ -2361,4 +2692,48 @@ pub fn problem_stats(p: &Problem) -> Value {
         "far": p.far.len(),
         "Lmin": p.lmin, "Lmax": p.lmax,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Défaut corrigé en E2 : le diagnostic ne propose plus `max_grade_pct: 0` (sans limite) quand le
+    /// profil n'en a pas (VTT, gravel : la montée est toujours limitée) ; Route vélo et trail oui.
+    #[test]
+    fn diagnose_relaxes_grade_only_when_unlimited_exists() {
+        let calls = |sport: &str, surface: &str| {
+            let req: Request = serde_json::from_value(json!({
+                "lat": 45.0, "lon": 5.0, "sport": sport, "surface": surface, "max_grade": 0.15,
+                "mode": "target", "target_dplus": 300.0, "distance_km": 20.0,
+            }))
+            .unwrap();
+            let seen = std::cell::RefCell::new(Vec::new());
+            let run = |r: &Request| -> Result<Value, Msg> {
+                seen.borrow_mut().push(r.max_grade);
+                Err(Msg::error(Code::NoLoopFound, ""))
+            };
+            diagnose_with(run, &req, true);
+            seen.into_inner()
+        };
+        assert!(calls("bike", "mtb").is_empty());
+        assert!(calls("bike", "gravel").is_empty());
+        assert_eq!(calls("bike", "road"), [None]);
+        assert_eq!(calls("trail", "trail"), [None]);
+    }
+
+    /// Revue E2 : en v1, une boucle qui viole la pente dans les deux sens (moitiés de points de
+    /// passage) reste orientée par γ (les deux sens tolérés) au lieu de perdre le choix de sens.
+    #[test]
+    fn allowed_dirs_v1_tolerates_both_lot2_refuses() {
+        let v1 = Grade { up: 0.2, down: 0.2 };
+        let lot2 = Grade {
+            up: 0.2,
+            down: 0.35,
+        };
+        assert_eq!(allowed_dirs([0.0, 0.0], v1), Some([true, true]));
+        assert_eq!(allowed_dirs([5.0, 5.0], v1), Some([true, true]));
+        assert_eq!(allowed_dirs([5.0, 0.0], lot2), Some([false, true]));
+        assert_eq!(allowed_dirs([5.0, 5.0], lot2), None);
+    }
 }

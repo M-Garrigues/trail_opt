@@ -57,10 +57,27 @@ pub const SURF_UNKNOWN: u8 = 0;
 pub const SURF_PAVED: u8 = 1;
 pub const SURF_UNPAVED: u8 = 2;
 pub const SURF_WOOD: u8 = 3;
+/// Pavés (sett, cobblestone) : revêtus (D57), mais l'inconfort vélo les distingue (D72).
+pub const SURF_SETT: u8 = 4;
 /// Bits de `Troncons::has` : étiquettes lues dans au moins une dalle.
 pub const HAS_CALM: u8 = 1;
 pub const HAS_HIKE: u8 = 2;
 pub const HAS_WATER: u8 = 4;
+/// Réseaux balisés vélo (`osm_mtb_route`, `osm_bike_route`) : lus à la place de `osm_hike` en vélo.
+pub const HAS_MTB_ROUTE: u8 = 8;
+pub const HAS_BIKE_ROUTE: u8 = 16;
+/// Genre de voie OSM (`Troncons::osm_hw`, issu du code brut `osm_highway`) : 0 = rien d'apparié.
+pub const HW_PATH: u8 = 1;
+pub const HW_TRACK: u8 = 2;
+pub const HW_CYCLEWAY: u8 = 3;
+pub const HW_PEDESTRIAN: u8 = 4;
+/// unclassified, tertiary, road
+pub const HW_MINOR: u8 = 5;
+/// secondary, residential
+pub const HW_SECOND: u8 = 6;
+pub const HW_SERVICE: u8 = 7;
+/// primary, trunk, motorway (et bretelles)
+pub const HW_MAJOR: u8 = 8;
 
 impl Manifest {
     /// Code brut `osm_highway` → grand axe OSM (trunk, primary et leurs bretelles, D54).
@@ -75,6 +92,30 @@ impl Manifest {
                 c.as_str(),
                 Some("trunk" | "trunk_link" | "primary" | "primary_link")
             );
+        }
+        k
+    }
+
+    /// Code brut `osm_highway` → genre de voie `HW_*` (vélo : coût par type de voie, D72).
+    fn highway_kinds(&self) -> Vec<u8> {
+        let codes = self
+            .columns
+            .get("osm_highway")
+            .and_then(|c| c["codes"].as_array());
+        let mut k = vec![0; 256];
+        for (i, c) in codes.into_iter().flatten().enumerate().take(255) {
+            k[i] = match c.as_str().unwrap_or("") {
+                "path" | "bridleway" | "footway" | "steps" | "corridor" | "via_ferrata" => HW_PATH,
+                "track" => HW_TRACK,
+                "cycleway" => HW_CYCLEWAY,
+                "pedestrian" | "living_street" => HW_PEDESTRIAN,
+                "unclassified" | "tertiary" | "tertiary_link" | "road" => HW_MINOR,
+                "secondary" | "secondary_link" | "residential" => HW_SECOND,
+                "service" | "busway" => HW_SERVICE,
+                "primary" | "primary_link" | "trunk" | "trunk_link" | "motorway"
+                | "motorway_link" => HW_MAJOR,
+                _ => 0,
+            };
         }
         k
     }
@@ -98,6 +139,9 @@ impl Manifest {
             k[i] = match c.as_str().unwrap_or("") {
                 "" => SURF_UNKNOWN,
                 "wood" => SURF_WOOD,
+                "sett" | "cobblestone" | "unhewn_cobblestone" if paved.contains(&(i as u64)) => {
+                    SURF_SETT
+                }
                 _ if paved.contains(&(i as u64)) => SURF_PAVED,
                 _ => SURF_UNPAVED,
             };
@@ -183,6 +227,22 @@ pub struct Troncons {
     pub osm_flags: Vec<u8>,
     /// `osm_access` (D66) : 0 inconnu, 1 restreint, 2 fermé au piéton (exclu du réseau), 0 si absent.
     pub osm_access: Vec<u8>,
+    /// Colonnes vélo (D70, tiles.md, 10e.3), 0 si absentes : technicité sac_scale, accès vélo (0–5),
+    /// aménagement cyclable, sens unique (0–3), réseaux vélo / VTT, mtb:scale + 1, tracktype,
+    /// smoothness, vitesse limite, cœur de parc national (0/1).
+    pub osm_sac: Vec<u8>,
+    pub osm_bike: Vec<u8>,
+    pub osm_cycleway: Vec<u8>,
+    pub osm_oneway: Vec<u8>,
+    pub osm_bike_route: Vec<u8>,
+    pub osm_mtb_route: Vec<u8>,
+    pub osm_mtb: Vec<u8>,
+    pub osm_tracktype: Vec<u8>,
+    pub osm_smooth: Vec<u8>,
+    pub osm_maxspeed: Vec<u8>,
+    pub pn_core: Vec<u8>,
+    /// Genre de voie OSM (`HW_*`), tiré de `osm_highway` au chargement.
+    pub osm_hw: Vec<u8>,
     pub calm: Vec<u8>,
     pub hike: Vec<u8>,
     pub water: Vec<u8>,
@@ -355,6 +415,22 @@ impl Troncons {
         self.osm_major.push(0);
         self.osm_flags.push(0);
         self.osm_access.push(0);
+        for c in [
+            &mut self.osm_sac,
+            &mut self.osm_bike,
+            &mut self.osm_cycleway,
+            &mut self.osm_oneway,
+            &mut self.osm_bike_route,
+            &mut self.osm_mtb_route,
+            &mut self.osm_mtb,
+            &mut self.osm_tracktype,
+            &mut self.osm_smooth,
+            &mut self.osm_maxspeed,
+            &mut self.pn_core,
+            &mut self.osm_hw,
+        ] {
+            c.push(0);
+        }
         self.calm.push(15);
         self.hike.push(0);
         self.water.push(0);
@@ -727,8 +803,10 @@ impl TileStore {
                 read_tile(&path, ix, iy, &mut t).map_err(|e| format!("{REMOTE_ERR}{e}"))?;
             }
         }
-        let kinds = self.manifest.surface_kinds();
-        t.surf.iter_mut().for_each(|c| *c = kinds[*c as usize]);
+        let surf = self.manifest.surface_kinds();
+        t.surf.iter_mut().for_each(|c| *c = surf[*c as usize]);
+        let kinds = self.manifest.highway_kinds();
+        t.osm_hw.iter_mut().for_each(|c| *c = kinds[*c as usize]);
         let major = self.manifest.major_highways();
         t.osm_major
             .iter_mut()
@@ -878,6 +956,17 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         opt("osm_highway")?,
         opt("osm_flags")?,
         opt("osm_access")?,
+        opt("osm_sac")?,
+        opt("osm_bike")?,
+        opt("osm_cycleway")?,
+        opt("osm_oneway")?,
+        opt("osm_bike_route")?,
+        opt("osm_mtb_route")?,
+        opt("osm_mtb")?,
+        opt("osm_tracktype")?,
+        opt("osm_smooth")?,
+        opt("osm_maxspeed")?,
+        opt("pn_core")?,
     ];
     let mut col = |name: &str| -> Result<Vec<i64>, String> {
         let file = z
@@ -938,6 +1027,18 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         t.osm_major.push(lab(5, 0));
         t.osm_flags.push(lab(6, 0));
         t.osm_access.push(lab(7, 0));
+        t.osm_sac.push(lab(8, 0));
+        t.osm_bike.push(lab(9, 0));
+        t.osm_cycleway.push(lab(10, 0));
+        t.osm_oneway.push(lab(11, 0));
+        t.osm_bike_route.push(lab(12, 0));
+        t.osm_mtb_route.push(lab(13, 0));
+        t.osm_mtb.push(lab(14, 0));
+        t.osm_tracktype.push(lab(15, 0));
+        t.osm_smooth.push(lab(16, 0));
+        t.osm_maxspeed.push(lab(17, 0));
+        t.pn_core.push(lab(18, 0));
+        t.osm_hw.push(lab(5, 0)); // code brut, converti dans `load_in`
         let (mut x, mut y) = (ox, oy);
         for j in 0..geom_n[i] as usize {
             x += gx[gk + j];
@@ -955,7 +1056,13 @@ pub fn read_tile(path: &Path, ix: i64, iy: i64, t: &mut Troncons) -> Result<(), 
         pk += profile_count(len_dm[i] as i32);
         t.poff.push(t.z_dm.len());
     }
-    for (k, bit) in [(2, HAS_CALM), (3, HAS_HIKE), (4, HAS_WATER)] {
+    for (k, bit) in [
+        (2, HAS_CALM),
+        (3, HAS_HIKE),
+        (4, HAS_WATER),
+        (12, HAS_BIKE_ROUTE),
+        (13, HAS_MTB_ROUTE),
+    ] {
         if labels[k].is_some() {
             t.has |= bit;
         }
@@ -990,10 +1097,10 @@ mod tests {
                 SURF_UNKNOWN,
                 SURF_PAVED,
                 SURF_PAVED,
-                SURF_PAVED, // pavés : revêtus (D57)
+                SURF_SETT, // pavés : revêtus (D57), `paved_mask` les garde
                 SURF_WOOD,
                 SURF_UNPAVED,
-                SURF_PAVED,
+                SURF_SETT,
                 SURF_UNKNOWN
             ]
         );

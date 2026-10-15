@@ -3,7 +3,7 @@
 use std::time::{Duration, Instant};
 
 use engine::Code;
-use engine::admin::{self, Admin, Limiter, Views};
+use engine::admin::{self, Admin, Limiter, Upto, Views};
 use engine::api::grid500;
 use serde_json::{Value, json};
 
@@ -129,6 +129,17 @@ fn canned(name: &str) -> Value {
             vec![("dev", "desktop"), ("visitors", "1"), ("hits", "5")],
         ],
         "refs" => vec![vec![("ref", "google.com"), ("hits", "4")]],
+        // liens vus par le serveur (bug du 15/10 : 0 « lien créé » dans les événements, refus de mesure)
+        // créations : 3 vues par le serveur (Cible, chemins) contre 2 événements `share_created`
+        "shares" => vec![
+            vec![
+                ("op", "post"),
+                ("goal", "target"),
+                ("surface", "trail"),
+                ("n", "3"),
+            ],
+            vec![("op", "get"), ("n", "7")],
+        ],
         // v1 (sans code en 200) et v2 mélangés
         "calcs" => vec![
             vec![
@@ -164,6 +175,48 @@ fn canned(name: &str) -> Value {
                 ("climbs", "balanced"),
                 ("n", "3"),
             ],
+            // même voie « road », deux sports : deux lignes dans `surfaces`
+            vec![
+                ("sport", "bike"),
+                ("goal", "target"),
+                ("surface", "road"),
+                ("n", "1"),
+            ],
+            vec![
+                ("sport", "trail"),
+                ("goal", "target"),
+                ("surface", "road"),
+                ("n", "1"),
+            ],
+        ],
+        "modes" => vec![
+            vec![
+                ("sport", "trail"),
+                ("surface", "trail"),
+                ("goal", "target"),
+                ("code", "ok"),
+                ("n", "8"),
+                ("p50", "4"),
+                ("p95", "9"),
+                ("avg_s", "5"),
+            ],
+            vec![
+                ("sport", "trail"),
+                ("surface", "trail"),
+                ("goal", "target"),
+                ("code", "timeout"),
+                ("n", "2"),
+                ("avg_s", "20"),
+            ],
+            vec![
+                ("sport", "bike"),
+                ("surface", "road"),
+                ("goal", "target"),
+                ("code", "no_route"),
+                ("n", "1"),
+                ("avg_s", "1"),
+            ],
+            vec![("code", "ok"), ("n", "20"), ("p50", "1"), ("avg_s", "1")],
         ],
         "hist" => vec![
             vec![
@@ -322,7 +375,7 @@ fn stats_forme_de_la_reponse() {
         (b["compute_s"]["p50"].as_f64(), b["compute_s"]["n"].as_f64()),
         (Some(4.1289), Some(18.0))
     );
-    assert_eq!(b["scanned_mb"], 1.0); // 10 vues terminées × 0,1 Mo
+    assert_eq!(b["scanned_mb"], 1.2); // 12 vues terminées × 0,1 Mo
     assert_eq!(
         b["visitors_by_day"],
         json!([{"day": "2026-10-06", "visitors": 12.0, "hits": 30.0}])
@@ -341,12 +394,11 @@ fn stats_forme_de_la_reponse() {
         json!([{"code": "bot_check_failed", "n": 9.0}])
     );
     assert_eq!(b["goals"][0], json!({"goal": "max_dplus", "n": 6.0}));
-    // champ absent de la ligne (v1) : « - »
-    assert!(
-        b["surfaces"]
-            .as_array()
-            .unwrap()
-            .contains(&json!({"surface": "-", "n": 6.0}))
+    // champ absent de la ligne (v1) : « - » ; sport absent : trail ; « road » trail et vélo séparées
+    assert_eq!(
+        b["surfaces"],
+        json!([{"sport": "trail", "surface": "-", "n": 6.0}, {"sport": "trail", "surface": "trail", "n": 3.0},
+               {"sport": "bike", "surface": "road", "n": 1.0}, {"sport": "trail", "surface": "road", "n": 1.0}])
     );
     assert_eq!(
         b["hist_km"],
@@ -380,16 +432,18 @@ fn stats_forme_de_la_reponse() {
         json!([{"dev": "mobile", "visitors": 8.0}, {"dev": "desktop", "visitors": 4.0}])
     );
     assert_eq!(b["referrers"], json!([{"ref": "google.com", "hits": 4.0}]));
+    assert_eq!(b["shares"], json!({"created": 3.0, "opened": 7.0}));
     // actions (D59)
     assert_eq!(
         b["events_by_day"],
         json!([{"day": "2026-10-06", "gpx": 2.0, "share_click": 3.0}, {"day": "2026-10-07", "shared_open": 1.0}])
     );
     let a = &b["action_rates"];
+    // sport, voie, type : partages = créations du serveur (3), pas les événements (2)
     assert_eq!(
         a["goal"],
         json!([
-            {"key": "target", "calcs": 5.0, "share": 2.0, "gpx": 1.0, "share_rate": 0.4, "gpx_rate": 0.2},
+            {"key": "target", "calcs": 5.0, "share": 3.0, "gpx": 1.0, "share_rate": 0.6, "gpx_rate": 0.2},
             {"key": "max_dplus", "calcs": 1.0, "share": 0.0, "gpx": 1.0, "share_rate": 0.0, "gpx_rate": 1.0},
         ])
     );
@@ -406,12 +460,29 @@ fn stats_forme_de_la_reponse() {
         a["km"][1],
         json!({"key": "10", "calcs": 4.0, "share": 2.0, "gpx": 2.0, "share_rate": 0.5, "gpx_rate": 0.5})
     );
-    assert_eq!(a["surface"][1]["key"], "-");
+    assert_eq!(a["surface"][1]["key"], "trail/-");
     assert_eq!(
         b["top_combos"][0],
-        json!({"goal": "target", "surface": "trail", "km_bin": "10", "dplus_bin": "250", "rank": "1", "share": 2.0, "gpx": 0.0})
+        json!({"sport": "trail", "goal": "target", "surface": "trail", "km_bin": "10", "dplus_bin": "250", "rank": "1", "share": 2.0, "gpx": 0.0})
     );
     assert_eq!(b["top_combos"].as_array().unwrap().len(), 3);
+    // modes : p50/p95 de la ligne ok, coût (3008 Mo) = Σ avg × n / Σ n × 3008/1024 × prix + 2e-7
+    assert_eq!(
+        b["modes"][0],
+        json!({"sport": "trail", "surface": "-", "goal": "-", "n": 20.0, "fail": 0.0, "timeout": 0.0,
+               "p50": 1.0, "p95": null, "cost_usd": 0.000_039_4})
+    );
+    assert_eq!(
+        b["modes"][1],
+        json!({"sport": "trail", "surface": "trail", "goal": "target", "n": 10.0, "fail": 2.0, "timeout": 2.0,
+               "p50": 4.0, "p95": 9.0, "cost_usd": 0.000_313_5})
+    );
+    assert_eq!(
+        b["modes"][2],
+        json!({"sport": "bike", "surface": "road", "goal": "target", "n": 1.0, "fail": 1.0, "timeout": 0.0,
+               "p50": null, "p95": null, "cost_usd": 0.000_039_4})
+    );
+    assert_eq!(b["filter"], json!({}));
     assert_eq!(
         (&r.log["msg"], &r.log["outcome"]),
         (&json!("admin"), &json!("ok"))
@@ -423,7 +494,7 @@ fn stats_forme_de_la_reponse() {
 fn stats_refus_et_erreurs() {
     let today = admin::parse_day("2026-10-07").unwrap();
     let a = Admin::from_key(KEY, false).unwrap().unwrap();
-    let never = |_: i64, _: i64| -> Result<Views, String> { panic!("aucune requête sans clé") };
+    let never = |_: i64, _: Upto| -> Result<Views, String> { panic!("aucune requête sans clé") };
     let r = admin::handle(&a, Some("mauvaise"), IP, &[], today, never);
     assert_eq!(
         (r.status, &r.body["error"]["code"], &r.log["outcome"]),
@@ -442,7 +513,20 @@ fn stats_refus_et_erreurs() {
     assert_eq!(r.log["outcome"], "error");
     // StartQuery en échec : erreur globale
     let fail = |_: &str, _: &Value| -> Result<Value, String> { Err("AccessDenied".into()) };
-    assert!(admin::run(0, 1, "g", fail, (4, Duration::ZERO), Duration::ZERO).is_err());
+    assert!(
+        admin::run(
+            0,
+            Upto {
+                to: 1,
+                filter: String::new()
+            },
+            "g",
+            fail,
+            (4, Duration::ZERO),
+            Duration::ZERO
+        )
+        .is_err()
+    );
     for _ in 0..4 {
         admin::handle(&a, None, IP, &[], today, never);
     }
@@ -583,4 +667,86 @@ fn consommation_cle_et_cache() {
     );
     let r = admin::handle_usage(&a, Some(KEY), IP, &[], never);
     assert_eq!(r.body["v"], 1);
+}
+
+#[test]
+fn filtres() {
+    let f = |s: &str| admin::parse_filter(&q(s));
+    let pairs = |s: &str| f(s).unwrap();
+    assert!(pairs("from=2026-10-01").is_empty());
+    assert_eq!(
+        pairs("sport=bike&surface=gravel&goal=min_distance"),
+        [
+            ("sport", "bike"),
+            ("surface", "gravel"),
+            ("goal", "min_distance")
+        ]
+    );
+    for ok in [
+        "sport=trail&surface=any",
+        "sport=bike&surface=road",
+        "goal=target",
+    ] {
+        assert!(f(ok).is_ok(), "{ok}");
+    }
+    for bad in [
+        "surface=road",            // sans sport
+        "sport=trail&surface=mtb", // voie d'un autre sport
+        "sport=bike&surface=trail",
+        "sport=run",
+        "goal=x",
+        "sport=",
+        "sport=trail&sport=bike", // répétition
+        "sport=trail&sport=trail",
+        "goal=target&goal=target",
+    ] {
+        assert_eq!(f(bad).unwrap_err().code, Code::InvalidRequest, "{bad}");
+    }
+    // parse_range laisse passer les filtres ; handle refuse une valeur invalide avant toute requête
+    let today = admin::parse_day("2026-10-07").unwrap();
+    assert!(admin::parse_range(&q("sport=bike&goal=target"), today).is_ok());
+    let a = Admin::from_key(KEY, false).unwrap().unwrap();
+    let never = |_: i64, _: Upto| -> Result<Views, String> { panic!("filtre invalide") };
+    let r = admin::handle(&a, Some(KEY), IP, &q("surface=road"), today, never);
+    assert_eq!(
+        (r.status, &r.body["error"]["code"]),
+        (400, &json!("invalid_request"))
+    );
+    // filtre valide : clause transmise à `run`, `filter` rendu dans la réponse
+    let r = admin::handle(
+        &a,
+        Some(KEY),
+        IP,
+        &q("sport=bike&goal=target"),
+        today,
+        |_, u| {
+            assert_eq!(u.filter, r#" and sport = "bike" and goal = "target""#);
+            Ok(Default::default())
+        },
+    );
+    assert_eq!(r.status, 200, "{}", r.body);
+    assert_eq!(r.body["filter"], json!({"sport": "bike", "goal": "target"}));
+}
+
+#[test]
+fn requetes_filtrees() {
+    let c = admin::clause(&[("sport", "trail"), ("surface", "road"), ("goal", "target")]);
+    assert_eq!(
+        c,
+        r#" and (sport = "trail" or not ispresent(sport)) and surface = "road" and goal = "target""#
+    );
+    assert_eq!(
+        admin::clause(&[("sport", "bike")]),
+        r#" and sport = "bike""#
+    );
+    assert_eq!(admin::clause(&[]), "");
+    let (plain, filtered) = (admin::queries(), admin::queries_for(&c));
+    assert_eq!(filtered.len(), 13);
+    for ((n, p), (_, q)) in plain.iter().zip(&filtered) {
+        // audience : jamais filtrée ; plan et event : toujours
+        let audience = ["visitors", "geo", "refs"].contains(n);
+        assert_eq!(p == q, audience, "{n}");
+        assert_eq!(q.contains(&c), !audience, "{n}");
+    }
+    assert!(filtered.iter().any(|(n, _)| *n == "modes"));
 }

@@ -1,28 +1,35 @@
 <script lang="ts">
-  // Page /admin (contracts/admin.md § 5) : français seulement, pensée pour ordinateur (empilée en mobile),
-  // clé saisie gardée en sessionStorage, données de GET /api/admin/stats (Logs Insights).
+  // Page /admin (contracts/admin.md § 5) : français seulement, deux menus (Visu / Surveillance, `#visu` / `#surveillance`),
+  // clé saisie gardée en sessionStorage, données de GET /api/admin/stats (Logs Insights, filtres côté serveur).
   import { onMount } from 'svelte';
   import Chart from './Chart.svelte';
   import Heat from './Heat.svelte';
-  import { DASH, DIMS, EVENTS, days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, qty, shares, tiles, usd, type Stats, type Usage } from './stats';
+  import { DASH, DIMS, EVENTS, GOAL_OPTIONS, SPORT_OPTIONS, costCalc, days, eventTotal, filterOf, filterText, fmt, histBins, keyLabel, label, modeTotals, pct, perDay, preset, qty, shares, sportLabel, statsQuery, surfaceLabel, tiles, usd, viewOf, type RateDim, type Stats, type Usage } from './stats';
   import { errorText } from '../i18n/format';
 
   const KEY = 'optrail.admin';
   const EXPIRED = 'aws credentials expired';
   const PERIODS = [[7, '7 j'], [30, '30 j'], [90, '90 j'], [400, '13 mois']] as const;
-  const C = { a: '#a8441c', b: '#1565C0', ok: '#2e7d32', fail: '#c62828', rej: '#9e9e9e' };
-  const EV_COLORS = ['#f0a581', '#a8441c', '#1565C0', '#6A1B9A'];
+  // jetons de série définis dans le style du composant (clair/sombre), résolus par Chart au dessin
+  const C = { a: 'var(--s-a)', b: 'var(--s-b)', c: 'var(--s-c)', d: 'var(--s-d)', ok: 'var(--s-ok)', fail: 'var(--s-fail)', rej: 'var(--s-rej)' };
+  const EV_COLORS = [C.d, C.a, C.b, C.c];
 
   let key = $state(sessionStorage.getItem(KEY) ?? '');
   let input = $state('');
   let range = $state(preset(30));
+  let view = $state(viewOf(location.hash));
+  let sportSurface = $state('');
+  let goal = $state('');
+  let dim = $state<RateDim>('sport');
   let stats = $state<Stats | null>(null);
   let error = $state('');
   let loading = $state(false);
   let usage = $state<Usage | null>(null);
   let usageError = $state('');
+  let usageAsked = false;
+  let seq = 0;
 
-  // consommation AWS : indépendante de la période (mois en cours), cache serveur de 3 h
+  // consommation AWS : indépendante de la période (mois en cours), cache serveur de 3 h ; chargée à la première ouverture de Surveillance
   async function loadUsage() {
     usageError = '';
     try {
@@ -34,24 +41,33 @@
       usageError = 'Serveur injoignable.';
     }
   }
+  $effect(() => {
+    if (key && view === 'surveillance' && !usageAsked) {
+      usageAsked = true;
+      void loadUsage();
+    }
+  });
 
   async function load() {
     if (!key) return;
+    const mine = ++seq; // une réponse tardive d'un ancien filtre ne remplace pas la dernière
     loading = true;
     error = '';
-    if (!usage) void loadUsage();
     try {
-      const res = await fetch(`/api/admin/stats?from=${range.from}&to=${range.to}`, { headers: { 'x-admin-key': key } });
+      const res = await fetch(`/api/admin/stats?${statsQuery(range, filterOf(sportSurface, goal))}`, { headers: { 'x-admin-key': key } });
       const body = await res.json().catch(() => null);
+      if (mine !== seq) return;
       if (res.status === 401) {
         sessionStorage.removeItem(KEY);
         key = '';
+        usageAsked = false;
         error = 'Clé refusée.';
       } else if (res.status === 429) error = 'Trop d’essais, réessayer dans 15 min.';
       else if (body?.error?.detail === EXPIRED) error = 'Identifiants AWS expirés : aws login --profile optrail';
       else if (!res.ok) error = `Erreur ${res.status}${body?.error?.detail ? ` : ${body.error.detail}` : ''}`;
       else stats = body as Stats;
     } catch {
+      if (mine !== seq) return;
       error = 'Serveur injoignable.';
     }
     loading = false;
@@ -72,14 +88,19 @@
     m.name = 'robots';
     m.content = 'noindex';
     document.head.append(m);
+    const onHash = () => (view = viewOf(location.hash));
+    addEventListener('hashchange', onHash);
     void load();
+    return () => removeEventListener('hashchange', onHash);
   });
 
   const ds = $derived(stats ? days(stats.from, stats.to) : []);
   const short = (d: string) => `${d.slice(8, 10)}/${d.slice(5, 7)}`;
   const tl = $derived(stats ? tiles(stats) : null);
+  const mt = $derived(stats ? modeTotals(stats.modes) : null);
   const visitors = $derived(stats && perDay(ds, stats.visitors_by_day, (r) => r.visitors));
   const visits = $derived(stats && perDay(ds, stats.visitors_by_day, (r) => r.hits));
+  const asked = $derived(stats && perDay(ds, stats.calcs_by_day, (r) => r.n));
   const calcs = $derived(stats?.calcs_by_day ? {
     ok: perDay(ds, stats.calcs_by_day, (r) => r.ok)!,
     fail: perDay(ds, stats.calcs_by_day, (r) => r.n - r.ok)!,
@@ -93,26 +114,47 @@
   const hk = $derived(histBins(stats?.hist_km ?? null));
   const hd = $derived(histBins(stats?.hist_dplus_m ?? null));
   const mixes = $derived(stats ? [
+    ['Sport', stats.sports ? shares(stats.sports, (r) => sportLabel(r.sport), (r) => r.n, (r) => r.sport) : null],
+    ['Sport · voie', stats.surfaces ? shares(stats.surfaces, (r) => surfaceLabel(r.sport ?? 'trail', r.surface), (r) => r.n, (r) => r.sport ?? 'trail') : null],
     ['Type de sortie', shares(stats.goals, (r) => r.goal, (r) => r.n)],
-    ['Type de voie', shares(stats.surfaces, (r) => r.surface, (r) => r.n)],
     ['Montées', shares(stats.climbs, (r) => r.climbs, (r) => r.n)],
-    ['Appareils (visites)', shares(stats.devices, (r) => r.dev, (r) => r.visitors)],
   ] as const : []);
+  const devices = $derived(stats ? shares(stats.devices, (r) => r.dev, (r) => r.visitors) : null);
+  const filter = $derived(filterText(stats?.filter));
+  const spend = $derived(usage?.spend?.actual);
 </script>
 
 <main>
   <header>
     <h1>optrail — admin</h1>
     {#if key}
-      <nav aria-label="Période">
-        {#each PERIODS as [n, l]}
-          <button class="btn small secondary" aria-pressed={range.to === preset(n).to && range.from === preset(n).from} onclick={() => { range = preset(n); void load(); }}>{l}</button>
-        {/each}
-        <label>du <input type="date" bind:value={range.from} max={range.to} /></label>
-        <label>au <input type="date" bind:value={range.to} min={range.from} /></label>
-        <button class="btn small primary" onclick={load} disabled={loading}>{loading ? 'Chargement…' : 'Actualiser'}</button>
-        <button class="btn small link" onclick={() => { sessionStorage.removeItem(KEY); key = ''; stats = null; usage = null; }}>Oublier la clé</button>
+      <nav class="tabs" aria-label="Menus">
+        <a href="#visu" aria-current={view === 'visu' ? 'page' : undefined}>Visu</a>
+        <a href="#surveillance" aria-current={view === 'surveillance' ? 'page' : undefined}>Surveillance</a>
       </nav>
+      <div class="bar">
+        <div class="group" role="group" aria-label="Période">
+          {#each PERIODS as [n, l]}
+            <button class="btn small secondary" aria-pressed={range.to === preset(n).to && range.from === preset(n).from} onclick={() => { range = preset(n); void load(); }}>{l}</button>
+          {/each}
+          <label>du <input type="date" bind:value={range.from} max={range.to} /></label>
+          <label>au <input type="date" bind:value={range.to} min={range.from} /></label>
+        </div>
+        <div class="group">
+          <label>Sport et voie
+            <select value={sportSurface} onchange={(e) => { sportSurface = e.currentTarget.value; void load(); }}>
+              {#each SPORT_OPTIONS as [v, l]}<option value={v}>{l}</option>{/each}
+            </select>
+          </label>
+          <label>Type de sortie
+            <select value={goal} onchange={(e) => { goal = e.currentTarget.value; void load(); }}>
+              {#each GOAL_OPTIONS as [v, l]}<option value={v}>{l}</option>{/each}
+            </select>
+          </label>
+          <button class="btn small primary" onclick={load} disabled={loading}>{loading ? 'Chargement…' : 'Actualiser'}</button>
+          <button class="btn small link" onclick={() => { sessionStorage.removeItem(KEY); key = ''; stats = null; usage = null; usageAsked = false; }}>Oublier la clé</button>
+        </div>
+      </div>
     {/if}
   </header>
 
@@ -127,194 +169,249 @@
   {:else if stats && tl}
     <p class="meta">
       Du {stats.from} au {stats.to} · {fmt(stats.scanned_mb, 1)} Mo analysés
+      {#if filter} · <strong>Filtre : {filter}</strong>{/if}
       {#if stats.incomplete} · <strong>résultats incomplets</strong> (requête trop longue : « — »){/if}
     </p>
-    <section class="tiles" aria-label="Chiffres clés">
-      <div><span>Visiteurs</span><b>{fmt(tl.visitors)}</b><small>visiteurs uniques par jour, cumulés</small></div>
-      <div><span>Visites</span><b>{fmt(tl.visits)}</b><small>pages ouvertes</small></div>
-      <div><span>Calculs</span><b>{fmt(tl.calcs)}</b><small>{fmt(tl.rejected)} rejetés avant calcul</small></div>
-      <div><span>Taux d’échec</span><b>{pct(tl.failRate)}</b><small>calculs sans sortie</small></div>
-      <div><span>Temps p50 / p95</span><b>{fmt(tl.p50, 1)} / {fmt(tl.p95, 1)} s</b><small>calculs réussis</small></div>
-      <div><span>Partages</span><b>{fmt(eventTotal(stats, 'share_created'))}</b><small>liens créés · {fmt(eventTotal(stats, 'shared_open'))} ouverts</small></div>
-      <div><span>GPX</span><b>{fmt(eventTotal(stats, 'gpx'))}</b><small>exports</small></div>
-    </section>
 
-    <section class="grid">
-      <div class="card">
-        {#if visitors && visits}
-          <Chart title="Visiteurs et visites par jour" labels={ds.map(short)} series={[{ name: 'Visiteurs', color: C.a, values: visitors }, { name: 'Visites', color: C.b, values: visits }]} />
-        {:else}<p>Visiteurs par jour : {DASH}</p>{/if}
-      </div>
-      <div class="card">
-        {#if calcs}
-          <Chart kind="bar" title="Calculs par jour" labels={ds.map(short)} series={[{ name: 'Réussis', color: C.ok, values: calcs.ok }, { name: 'Échecs', color: C.fail, values: calcs.fail }, { name: 'Rejetés', color: C.rej, values: calcs.rej }]} />
-        {:else}<p>Calculs par jour : {DASH}</p>{/if}
-      </div>
-      <div class="card">
-        {#if perf}
-          <Chart title="Temps de calcul par jour (s)" digits={1} labels={ds.map(short)} series={[{ name: 'p50', color: C.a, values: perf.p50 }, { name: 'p95', color: C.b, values: perf.p95 }]} />
-        {:else}<p>Temps de calcul par jour : {DASH}</p>{/if}
-      </div>
-      <div class="card">
-        <h2>Échecs par code</h2>
-        {#if stats.codes?.length}
-          <table>
-            <thead><tr><th>Code</th><th>Message</th><th class="n">Calculs</th><th class="n">Taux</th></tr></thead>
-            <tbody>{#each stats.codes as c}<tr><td><code>{c.code}</code></td><td>{errorText('fr', c.code)}</td><td class="n">{fmt(c.n)}</td><td class="n">{pct(c.rate)}</td></tr>{/each}</tbody>
-          </table>
-        {:else}<p class="none">{stats.codes ? 'Aucun échec.' : DASH}</p>{/if}
-        <h3>Rejetés avant calcul</h3>
-        {#if stats.rejected_codes?.length}
-          <table><tbody>{#each stats.rejected_codes as c}<tr><td><code>{c.code}</code></td><td class="n">{fmt(c.n)}</td></tr>{/each}</tbody></table>
-        {:else}<p class="none">{stats.rejected_codes ? 'Aucun.' : DASH}</p>{/if}
-      </div>
-      <div class="card">
-        {#if hk}<Chart kind="bar" title="Distance obtenue (km)" labels={hk.labels} series={[{ name: 'Calculs', color: C.a, values: hk.values }]} />{:else}<p>Distance : {DASH}</p>{/if}
-      </div>
-      <div class="card">
-        {#if hd}<Chart kind="bar" title="D+ obtenu (m)" labels={hd.labels} series={[{ name: 'Calculs', color: C.b, values: hd.values }]} />{:else}<p>D+ : {DASH}</p>{/if}
-      </div>
-      {#each mixes as [title, rows]}
+    {#if view === 'visu'}
+      <section class="tiles" aria-label="Chiffres clés">
+        <div><span>Visiteurs</span><b>{fmt(tl.visitors)}</b><small>visiteurs uniques par jour, cumulés</small></div>
+        <div><span>Visites</span><b>{fmt(tl.visits)}</b><small>pages ouvertes</small></div>
+        <div><span>Sorties demandées</span><b>{fmt(tl.calcs)}</b><small>calculs lancés</small></div>
+        <!-- liens vus par le serveur (POST/GET /api/loops) : comptés même quand le navigateur refuse la mesure (GPC, DNT, case Réglages),
+             qui supprime les événements ; ceux-ci (taux d'action) sont rappelés en petit -->
+        <div><span>Liens partagés</span><b>{fmt(stats.shares?.created)}</b><small>créés · {fmt(stats.shares?.opened)} ouvertures (serveur) ; mesurés : {fmt(eventTotal(stats, 'share_created'))} créés, {fmt(eventTotal(stats, 'shared_open'))} ouverts</small></div>
+        <div><span>GPX</span><b>{fmt(eventTotal(stats, 'gpx'))}</b><small>exports</small></div>
+      </section>
+
+      <section class="grid">
         <div class="card">
-          <h2>{title}</h2>
-          {#if rows?.length}
-            <table class="bars"><tbody>{#each rows as r}<tr><td>{r.label}</td><td class="bar"><span style="width: {r.share * 100}%"></span></td><td class="n">{fmt(r.n)}</td><td class="n">{pct(r.share)}</td></tr>{/each}</tbody></table>
-          {:else}<p class="none">{rows ? 'Aucune donnée.' : DASH}</p>{/if}
+          {#if visitors && visits}
+            <Chart title="Visiteurs et visites par jour" labels={ds.map(short)} series={[{ name: 'Visiteurs', color: C.a, values: visitors }, { name: 'Visites', color: C.b, values: visits }]} />
+          {:else}<p>Visiteurs par jour : {DASH}</p>{/if}
         </div>
-      {/each}
-      <div class="card">
-        {#if events}
-          <Chart kind="bar" title="Actions par jour" labels={ds.map(short)} series={events} />
-        {:else}<p>Actions par jour : {DASH}</p>{/if}
-      </div>
-      <div class="card wide">
-        <h2>Taux d’action <small>(actions rapportées aux calculs réussis ; distance et D+ : sortie 1 du calcul, sortie choisie pour l’action)</small></h2>
-        {#if stats.action_rates}
-          <div class="rates">
-            {#each DIMS as [dim, title]}
-              <table>
-                <caption>{title}</caption>
-                <thead><tr><th></th><th class="n">Calculs</th><th class="n">Partages</th><th class="n">%</th><th class="n">GPX</th><th class="n">%</th></tr></thead>
-                <tbody>
-                  {#each stats.action_rates[dim] as r}
-                    <tr><td>{keyLabel(dim, r.key)}</td><td class="n">{fmt(r.calcs)}</td><td class="n">{fmt(r.share)}</td><td class="n">{pct(r.share_rate)}</td><td class="n">{fmt(r.gpx)}</td><td class="n">{pct(r.gpx_rate)}</td></tr>
-                  {:else}<tr><td colspan="6" class="none">Aucune donnée.</td></tr>{/each}
-                </tbody>
-              </table>
-            {/each}
+        <div class="card">
+          {#if asked}
+            <Chart kind="bar" title="Sorties demandées par jour" labels={ds.map(short)} series={[{ name: 'Sorties demandées', color: C.a, values: asked }]} />
+          {:else}<p>Sorties demandées par jour : {DASH}</p>{/if}
+        </div>
+        <div class="card">
+          {#if events}
+            <Chart kind="bar" title="Actions par jour" labels={ds.map(short)} series={events} />
+          {:else}<p>Actions par jour : {DASH}</p>{/if}
+        </div>
+        {#each mixes as [title, rows]}
+          <div class="card">
+            <h2>{title}</h2>
+            {#if rows?.length}
+              <table class="bars"><tbody>{#each rows as r}<tr data-sport={r.sport}><td>{r.label}</td><td class="bar"><span style="width: {r.share * 100}%"></span></td><td class="n">{fmt(r.n)}</td><td class="n">{pct(r.share)}</td></tr>{/each}</tbody></table>
+            {:else}<p class="none">{rows ? 'Aucune donnée.' : DASH}</p>{/if}
           </div>
-        {:else}<p class="none">{DASH}</p>{/if}
-      </div>
-      <div class="card wide">
-        <h2>Combinaisons qui amènent le plus d’actions</h2>
-        {#if stats.top_combos?.length}
-          <table>
-            <thead><tr><th>Type</th><th>Voie</th><th>Distance</th><th>D+</th><th>Rang</th><th class="n">Partages</th><th class="n">GPX</th></tr></thead>
-            <tbody>{#each stats.top_combos as c}<tr><td>{label(c.goal)}</td><td>{label(c.surface)}</td><td>{keyLabel('km_bin', c.km_bin)}</td><td>{keyLabel('dplus_bin', c.dplus_bin)}</td><td>{keyLabel('rank', c.rank)}</td><td class="n">{fmt(c.share)}</td><td class="n">{fmt(c.gpx)}</td></tr>{/each}</tbody>
-          </table>
-        {:else}<p class="none">{stats.top_combos ? 'Aucune action enregistrée sur la période.' : DASH}</p>{/if}
-      </div>
-      <div class="card wide">
-        <h2>Départs <small>(densité, cellules de ~500 m ; rouge : hors couverture)</small></h2>
-        <Heat starts={stats.starts ?? []} outside={stats.starts_outside ?? []} />
-        {#if !stats.starts?.length && !stats.starts_outside?.length}<p class="none">Aucun départ enregistré sur la période (champ absent des anciennes lignes).</p>{/if}
-      </div>
-      <div class="card wide" role="region" aria-label="Consommation AWS">
-        <h2>Consommation AWS {#if usage}<small>({usage.month}, renouvellement le {usage.renewal} ; {fmt(usage.elapsed * 100)} % du mois écoulé ; lu à {new Date(usage.fetched_at * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}, gardé 3 h)</small>{/if}</h2>
-        {#if usageError}<p class="error">{usageError}</p>{/if}
-        {#if usage}
-          <div class="tiles usage">
-            <div><span>Dépense du mois</span><b>{usd(usage.spend?.actual)}</b><small>coût brut hors crédits (AWS Budgets)</small></div>
-            <div><span>Prévision fin de mois</span><b>{usd(usage.spend?.forecast)}</b><small>{usage.spend?.forecast_source === 'budgets' ? 'prévision AWS Budgets' : 'au rythme actuel'}</small></div>
-            <div><span>Prochain palier</span><b>{usd(usage.spend?.next_step)}</b><small>paliers {usage.spend?.steps.map((x) => `${x} $`).join(' · ') ?? DASH} : chacun met l’API de calcul en pause (reprise manuelle)</small></div>
-            <div><span>Crédits restants</span><b>{usd(usage.plan?.credits_usd)}</b><small>plan {usage.plan?.type === 'PAID' ? 'payant' : (usage.plan?.type ?? DASH)} : les crédits paient la facture</small></div>
-          </div>
-          <div class="scroll"><table>
-            <thead><tr><th>Service</th><th>Poste</th><th class="n">Consommé ce mois</th><th class="n">Seuil gratuit / mois</th><th class="n">Part du seuil</th><th class="n">Projection fin de mois</th><th class="n">Coût du mois</th><th class="n">Coût prévu</th></tr></thead>
-            <tbody>
-              {#each usage.lines as l}
-                <tr>
-                  <td>{l.service}</td><td>{l.item}{#if l.now != null} <small>({qty(l.now, l.unit === 'Go-mois' ? 'Go' : l.unit)} stockés)</small>{/if}</td>
-                  <td class="n">{qty(l.used, l.unit)}</td>
-                  <td class="n">{l.free == null ? '' : l.free ? qty(l.free, l.unit) : 'aucun'}</td>
-                  <td class="n">{pct(l.share)}</td>
-                  <td class="n">{qty(l.projected, l.unit)}{#if l.projected_share != null} ({pct(l.projected_share)}){/if}</td>
-                  <td class="n">{usd(l.cost)}</td><td class="n">{usd(l.cost_forecast)}</td>
-                </tr>
-              {/each}
-            </tbody>
-          </table></div>
-          {#if usage.errors.length}<p class="error">Sources en échec : {usage.errors.join(' ; ')}</p>{/if}
-          <p class="none">
-            Sources, toutes gratuites et en lecture : métriques CloudWatch (requêtes et données CloudFront, journaux reçus, taille des buckets S3),
-            lignes REPORT de la Lambda via Logs Insights (requêtes et durée facturée, démarrages compris), taille des journaux, AWS Budgets
-            (dépense réelle, coût brut hors crédits, et sa prévision quand AWS en donne une) et le plan du compte (crédits restants).
-            Le compte est au plan payant ouvert après juillet 2025 : pas d’offre gratuite de 12 mois (l’API Free Tier ne renvoie aucun poste),
-            seulement les offres « toujours gratuites » (Lambda, CloudFront, CloudWatch Logs) dont les seuils sont rappelés ici ; S3 est payant
-            dès le premier octet. Coûts des postes = consommation au-delà du seuil × prix public eu-north-1 (relevé le 8 octobre 2026) ;
-            « Non ventilé » = dépense réelle − postes estimés (surtout les requêtes S3, non mesurables gratuitement : envoi des dalles, partages).
-            Les 5 Go gratuits de CloudWatch Logs sont communs à l’ingestion, au stockage et à l’analyse. Projection = consommé ÷ part du mois écoulée
-            (stockage : taille actuelle), peu fiable en début de mois. Cost Explorer (détail exact par poste) n’est pas utilisé : 0,01 $ par appel,
-            plus que la facture actuelle.
-          </p>
-        {:else if !usageError}<p class="none">Chargement de la consommation…</p>{/if}
-      </div>
-      <div class="card">
-        <h2>Pays</h2>
-        {#if stats.countries?.length}
-          <table><thead><tr><th>Pays</th><th class="n">Visiteurs</th><th class="n">Visites</th></tr></thead>
-            <tbody>{#each stats.countries as c}<tr><td>{label(c.country)}</td><td class="n">{fmt(c.visitors)}</td><td class="n">{fmt(c.hits)}</td></tr>{/each}</tbody></table>
-        {:else}<p class="none">{stats.countries ? 'Aucune donnée.' : DASH}</p>{/if}
-      </div>
-      <div class="card">
-        <h2>Régions</h2>
-        {#if stats.regions?.length}
-          <table><thead><tr><th>Pays</th><th>Région</th><th class="n">Visiteurs</th><th class="n">Visites</th></tr></thead>
-            <tbody>{#each stats.regions.slice(0, 30) as r}<tr><td>{label(r.country)}</td><td>{label(r.region)}</td><td class="n">{fmt(r.visitors)}</td><td class="n">{fmt(r.hits)}</td></tr>{/each}</tbody></table>
-        {:else}<p class="none">{stats.regions ? 'Aucune donnée.' : DASH}</p>{/if}
-      </div>
-      <div class="card">
-        <h2>Sites d’origine</h2>
-        {#if stats.referrers?.length}
-          <table><tbody>{#each stats.referrers as r}<tr><td>{r.ref}</td><td class="n">{fmt(r.hits)}</td></tr>{/each}</tbody></table>
-        {:else}<p class="none">{stats.referrers ? 'Aucune donnée.' : DASH}</p>{/if}
-      </div>
-    </section>
+        {/each}
+        <div class="card">
+          {#if hk}<Chart kind="bar" title="Distance obtenue (km)" labels={hk.labels} series={[{ name: 'Calculs', color: C.a, values: hk.values }]} />{:else}<p>Distance : {DASH}</p>{/if}
+        </div>
+        <div class="card">
+          {#if hd}<Chart kind="bar" title="D+ obtenu (m)" labels={hd.labels} series={[{ name: 'Calculs', color: C.b, values: hd.values }]} />{:else}<p>D+ : {DASH}</p>{/if}
+        </div>
+        <div class="card wide">
+          <h2>Départs <small>(densité, cellules de ~500 m ; rouge : hors couverture)</small></h2>
+          <Heat starts={stats.starts ?? []} outside={stats.starts_outside ?? []} />
+          {#if !stats.starts?.length && !stats.starts_outside?.length}<p class="none">Aucun départ enregistré sur la période (champ absent des anciennes lignes).</p>{/if}
+        </div>
+        <div class="card wide">
+          <h2>Taux d’action <small>(actions rapportées aux calculs réussis ; partages par sport, voie et type : liens créés vus par le serveur, sinon actions mesurées ; distance et D+ : sortie 1 du calcul, sortie choisie pour l’action)</small></h2>
+          {#if stats.action_rates}
+            <label class="pick">Dimension
+              <select bind:value={dim}>{#each DIMS as [d, title]}<option value={d}>{title}</option>{/each}</select>
+            </label>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex : tableau défilant atteignable au clavier (WCAG 2.1.1) -->
+            <div class="scroll" role="region" aria-label="Taux d’action" tabindex="0"><table>
+              <thead><tr><th>{DIMS.find(([d]) => d === dim)?.[1]}</th><th class="n">Calculs</th><th class="n">Partages</th><th class="n">%</th><th class="n">GPX</th><th class="n">%</th></tr></thead>
+              <tbody>
+                {#each stats.action_rates[dim] ?? [] as r}
+                  <tr><td>{keyLabel(dim, r.key)}</td><td class="n">{fmt(r.calcs)}</td><td class="n">{fmt(r.share)}</td><td class="n">{pct(r.share_rate)}</td><td class="n">{fmt(r.gpx)}</td><td class="n">{pct(r.gpx_rate)}</td></tr>
+                {:else}<tr><td colspan="6" class="none">Aucune donnée.</td></tr>{/each}
+              </tbody>
+            </table></div>
+          {:else}<p class="none">{DASH}</p>{/if}
+        </div>
+        <div class="card wide">
+          <h2>Combinaisons qui amènent le plus d’actions</h2>
+          {#if stats.top_combos?.length}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex : tableau défilant atteignable au clavier (WCAG 2.1.1) -->
+            <div class="scroll" role="region" aria-label="Combinaisons" tabindex="0"><table>
+              <thead><tr><th>Sport et voie</th><th>Type</th><th>Distance</th><th>D+</th><th>Rang</th><th class="n">Partages</th><th class="n">GPX</th></tr></thead>
+              <tbody>{#each stats.top_combos as c}<tr><td>{surfaceLabel(c.sport ?? 'trail', c.surface)}</td><td>{label(c.goal)}</td><td>{keyLabel('km_bin', c.km_bin)}</td><td>{keyLabel('dplus_bin', c.dplus_bin)}</td><td>{keyLabel('rank', c.rank)}</td><td class="n">{fmt(c.share)}</td><td class="n">{fmt(c.gpx)}</td></tr>{/each}</tbody>
+            </table></div>
+          {:else}<p class="none">{stats.top_combos ? 'Aucune action enregistrée sur la période.' : DASH}</p>{/if}
+        </div>
+      </section>
+
+      <h2 class="sect">Audience</h2>
+      <p class="meta">Audience : tous sports (la mesure d’audience ne connaît pas le sport).</p>
+      <section class="grid">
+        <div class="card">
+          <h2>Régions</h2>
+          {#if stats.regions?.length}
+            <table><thead><tr><th>Pays</th><th>Région</th><th class="n">Visiteurs</th><th class="n">Visites</th></tr></thead>
+              <tbody>{#each stats.regions.slice(0, 30) as r}<tr><td>{label(r.country)}</td><td>{label(r.region)}</td><td class="n">{fmt(r.visitors)}</td><td class="n">{fmt(r.hits)}</td></tr>{/each}</tbody></table>
+          {:else}<p class="none">{stats.regions ? 'Aucune donnée.' : DASH}</p>{/if}
+        </div>
+        <div class="card">
+          <h2>Appareils <small>(visites)</small></h2>
+          {#if devices?.length}
+            <table class="bars"><tbody>{#each devices as r}<tr><td>{r.label}</td><td class="bar"><span style="width: {r.share * 100}%"></span></td><td class="n">{fmt(r.n)}</td><td class="n">{pct(r.share)}</td></tr>{/each}</tbody></table>
+          {:else}<p class="none">{devices ? 'Aucune donnée.' : DASH}</p>{/if}
+        </div>
+        <div class="card">
+          <h2>Sites d’origine</h2>
+          {#if stats.referrers?.length}
+            <table><tbody>{#each stats.referrers as r}<tr><td>{r.ref}</td><td class="n">{fmt(r.hits)}</td></tr>{/each}</tbody></table>
+          {:else}<p class="none">{stats.referrers ? 'Aucune donnée.' : DASH}</p>{/if}
+        </div>
+      </section>
+    {:else}
+      <section class="tiles" aria-label="Chiffres clés">
+        <div><span>Demandes</span><b>{fmt(tl.calcs)}</b><small>calculs lancés</small></div>
+        <div><span>Rejetés avant calcul</span><b>{fmt(tl.rejected)}</b><small>contrôle anti-robot, zone, limites</small></div>
+        <div><span>Taux d’échec</span><b>{pct(tl.failRate)}</b><small>calculs sans sortie</small></div>
+        <div><span>Timeouts</span><b>{fmt(mt?.timeout)}</b><small>{pct(mt?.timeoutRate)} des calculs</small></div>
+        <div><span>Temps p50 / p95</span><b>{fmt(tl.p50, 1)} / {fmt(tl.p95, 1)} s</b><small>calculs réussis</small></div>
+        <div><span>Dépense du mois</span><b>{usd(spend)}</b><small>coût brut hors crédits (AWS Budgets)</small></div>
+      </section>
+
+      <section class="grid">
+        <div class="card">
+          {#if calcs}
+            <Chart kind="bar" title="Calculs par jour" labels={ds.map(short)} series={[{ name: 'Réussis', color: C.ok, values: calcs.ok }, { name: 'Échecs', color: C.fail, values: calcs.fail }, { name: 'Rejetés', color: C.rej, values: calcs.rej }]} />
+          {:else}<p>Calculs par jour : {DASH}</p>{/if}
+        </div>
+        <div class="card">
+          {#if perf}
+            <Chart title="Temps de calcul par jour (s)" digits={1} labels={ds.map(short)} series={[{ name: 'p50', color: C.a, values: perf.p50 }, { name: 'p95', color: C.b, values: perf.p95 }]} />
+          {:else}<p>Temps de calcul par jour : {DASH}</p>{/if}
+        </div>
+        <div class="card">
+          <h2>Échecs par code</h2>
+          {#if stats.codes?.length}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex : tableau défilant atteignable au clavier (WCAG 2.1.1) -->
+            <div class="scroll" role="region" aria-label="Échecs par code" tabindex="0"><table>
+              <thead><tr><th>Code</th><th>Message</th><th class="n">Calculs</th><th class="n">Taux</th></tr></thead>
+              <tbody>{#each stats.codes as c}<tr><td><code>{c.code}</code></td><td>{errorText('fr', c.code)}</td><td class="n">{fmt(c.n)}</td><td class="n">{pct(c.rate)}</td></tr>{/each}</tbody>
+            </table></div>
+          {:else}<p class="none">{stats.codes ? 'Aucun échec.' : DASH}</p>{/if}
+          <h3>Rejetés avant calcul</h3>
+          {#if stats.rejected_codes?.length}
+            <table><tbody>{#each stats.rejected_codes as c}<tr><td><code>{c.code}</code></td><td class="n">{fmt(c.n)}</td></tr>{/each}</tbody></table>
+          {:else}<p class="none">{stats.rejected_codes ? 'Aucun.' : DASH}</p>{/if}
+        </div>
+        <div class="card wide">
+          <h2>Par mode <small>(p50 et p95 : calculs réussis ; coût : Lambda au prix public, hors offre gratuite)</small></h2>
+          {#if stats.modes?.length}
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex : tableau défilant atteignable au clavier (WCAG 2.1.1) -->
+            <div class="scroll" role="region" aria-label="Par mode" tabindex="0"><table>
+              <thead><tr><th>Sport · voie</th><th>Type</th><th class="n">Calculs</th><th class="n">Échecs</th><th class="n">Timeouts</th><th class="n">p50 (s)</th><th class="n">p95 (s)</th><th class="n">Coût Lambda / calcul</th></tr></thead>
+              <tbody>{#each stats.modes as m}<tr><td>{surfaceLabel(m.sport, m.surface)}</td><td>{label(m.goal)}</td><td class="n">{fmt(m.n)}</td><td class="n">{fmt(m.fail)} ({pct(m.n ? m.fail / m.n : null)})</td><td class="n">{fmt(m.timeout)}</td><td class="n">{fmt(m.p50, 1)}</td><td class="n">{fmt(m.p95, 1)}</td><td class="n">{costCalc(m.cost_usd)}</td></tr>{/each}</tbody>
+            </table></div>
+          {:else}<p class="none">{stats.modes ? 'Aucun calcul sur la période.' : DASH}</p>{/if}
+        </div>
+        <div class="card wide" role="region" aria-label="Consommation AWS">
+          <h2>Consommation AWS {#if usage}<small>({usage.month}, renouvellement le {usage.renewal} ; {fmt(usage.elapsed * 100)} % du mois écoulé ; lu à {new Date(usage.fetched_at * 1000).toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' })}, gardé 3 h)</small>{/if}</h2>
+          {#if usageError}<p class="error">{usageError}</p>{/if}
+          {#if usage}
+            <div class="tiles usage">
+              <div><span>Dépense du mois</span><b>{usd(usage.spend?.actual)}</b><small>coût brut hors crédits (AWS Budgets)</small></div>
+              <div><span>Prévision fin de mois</span><b>{usd(usage.spend?.forecast)}</b><small>{usage.spend?.forecast_source === 'budgets' ? 'prévision AWS Budgets' : 'au rythme actuel'}</small></div>
+              <div><span>Prochain palier</span><b>{usd(usage.spend?.next_step)}</b><small>paliers {usage.spend?.steps.map((x) => `${x} $`).join(' · ') ?? DASH} : chacun met l’API de calcul en pause (reprise manuelle)</small></div>
+              <div><span>Crédits restants</span><b>{usd(usage.plan?.credits_usd)}</b><small>plan {usage.plan?.type === 'PAID' ? 'payant' : (usage.plan?.type ?? DASH)} : les crédits paient la facture</small></div>
+            </div>
+            <!-- svelte-ignore a11y_no_noninteractive_tabindex : tableau défilant atteignable au clavier (WCAG 2.1.1) -->
+            <div class="scroll" role="region" aria-label="Postes AWS" tabindex="0"><table>
+              <thead><tr><th>Service</th><th>Poste</th><th class="n">Consommé ce mois</th><th class="n">Seuil gratuit / mois</th><th class="n">Part du seuil</th><th class="n">Projection fin de mois</th><th class="n">Coût du mois</th><th class="n">Coût prévu</th></tr></thead>
+              <tbody>
+                {#each usage.lines as l}
+                  <tr>
+                    <td>{l.service}</td><td>{l.item}{#if l.now != null} <small>({qty(l.now, l.unit === 'Go-mois' ? 'Go' : l.unit)} stockés)</small>{/if}</td>
+                    <td class="n">{qty(l.used, l.unit)}</td>
+                    <td class="n">{l.free == null ? '' : l.free ? qty(l.free, l.unit) : 'aucun'}</td>
+                    <td class="n">{pct(l.share)}</td>
+                    <td class="n">{qty(l.projected, l.unit)}{#if l.projected_share != null} ({pct(l.projected_share)}){/if}</td>
+                    <td class="n">{usd(l.cost)}</td><td class="n">{usd(l.cost_forecast)}</td>
+                  </tr>
+                {/each}
+              </tbody>
+            </table></div>
+            {#if usage.errors.length}<p class="error">Sources en échec : {usage.errors.join(' ; ')}</p>{/if}
+            <details>
+              <summary>Sources et méthode</summary>
+              <p class="none">
+                Sources, toutes gratuites et en lecture : métriques CloudWatch (requêtes et données CloudFront, journaux reçus, taille des buckets S3),
+                lignes REPORT de la Lambda via Logs Insights (requêtes et durée facturée, démarrages compris), taille des journaux, AWS Budgets
+                (dépense réelle, coût brut hors crédits, et sa prévision quand AWS en donne une) et le plan du compte (crédits restants).
+                Le compte est au plan payant ouvert après juillet 2025 : pas d’offre gratuite de 12 mois (l’API Free Tier ne renvoie aucun poste),
+                seulement les offres « toujours gratuites » (Lambda, CloudFront, CloudWatch Logs) dont les seuils sont rappelés ici ; S3 est payant
+                dès le premier octet. Coûts des postes = consommation au-delà du seuil × prix public eu-north-1 (relevé le 8 octobre 2026) ;
+                « Non ventilé » = dépense réelle − postes estimés (surtout les requêtes S3, non mesurables gratuitement : envoi des dalles, partages).
+                Les 5 Go gratuits de CloudWatch Logs sont communs à l’ingestion, au stockage et à l’analyse. Projection = consommé ÷ part du mois écoulée
+                (stockage : taille actuelle), peu fiable en début de mois. Cost Explorer (détail exact par poste) n’est pas utilisé : 0,01 $ par appel,
+                plus que la facture actuelle.
+              </p>
+            </details>
+          {:else if !usageError}<p class="none">Chargement de la consommation…</p>{/if}
+        </div>
+      </section>
+    {/if}
   {:else if loading}
     <p class="meta">Chargement (requêtes CloudWatch Logs Insights, jusqu’à 20 s)…</p>
   {/if}
 </main>
 
 <style>
-  main { max-width: 1400px; margin: 0 auto; padding: 16px 24px 48px; }
-  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 12px; }
+  main {
+    max-width: 1400px; margin: 0 auto; padding: 16px 24px 48px;
+    /* séries des graphiques (≥ 3:1 sur --lvl-3, clair et sombre) ; le sport n'y est pas un défaut : accent = celui de la page */
+    --s-a: var(--accent); --s-b: #1565c0; --s-c: #8e24aa; --s-d: #00796b; --s-ok: #2e7d32; --s-fail: var(--danger); --s-rej: #757575;
+  }
+  @media (prefers-color-scheme: dark) {
+    main { --s-b: #90caf9; --s-c: #ce93d8; --s-d: #4db6ac; --s-ok: #81c784; --s-rej: #9e9e9e; }
+  }
+  header { display: flex; flex-wrap: wrap; align-items: center; column-gap: 24px; row-gap: 8px; }
   h1 { font-family: var(--font-head); font-size: 1.5rem; margin: 0; }
   h2 { font-size: 1rem; margin: 0 0 8px; }
+  h2.sect { font-family: var(--font-head); font-size: 1.2rem; margin: 24px 0 0; }
   h2 small { font-weight: 400; color: var(--muted); }
   h3 { font-size: 0.95rem; margin: 12px 0 6px; }
-  nav { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
-  nav button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent-text); }
-  nav input { min-height: 44px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
+  .tabs { display: flex; gap: 4px; }
+  .tabs a { display: inline-flex; align-items: center; min-height: 44px; padding: 0 14px; color: var(--text); text-decoration: none; font-weight: 700; border-bottom: 3px solid transparent; }
+  .tabs a[aria-current='page'] { border-bottom-color: var(--accent); color: var(--accent-text); }
+  .bar { flex: 1 1 100%; display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 16px; }
+  .group { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+  .group button[aria-pressed='true'] { border-color: var(--accent); color: var(--accent-text); }
+  .bar label, .pick { display: inline-flex; align-items: center; gap: 6px; }
+  .pick { margin-bottom: 8px; }
+  input, select { min-height: 44px; padding: 6px 8px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
   form { display: flex; flex-direction: column; gap: 8px; max-width: 360px; margin: 48px auto; }
-  form input { min-height: 44px; padding: 8px 10px; border: 1px solid var(--border); border-radius: 10px; background: var(--surface); color: var(--text); }
-  .error { color: var(--danger); font-weight: 700; }
+  form input { padding: 8px 10px; }
+  details { margin-top: 8px; }
+  summary { cursor: pointer; font-weight: 700; min-height: 32px; }
+  .error { color: var(--danger); font-weight: 700; overflow-wrap: anywhere; }
   .meta, .none { color: var(--muted); }
-  .tiles { display: grid; grid-template-columns: repeat(7, 1fr); gap: 12px; margin: 12px 0 16px; }
-  .rates { display: grid; grid-template-columns: repeat(auto-fill, minmax(380px, 1fr)); gap: 16px 24px; }
-  caption { text-align: left; font-weight: 700; padding: 4px 0; }
-  .tiles div { background: var(--surface); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 12px; margin: 12px 0 16px; }
+  .tiles div { background: var(--lvl-3); border: 1px solid var(--border); border-radius: 12px; padding: 12px; display: flex; flex-direction: column; min-width: 0; }
   .tiles span { color: var(--muted); font-size: 0.9rem; }
-  .tiles b { font-size: 1.6rem; font-family: var(--font-head); }
+  .tiles b { font-size: clamp(1.25rem, 4vw, 1.6rem); font-family: var(--font-head); overflow-wrap: anywhere; }
   .tiles small { color: var(--muted); }
   .tiles.usage { grid-template-columns: repeat(4, 1fr); }
   .scroll { overflow-x: auto; }
-  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
+  code { overflow-wrap: anywhere; }
+  .grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 12px; }
   .card { background: var(--lvl-3); border: 1px solid var(--border); border-radius: 12px; padding: 12px; min-width: 0; }
   .card.wide { grid-column: 1 / -1; }
   table { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
   th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--border); vertical-align: top; }
   .n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
-  .bars .bar { width: 45%; }
+  .bars .bar { width: 45%; min-width: 90px; }
   .bars .bar span { display: block; height: 12px; border-radius: 3px; background: var(--accent); }
   @media (max-width: 1023px) {
     main { padding: 12px; }

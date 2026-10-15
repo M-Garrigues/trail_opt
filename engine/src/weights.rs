@@ -10,9 +10,10 @@ use serde_json::{Value, json};
 use crate::anneal::{ALPHA_HI, Annealer, cost};
 use crate::l93::Frame;
 use crate::plan::{
-    self, BBOX_MARGIN_M, ROAD_NATURES, Request, TRAIL_NATURES, class_mask, keep_mask, paved_mask,
+    self, BBOX_MARGIN_M, ROAD_NATURES, Request, TRAIL_NATURES, class_mask, network, paved_mask,
+    pref_mask, profile_labels,
 };
-use crate::prep::{self, N_CLS, Net, Region};
+use crate::prep::{self, N_CLS, N_LAB, Net, Region};
 use crate::tiles::TileStore;
 
 /// Tolérance de simplification de la géométrie exportée (m) : affichage seul.
@@ -38,12 +39,14 @@ fn r(x: f64, k: f64) -> Value {
 }
 
 /// Point d'entrée : `engine weights --tiles … (--center lat,lon --radius-km R | --bbox …)
-/// --goal … --surface … [--distance-km 10] [--dplus-m D] [--max-grade-pct 60] --out <dossier>`.
+/// --goal … --surface … [--sport trail|bike] [--distance-km 10] [--dplus-m D] [--max-grade-pct 60]
+/// --out <dossier>`.
 #[allow(clippy::too_many_arguments)]
 pub fn run(
     store: &TileStore,
     area: Area,
     goal: &str,
+    sport: &str,
     surface: &str,
     distance_km: f64,
     dplus_m: Option<f64>,
@@ -54,6 +57,7 @@ pub fn run(
         store,
         area,
         goal,
+        sport,
         surface,
         distance_km,
         dplus_m,
@@ -73,6 +77,7 @@ pub fn compute(
     store: &TileStore,
     area: Area,
     goal: &str,
+    sport: &str,
     surface: &str,
     distance_km: f64,
     dplus_m: Option<f64>,
@@ -90,11 +95,13 @@ pub fn compute(
     let max_grade = (max_grade_pct > 0.0).then_some(max_grade_pct / 100.0);
     // même requête que `plan` (validation serde comprise), puis zone et Lcap comme `plan`
     let req: Request = serde_json::from_value(json!({
-        "lat": lat, "lon": lon, "distance_km": distance_km, "mode": goal, "surface": surface,
-        "target_dplus": dplus, "max_grade": max_grade, "enforce_limits": false,
+        "lat": lat, "lon": lon, "distance_km": distance_km, "mode": goal, "sport": sport,
+        "surface": surface, "target_dplus": dplus, "max_grade": max_grade, "enforce_limits": false,
     }))
     .map_err(|e| e.to_string())?;
     let req = plan::resolve_cap(store, &req);
+    let prof = req.profile();
+    let (grade, bike) = (req.grade(&prof), prof.bike());
     let md = req.min_distance();
     let gk = plan::Goal::of(&req.mode);
     let (l, lmax) = plan::lengths(&req);
@@ -117,20 +124,19 @@ pub fn compute(
     let b = region.bounds();
     let (x0, y0) = frame.l93([b[0] - BBOX_MARGIN_M, b[1] - BBOX_MARGIN_M]);
     let (x1, y1) = frame.l93([b[2] + BBOX_MARGIN_M, b[3] + BBOX_MARGIN_M]);
-    let t = store.load_in(&req.zone, [x0, y0, x1, y1])?;
+    let mut t = store.load_in(&req.zone, [x0, y0, x1, y1])?;
+    profile_labels(&mut t, &prof);
     let natures = &store.manifest.natures;
 
     // --- réseau : exactement les masques de `plan_with`
-    let keep = keep_mask(&t, natures);
     let pv = paved_mask(&t, natures);
     let road = surface == "road";
-    let mut sel = keep.clone();
-    if road {
-        sel.retain(|&i| pv[i]);
-    }
-    let cls_t = class_mask(&t, natures);
+    let (sel, _) = network(&t, natures, &prof);
+    let cls_t = class_mask(&t, natures, bike);
+    let pref_t = pref_mask(&t, natures, &prof, &cls_t);
     let mut net = Net::new(&t, frame);
     net.cls_t = cls_t.clone();
+    net.pref_t = pref_t;
     let mut ids = net.build(&sel, &region);
     if ids.is_empty() {
         return Err("aucune voie dans la zone".into());
@@ -142,9 +148,9 @@ pub fn compute(
         .ok_or("départ non accroché")?;
     let edges = ids.clone();
     let off_price = plan::off_price(&net, &edges, lmax);
-    let off_on = plan::off_on(&net, &edges, surface, gk);
-    let weight = |ed: &prep::Edge| plan::search_weight(ed, off_price, surface, gk);
-    let weight: Option<&dyn Fn(&prep::Edge) -> f64> = (surface != "any" && !md).then_some(&weight);
+    let off_on = plan::off_on(&net, &edges, &prof, gk);
+    let weight = |ed: &prep::Edge| plan::search_weight(ed, off_price, &prof, gk);
+    let weight: Option<&dyn Fn(&prep::Edge) -> f64> = (prof.pref_on() && !md).then_some(&weight);
 
     // --- graphe de recherche (élagage, pente max, passages uniques, réduction) : `srch`, `dbl`
     let n_arena = net.edges.len();
@@ -160,7 +166,8 @@ pub fn compute(
         &edges,
         lmin,
         lmax,
-        max_grade,
+        grade,
+        bike,
         None,
         goal != "target",
         x_md,
@@ -191,7 +198,7 @@ pub fn compute(
     }
     let parts: Vec<plan::OffParts> = edges
         .iter()
-        .map(|&e| plan::off_parts(&net.edges[e].cls, &net.edges[e].lab, surface, gk))
+        .map(|&e| plan::off_parts(&net.edges[e].cls, &net.edges[e].lab, &prof, gk))
         .collect();
     if off_on {
         p.off = parts.iter().map(plan::OffParts::total).collect();
@@ -242,8 +249,8 @@ pub fn compute(
         let cls = (0..N_CLS)
             .max_by(|&a, &b| ed.cls[a].total_cmp(&ed.cls[b]))
             .unwrap();
-        let excl = max_grade
-            .is_some_and(|g| ed.grade > g)
+        let excl = grade
+            .is_some_and(|g| !g.keeps(ed.climb))
             .then_some("pente_max");
         feats.push(
             json!({"type": "Feature", "id": k, "geometry": wgs(&xy), "properties": {
@@ -251,7 +258,7 @@ pub fn compute(
                 "nat": natures.get(t.nature[ti] as usize), "imp": t.importance[ti], "cls": cls,
                 "cls_m": ed.cls.map(|x| r(x, 10.0)), "dp": r(dp, 10.0), "dm": r(dm, 10.0),
                 "w": r(ed.w, 10.0), "grade": r(100.0 * ed.grade, 10.0),
-                "lab": ed.lab.map(|x| r(x, 10.0)), "flat": u8::from(ed.flat),
+                "lab": ed.lab[..if bike { N_LAB } else { 3 }].iter().map(|&x| r(x, 10.0)).collect::<Vec<_>>(), "flat": u8::from(ed.flat),
                 "pav": u8::from(ed.pieces.iter().all(|q| pv[q.t as usize])),
                 "fer": fer_col.then(|| u8::from(ed.pieces.iter().any(|q| fer(q.t as usize)))),
                 "excl": excl,
@@ -301,7 +308,6 @@ pub fn compute(
     }
     // tronçons exclus avant le réseau (premier sommet dans la zone), sans coût
     let in_sel: std::collections::HashSet<usize> = sel.iter().copied().collect();
-    let kept: std::collections::HashSet<usize> = keep.iter().copied().collect();
     let mut n_excl = 0;
     for i in 0..t.len() {
         let (x, y) = t.vertex(i, 0);
@@ -309,18 +315,21 @@ pub fn compute(
             continue;
         }
         let nat = natures.get(t.nature[i] as usize).map_or("", String::as_str);
-        // raison : étiquette seulement (l'exclusion elle-même vient de keep_mask / paved_mask)
-        let why = if kept.contains(&i) {
+        // raison : étiquette seulement (l'exclusion elle-même vient de `plan::network`)
+        let shut = plan::closed(&t, i, natures, &prof);
+        let why = if plan::walkable_i(&t, i, natures) && (bike || !shut) {
             if road && !pv[i] {
                 "non_revetu"
+            } else if shut {
+                "acces_interdit" // vélo : interdit au vélo ou sens unique
             } else {
-                "autre"
+                "autre" // vélo : escalier, technicité, cœur de parc
             }
         } else if t.flags[i] & 2 == 0 {
             "non_praticable"
         } else if fer(i) {
             "via_ferrata"
-        } else if t.osm_access[i] == plan::ACCESS_CLOSED {
+        } else if shut {
             "acces_interdit"
         } else if !TRAIL_NATURES.contains(&nat) && !ROAD_NATURES.contains(&nat) {
             "nature_exclue"
@@ -349,7 +358,7 @@ pub fn compute(
         .map(|c| {
             let mut u = [0.0; N_CLS];
             u[c] = 1.0;
-            json!(plan::off_parts(&u, &[0.0; prep::N_LAB], surface, gk).pref)
+            json!(plan::off_parts(&u, &[0.0; prep::N_LAB], &prof, gk).pref)
         })
         .collect();
     let net_name = if road { "paved" } else { "all" };
@@ -366,7 +375,7 @@ pub fn compute(
         .unwrap()
         .extend(area_json.as_object().unwrap().clone());
     let geom = json!({"type": "FeatureCollection", "weights": meta, "features": feats});
-    let table = json!({"format": "weights/1", "goal": goal, "surface": surface, "geom": geom_file,
+    let mut table = json!({"format": "weights/1", "goal": goal, "surface": surface, "geom": geom_file,
         "n": edges.len() + n_excl,
         "params": {"distance_km": distance_km, "dplus_m": dplus, "L_m": l, "Lmax_m": lmax,
             "off_on": off_on, "off_price": off_price, "major_k": crate::problem::MAJOR_K,
@@ -376,6 +385,9 @@ pub fn compute(
             "bonus_unit": if goal == "target" { "target_pts" } else { "m_dplus" },
             "options": Vec::<&str>::new(), "search": info},
         "cols": cols});
+    if bike {
+        table["sport"] = json!(sport); // trail : table inchangée
+    }
     drop(costs);
     drop(ann);
     Ok((geom, table, p))
@@ -409,6 +421,7 @@ pub fn cli(args: &[String]) -> Result<(), String> {
             "--bbox",
             "--goal",
             "--surface",
+            "--sport",
             "--distance-km",
             "--dplus-m",
             "--max-grade-pct",
@@ -432,11 +445,19 @@ pub fn cli(args: &[String]) -> Result<(), String> {
     };
     let goal = *kv.get("--goal").ok_or("--goal requis")?;
     let surface = *kv.get("--surface").ok_or("--surface requis")?;
-    if !["max", "target", "min_distance"].contains(&goal)
-        || !["trail", "any", "road"].contains(&surface)
-    {
-        return Err("--goal max|target|min_distance, --surface trail|any|road".into());
+    let sport = kv.get("--sport").copied().unwrap_or("trail");
+    let prof = crate::profile::Profile::of(sport, surface).map_err(|_| {
+        "--sport trail (--surface trail|any|road) ou bike (--surface mtb|gravel|road)".to_string()
+    })?;
+    if !["max", "target", "min_distance"].contains(&goal) {
+        return Err("--goal max|target|min_distance".into());
     }
+    // pente max par défaut : celle du profil (trail 60, vélo : montée du profil)
+    let grade_pct = if prof.grade_up_max.is_finite() {
+        (prof.grade_up_max * 100.0).round()
+    } else {
+        0.0 // Route vélo : sans limite
+    };
     let tiles = kv.get("--tiles").ok_or("--tiles requis")?;
     let out = kv.get("--out").ok_or("--out requis")?;
     let store = TileStore::open(Path::new(tiles))?;
@@ -444,10 +465,11 @@ pub fn cli(args: &[String]) -> Result<(), String> {
         &store,
         area,
         goal,
+        sport,
         surface,
         one("--distance-km", Some(10.0))?.unwrap(),
         one("--dplus-m", None)?,
-        one("--max-grade-pct", Some(60.0))?.unwrap(),
+        one("--max-grade-pct", Some(grade_pct))?.unwrap(),
         Path::new(out),
     )
 }
@@ -468,7 +490,8 @@ mod tests {
             ("min_distance", "road"),
         ] {
             let area = Area::Disk(48.7309, 2.2713, 2000.0);
-            let (geom, table, p) = compute(&store, area, goal, surface, 8.0, None, 60.0).unwrap();
+            let (geom, table, p) =
+                compute(&store, area, goal, "trail", surface, 8.0, None, 60.0).unwrap();
             let feats = geom["features"].as_array().unwrap();
             let col = |k: &str, i: usize| table["cols"][k][i].as_f64().unwrap();
             let ann = Annealer::new(&p, 0);

@@ -682,7 +682,7 @@ fn keep_mask_and_trail_class() {
         let n = if nature == "?" { 255 } else { code(nature) };
         t.push(1, &[[0, 0], [100, 0]], |_, _| 0.0, n, imp, flags, &[]);
         assert_eq!(!keep_mask(&t, &natures()).is_empty(), kept, "{nature}");
-        assert_eq!(class_mask(&t, &natures()), [cls], "{nature} {imp}");
+        assert_eq!(class_mask(&t, &natures(), false), [cls], "{nature} {imp}");
         assert_eq!(paved_mask(&t, &natures()), [paved], "{nature}");
     }
 }
@@ -819,7 +819,7 @@ fn osm_class_and_surface_override_ign() {
             &[],
         );
         (t.osm_class[0], t.surf[0]) = (oc, sf);
-        assert_eq!(class_mask(&t, &natures()), [cls], "{nature}");
+        assert_eq!(class_mask(&t, &natures(), false), [cls], "{nature}");
         assert_eq!(paved_mask(&t, &natures()), [paved], "{nature} {sf}");
     }
 }

@@ -135,7 +135,8 @@ pub fn parse_day(s: &str) -> Option<i64> {
     (day_str(days) == s).then_some(days)
 }
 
-/// `from`/`to` (jours UTC inclus) ; défaut : les 30 derniers jours jusqu'à `today`.
+/// `from`/`to` (jours UTC inclus) ; défaut : les 30 derniers jours jusqu'à `today`. Les filtres
+/// (`sport`, `surface`, `goal`) sont lus par `parse_filter`.
 pub fn parse_range(query: &[(String, String)], today: i64) -> Result<(i64, i64), Msg> {
     let bad = |d: &str| Msg::error(Code::InvalidRequest, d.to_string());
     let get = |k: &str| -> Result<Option<i64>, Msg> {
@@ -153,7 +154,10 @@ pub fn parse_range(query: &[(String, String)], today: i64) -> Result<(i64, i64),
         }
     };
     let (from, to) = (get("from")?, get("to")?);
-    if let Some((k, _)) = query.iter().find(|x| x.0 != "from" && x.0 != "to") {
+    if let Some((k, _)) = query
+        .iter()
+        .find(|x| !["from", "to", "sport", "surface", "goal"].contains(&x.0.as_str()))
+    {
         return Err(bad(&format!("unknown parameter {k}")));
     }
     let to = to.unwrap_or(today);
@@ -164,25 +168,119 @@ pub fn parse_range(query: &[(String, String)], today: i64) -> Result<(i64, i64),
     Ok((from, to))
 }
 
+/// Filtres `sport`, `surface` (exige `sport`), `goal` : liste blanche, une seule occurrence. Les
+/// valeurs rendues sont les constantes de la liste, jamais la chaîne reçue (injectées dans Insights).
+pub fn parse_filter(query: &[(String, String)]) -> Result<Vec<(&'static str, &'static str)>, Msg> {
+    let bad = |d: String| Msg::error(Code::InvalidRequest, d);
+    let mut f: Vec<(&'static str, &'static str)> = Vec::new();
+    for (k, ok) in MODE_FIELDS {
+        match query
+            .iter()
+            .filter(|x| x.0 == k)
+            .collect::<Vec<_>>()
+            .as_slice()
+        {
+            [] => {}
+            [x] => match ok.iter().find(|v| **v == x.1) {
+                Some(v) => f.push((k, v)),
+                None => return Err(bad(format!("{k}: unknown value"))),
+            },
+            _ => return Err(bad("repeated parameter".into())),
+        }
+    }
+    let get = |k: &str| f.iter().find(|x| x.0 == k).map(|x| x.1);
+    if let Some(su) = get("surface") {
+        let Some(sp) = get("sport") else {
+            return Err(bad("surface requires sport".into()));
+        };
+        if !surfaces_of(sp).contains(&su) {
+            return Err(bad("surface: not a surface of this sport".into()));
+        }
+    }
+    Ok(f)
+}
+
+/// Liste blanche des champs de mode (filtres admin, journal du partage) : sport, voie, type.
+pub const MODE_FIELDS: [(&str, &[&str]); 3] = [
+    ("sport", &["trail", "bike"]),
+    ("surface", &["trail", "any", "road", "mtb", "gravel"]),
+    ("goal", &["max_dplus", "target", "min_distance"]),
+];
+
+/// Voies d'un sport (`trail` pour tout autre).
+fn surfaces_of(sport: &str) -> &'static [&'static str] {
+    if sport == "bike" {
+        &["mtb", "gravel", "road"]
+    } else {
+        &["trail", "any", "road"]
+    }
+}
+
+/// Champs de mode d'une requête NON fiable (`request` d'une boucle partagée, non signé) : valeurs
+/// de la liste blanche seulement (les constantes, jamais la chaîne reçue), voie cohérente avec le
+/// sport (absent : trail, liens d'avant D70) ; valeur absente ou hors liste : champ omis.
+pub fn mode_fields(req: &Value) -> Map<String, Value> {
+    let pick = |k: &str| {
+        let ok = MODE_FIELDS.iter().find(|x| x.0 == k)?.1;
+        let v = req.get(k)?.as_str()?;
+        ok.iter().find(|x| **x == v).copied()
+    };
+    let sport = pick("sport");
+    // sport présent mais invalide : voie non plus
+    let surface = pick("surface")
+        .filter(|_| sport.is_some() || req.get("sport").is_none())
+        .filter(|su| surfaces_of(sport.unwrap_or("trail")).contains(su));
+    [
+        ("sport", sport),
+        ("goal", pick("goal")),
+        ("surface", surface),
+    ]
+    .into_iter()
+    .filter_map(|(k, v)| Some((k.to_string(), json!(v?))))
+    .collect()
+}
+
+/// Clause Insights (à la suite d'un filtre) des vues `plan` et `event` ; `trail` inclut les lignes
+/// d'avant D70 (sans `sport`).
+pub fn clause(f: &[(&str, &str)]) -> String {
+    f.iter()
+        .map(|&(k, v)| match (k, v) {
+            ("sport", "trail") => r#" and (sport = "trail" or not ispresent(sport))"#.into(),
+            _ => format!(r#" and {k} = "{v}""#),
+        })
+        .collect()
+}
+
 /// Lignes `plan` des calculs publics (v2 : `phase` ; v1, avant D47 : sans `phase` ni `diagnose`).
 const PLAN: &str = r#"msg = "plan" and internal = 0 and accepted = 1 and (phase = "plan" or (not ispresent(phase) and not ispresent(diagnose)))"#;
 
-/// Les 11 vues (admin.md § 4, D59), tolérantes aux lignes `plan` v1 (pas de `phase`, `length_m`,
-/// `dplus_res_m`) : `calcs` regroupe par `accepted` et non `phase` (même partition).
-pub fn queries() -> [(&'static str, String); 11] {
+/// Les 13 vues (admin.md § 4, D59, D77), tolérantes aux lignes `plan` v1 (pas de `phase`,
+/// `length_m`, `dplus_res_m`) : `calcs` regroupe par `accepted` et non `phase` (même partition).
+/// Sans filtre (`queries_for` : avec).
+pub fn queries() -> [(&'static str, String); 13] {
+    queries_for("")
+}
+
+/// `queries` avec la clause de filtre `f` (`clause`), ajoutée aux vues `plan` et `event`,
+/// jamais à l'audience.
+pub fn queries_for(f: &str) -> [(&'static str, String); 13] {
     [
         ("visitors", r#"filter msg = "hit" | stats count_distinct(visitor) as visitors, count(*) as hits by bin(1d) as day | sort day asc"#.into()),
         ("geo", r#"filter msg = "hit" | stats count_distinct(visitor) as visitors, count(*) as hits by country, region, dev | sort hits desc | limit 1000"#.into()),
         ("refs", r#"filter msg = "hit" and ispresent(ref) | stats count(*) as hits by ref | sort hits desc | limit 50"#.into()),
-        ("calcs", r#"filter msg = "plan" and internal = 0 and (phase in ["plan", "rejected"] or (not ispresent(phase) and not ispresent(diagnose))) | stats count(*) as n by bin(1d) as day, accepted, code | sort day asc"#.into()),
-        ("perf_day", format!("filter {PLAN} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n by bin(1d) as day | sort day asc")),
-        ("perf", format!("filter {PLAN} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n")),
-        ("mix", format!("filter {PLAN} | stats count(*) as n by goal, surface, climbs")),
+        ("calcs", format!(r#"filter msg = "plan" and internal = 0 and (phase in ["plan", "rejected"] or (not ispresent(phase) and not ispresent(diagnose))){f} | stats count(*) as n by bin(1d) as day, accepted, code | sort day asc"#)),
+        ("perf_day", format!("filter {PLAN}{f} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n by bin(1d) as day | sort day asc")),
+        ("perf", format!("filter {PLAN}{f} and status = 200 | stats pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, count(*) as n")),
+        ("mix", format!("filter {PLAN}{f} | stats count(*) as n by sport, goal, surface, climbs")),
         // aussi par type, voie et nombre de sorties rendues : dénominateurs des taux d'action (D59)
-        ("hist", format!("filter {PLAN} and status = 200 | fields goal, surface, n_got, floor(coalesce(got_km, length_m / 1000) / 5) * 5 as km_bin, floor(coalesce(got_dplus_m, dplus_res_m) / 250) * 250 as dplus_bin | stats count(*) as n by goal, surface, n_got, km_bin, dplus_bin")),
-        ("events_day", r#"filter msg = "event" | stats count(*) as n by bin(1d) as day, event | sort day asc"#.into()),
-        ("events_mix", r#"filter msg = "event" and event in ["share_created", "gpx"] | fields event, goal, surface, rank, floor(got_km / 5) * 5 as km_bin, floor(got_dplus_m / 250) * 250 as dplus_bin | stats count(*) as n by event, goal, surface, rank, km_bin, dplus_bin | sort n desc | limit 1000"#.into()),
-        ("starts", r#"filter msg = "plan" and ispresent(start_lat) and (phase = "plan" or code = "outside_coverage") | stats count(*) as n by start_lat, start_lon, code | sort n desc | limit 10000"#.into()),
+        ("hist", format!("filter {PLAN}{f} and status = 200 | fields sport, goal, surface, n_got, floor(coalesce(got_km, length_m / 1000) / 5) * 5 as km_bin, floor(coalesce(got_dplus_m, dplus_res_m) / 250) * 250 as dplus_bin | stats count(*) as n by sport, goal, surface, n_got, km_bin, dplus_bin")),
+        ("events_day", format!(r#"filter msg = "event"{f} | stats count(*) as n by bin(1d) as day, event | sort day asc"#)),
+        ("events_mix", format!(r#"filter msg = "event" and event in ["share_created", "gpx"]{f} | fields event, sport, goal, surface, rank, floor(got_km / 5) * 5 as km_bin, floor(got_dplus_m / 250) * 250 as dplus_bin | stats count(*) as n by event, sport, goal, surface, rank, km_bin, dplus_bin | sort n desc | limit 1000"#)),
+        // liens créés / ouverts vus par le serveur (POST 201 / GET 200 de /api/loops) : indépendants du refus de
+        // mesure du navigateur (GPC, DNT, case Réglages) qui supprime les événements ; mode lu dans la boucle
+        ("shares", format!(r#"filter msg = "share" and status in [200, 201] and (not ispresent(internal) or internal = 0){f} | stats count(*) as n by op, sport, goal, surface"#)),
+        ("starts", format!(r#"filter msg = "plan" and ispresent(start_lat) and (phase = "plan" or code = "outside_coverage"){f} | stats count(*) as n by start_lat, start_lon, code | sort n desc | limit 10000"#)),
+        ("modes", format!("filter {PLAN}{f} | stats count(*) as n, pct(compute_s, 50) as p50, pct(compute_s, 95) as p95, avg(compute_s) as avg_s by sport, surface, goal, code")),
     ]
 }
 
@@ -191,8 +289,10 @@ pub type Row = BTreeMap<String, String>;
 /// Vues par nom (`None` : non terminée) et Mo analysés.
 pub type Views = (BTreeMap<&'static str, Option<Vec<Row>>>, f64);
 
+/// Champ absent : « - » ; `sport` absent (lignes d'avant D70) : `trail`.
 fn s<'a>(r: &'a Row, k: &str) -> &'a str {
-    r.get(k).map_or("-", String::as_str)
+    r.get(k)
+        .map_or(if k == "sport" { "trail" } else { "-" }, String::as_str)
 }
 
 fn n(r: &Row, k: &str) -> f64 {
@@ -257,13 +357,22 @@ fn hist(rows: &[Row], key: &str, step: f64) -> Value {
     json!({"step": step, "bins": m.into_iter().map(|(f, x)| json!({"from": f, "n": x})).collect::<Vec<_>>()})
 }
 
-/// Mise en forme pure des vues (`None` : vue non terminée → `null`, `incomplete`).
+/// Totaux d'un mode : [n, échecs, timeouts, Σ durée moyenne × n] et [p50, p95] de la ligne ok.
+type Mode = ([f64; 4], [Option<f64>; 2]);
+
+/// Mise en forme des vues (`None` : vue non terminée → `null`, `incomplete`) ; pure hormis la
+/// mémoire de la Lambda lue dans l'environnement (coût des modes).
 pub fn shape(
     from: i64,
     to: i64,
     views: &BTreeMap<&str, Option<Vec<Row>>>,
     scanned_mb: f64,
 ) -> Value {
+    // Mo de la Lambda (coût des modes) ; 3008 hors Lambda (tests, local)
+    let lambda_mb: f64 = std::env::var("AWS_LAMBDA_FUNCTION_MEMORY_SIZE")
+        .ok()
+        .and_then(|x| x.parse().ok())
+        .unwrap_or(3008.0);
     let v = |k: &str| views.get(k).cloned().flatten();
     let day = |r: &Row| s(r, "day").chars().take(10).collect::<String>();
     let num = |x: f64| json!(x);
@@ -346,12 +455,27 @@ pub fn shape(
                })).collect::<Vec<_>>())})
         }),
     );
+    // v2 : la voie est qualifiée par le sport (Route trail ≠ Route vélo)
+    let sv = |r: &Row, k: &str| match k {
+        "surface" => format!("{}/{}", s(r, "sport"), s(r, "surface")),
+        _ => s(r, k).to_string(),
+    };
     let mix = v("mix");
-    for (out, k) in [
-        ("goals", "goal"),
-        ("surfaces", "surface"),
-        ("climbs", "climbs"),
-    ] {
+    put(
+        "surfaces",
+        mix.as_ref().map(|rows| {
+            let sums = sum_by(rows, |r| sv(r, "surface"), "n", "k");
+            sums.as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|x| {
+                    let (sp, su) = x["k"].as_str()?.split_once('/')?;
+                    Some(json!({"sport": sp, "surface": su, "n": x["n"]}))
+                })
+                .collect()
+        }),
+    );
+    for (out, k) in [("sports", "sport"), ("goals", "goal"), ("climbs", "climbs")] {
         put(
             out,
             mix.as_ref()
@@ -383,23 +507,47 @@ pub fn shape(
         }),
     );
     let ev = v("events_mix");
+    // sport, voie, type : partages = créations vues par le serveur (vue `shares`) si elle a abouti,
+    // sinon événements `share_created` (supprimés par le refus de mesure du navigateur)
+    let ev_mode = ev.as_ref().map(|ev| match v("shares") {
+        Some(sh) => ev
+            .iter()
+            .filter(|r| s(r, "event") == "gpx")
+            .cloned()
+            .chain(
+                sh.into_iter()
+                    .filter(|r| s(r, "op") == "post")
+                    .map(|mut r| {
+                        r.insert("event".into(), "share_created".into());
+                        r
+                    }),
+            )
+            .collect::<Vec<_>>(),
+        None => ev.clone(),
+    });
     put(
         "action_rates",
         ev.as_ref().zip(h.as_ref()).map(|(ev, base)| {
             let mut o = Map::new();
             for (out, k) in [
+                ("sport", "sport"),
                 ("goal", "goal"),
                 ("surface", "surface"),
                 ("km", "km_bin"),
                 ("dplus_m", "dplus_bin"),
             ] {
+                let ev = if ["sport", "goal", "surface"].contains(&k) {
+                    ev_mode.as_deref().unwrap_or(ev)
+                } else {
+                    ev
+                };
                 o.insert(
                     out.into(),
                     rates(
                         ev,
                         base,
-                        |r| s(r, k).to_string(),
-                        |r, key| (s(r, k) == key).then(|| n(r, "n")),
+                        |r| sv(r, k),
+                        |r, key| (sv(r, k) == key).then(|| n(r, "n")),
                     ),
                 );
             }
@@ -424,21 +572,65 @@ pub fn shape(
             Value::Object(o)
         }),
     );
+    put(
+        "shares",
+        v("shares").map(|rows| {
+            let op = |o: &str| {
+                rows.iter()
+                    .filter(|r| s(r, "op") == o)
+                    .map(|r| n(r, "n"))
+                    .sum::<f64>()
+            };
+            json!({"created": op("post"), "opened": op("get")})
+        }),
+    );
     put("top_combos", ev.as_ref().map(|rows| {
-        let mut m: BTreeMap<[String; 5], [f64; 2]> = BTreeMap::new();
+        let mut m: BTreeMap<[String; 6], [f64; 2]> = BTreeMap::new();
         for r in rows {
-            let k = ["goal", "surface", "km_bin", "dplus_bin", "rank"].map(|k| s(r, k).to_string());
+            let k = ["sport", "goal", "surface", "km_bin", "dplus_bin", "rank"].map(|k| s(r, k).to_string());
             m.entry(k).or_default()[usize::from(s(r, "event") == "gpx")] += n(r, "n");
         }
         let mut v: Vec<_> = m.into_iter().collect();
         v.sort_by(|a, b| (b.1[0] + b.1[1]).total_cmp(&(a.1[0] + a.1[1])));
         v.into_iter()
             .take(20)
-            .map(|([g, su, km, dp, rk], [sh, gpx])| {
-                json!({"goal": g, "surface": su, "km_bin": km, "dplus_bin": dp, "rank": rk, "share": sh, "gpx": gpx})
+            .map(|([sp, g, su, km, dp, rk], [sh, gpx])| {
+                json!({"sport": sp, "goal": g, "surface": su, "km_bin": km, "dplus_bin": dp, "rank": rk, "share": sh, "gpx": gpx})
             })
             .collect()
     }));
+    // modes (D77) : par (sport, surface, goal), codes sommés ; coût Lambda moyen d'un calcul
+    // (durée moyenne × Mo, prix de `POSTES`, hors offre gratuite)
+    put(
+        "modes",
+        v("modes").map(|rows| {
+            let price = |k: &str| POSTES.iter().find(|p| p.0 == k).map_or(0.0, |p| p.5);
+            // n, échecs, timeouts, Σ durée moyenne × n, p50, p95 (ligne ok)
+            let mut m: BTreeMap<[String; 3], Mode> = BTreeMap::new();
+            for r in &rows {
+                let e = m.entry(["sport", "surface", "goal"].map(|k| s(r, k).into())).or_default();
+                let c = n(r, "n");
+                e.0[0] += c;
+                e.0[1] += if ok(r) { 0.0 } else { c };
+                e.0[2] += if s(r, "code") == "timeout" { c } else { 0.0 };
+                e.0[3] += n(r, "avg_s") * c;
+                if ok(r) {
+                    let p = |k: &str| r.get(k).and_then(|x| x.parse().ok());
+                    e.1 = [p("p50"), p("p95")];
+                }
+            }
+            let mut v: Vec<_> = m.into_iter().collect();
+            v.sort_by(|a, b| b.1.0[0].total_cmp(&a.1.0[0]));
+            v.into_iter()
+                .map(|([sp, su, g], ([c, fail, to, sum], [p50, p95]))| {
+                    let cost = sum / c.max(1.0) * lambda_mb / 1024.0 * price("lambda_gbs")
+                        + price("lambda_req");
+                    json!({"sport": sp, "surface": su, "goal": g, "n": c, "fail": fail, "timeout": to,
+                           "p50": p50, "p95": p95, "cost_usd": (cost * 1e7).round() / 1e7})
+                })
+                .collect()
+        }),
+    );
     let starts = v("starts");
     for (out, outside) in [("starts", false), ("starts_outside", true)] {
         put(out, starts.as_ref().map(|rows| {
@@ -513,18 +705,35 @@ pub fn shape(
     Value::Object(o)
 }
 
-/// Lance les 11 requêtes puis lit leurs résultats jusqu'à `Complete` ou `deadline`. Appels par
+/// Fin de période et filtre d'une requête de stats (un seul argument : la fermeture de `handle`
+/// garde ainsi deux paramètres, `|from, upto|`).
+pub struct Upto {
+    /// dernier jour inclus (jours depuis 1970)
+    pub to: i64,
+    /// clause de filtre (`clause`), `""` sans filtre
+    pub filter: String,
+}
+
+/// Lance les 13 requêtes (filtre `upto.filter`) puis lit leurs résultats jusqu'à `Complete` ou `deadline`. Appels par
 /// lots concurrents de `batch`, `pace` entre deux lots (quotas Logs : 5 appels/s par compte).
 /// Une erreur de `StartQuery` (droits, identifiants) fait échouer l'ensemble.
 pub fn run(
     from: i64,
-    to: i64,
+    upto: Upto,
     group: &str,
     call: impl Fn(&str, &Value) -> Result<Value, String> + Sync,
     pace: (usize, Duration),
     deadline: Duration,
 ) -> Result<Views, String> {
-    run_qs(&queries(), from, to, group, call, pace, deadline)
+    run_qs(
+        &queries_for(&upto.filter),
+        from,
+        upto.to,
+        group,
+        call,
+        pace,
+        deadline,
+    )
 }
 
 /// `run` pour les requêtes `qs` (nom, texte).
@@ -753,7 +962,7 @@ pub fn handle(
     who: &str,
     query: &[(String, String)],
     today: i64,
-    run_views: impl FnOnce(i64, i64) -> Result<Views, String>,
+    run_views: impl FnOnce(i64, Upto) -> Result<Views, String>,
 ) -> Reply {
     let t0 = Instant::now();
     if let Err(r) = gate(admin, given, who, t0) {
@@ -763,12 +972,24 @@ pub fn handle(
         Ok(r) => r,
         Err(m) => return fail(m, "error", None, t0),
     };
-    match run_views(from, to) {
-        Ok((views, mb)) => Reply {
-            status: 200,
-            body: shape(from, to, &views, mb),
-            log: log("ok", Some((from, to)), Some(mb), t0),
-        },
+    let filter = match parse_filter(query) {
+        Ok(f) => f,
+        Err(m) => return fail(m, "error", None, t0),
+    };
+    let upto = Upto {
+        to,
+        filter: clause(&filter),
+    };
+    match run_views(from, upto) {
+        Ok((views, scanned)) => {
+            let mut body = shape(from, to, &views, scanned);
+            body["filter"] = json!(filter.into_iter().collect::<BTreeMap<_, _>>());
+            Reply {
+                status: 200,
+                body,
+                log: log("ok", Some((from, to)), Some(scanned), t0),
+            }
+        }
         Err(e) => fail(Msg::error(Code::Busy, e), "error", Some((from, to)), t0),
     }
 }

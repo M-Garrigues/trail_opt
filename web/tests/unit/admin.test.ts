@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { days, eventTotal, fmt, histBins, keyLabel, label, pct, perDay, preset, qty, shares, tiles, usd, type Stats } from '../../src/admin/stats';
+import { GOAL_OPTIONS, SPORT_OPTIONS, costCalc, days, eventTotal, filterOf, filterText, fmt, histBins, keyLabel, label, modeTotals, pct, perDay, preset, qty, shares, sportLabel, statsQuery, surfaceLabel, tiles, usd, viewOf, type Stats } from '../../src/admin/stats';
 import { eventBody, hitBody, shouldSend, type HitEnv } from '../../src/lib/hit';
 import fixture from '../fixtures/admin-stats.json';
 
@@ -28,9 +28,11 @@ describe('page admin : agrégations', () => {
   it('histogrammes avec classes vides, parts par catégorie', () => {
     expect(histBins({ step: 5, bins: [{ from: 20, n: 1 }, { from: 10, n: 4 }] })).toEqual({ labels: ['10–15', '15–20', '20–25'], values: [4, 0, 1] });
     expect(histBins(null)).toBeNull();
-    const g = shares(s.surfaces, (r) => r.surface, (r) => r.n)!;
-    expect(g[0]).toEqual({ label: '—', n: 6, share: 2 / 3 });
+    const g = shares(s.surfaces, (r) => surfaceLabel(r.sport ?? 'trail', r.surface), (r) => r.n, (r) => r.sport ?? 'trail')!;
+    expect(g.map((r) => [r.label, r.n, r.sport])).toEqual([['Trail · —', 4, 'trail'], ['Trail · Chemins', 2, 'trail'], ['Trail · Route', 2, 'trail'], ['Vélo · Route', 1, 'bike']]);
     expect(label('max_dplus')).toBe('Max D+');
+    // D70 : le sport a sa vue (« trail » n'y est pas le type de voie « Chemins »)
+    expect(shares(s.sports!, (r) => sportLabel(r.sport), (r) => r.n)!.map((r) => [r.label, r.n])).toEqual([['Trail', 8], ['Vélo', 1]]);
   });
 });
 
@@ -43,8 +45,43 @@ describe('page admin : actions (D59)', () => {
     expect(keyLabel('dplus_bin', '250')).toBe('250–500 m');
     expect(keyLabel('rank', '2')).toBe('n° 2');
     expect(keyLabel('surface', '-')).toBe('—');
+    expect(keyLabel('surface', 'bike/road')).toBe('Vélo · Route');
+    expect(keyLabel('surface', 'trail/-')).toBe('Trail · —');
+    expect(keyLabel('surface', 'trail')).toBe('Trail · Chemins'); // ancienne réponse, sans sport
     expect(keyLabel('goal', 'target')).toBe('Cible');
     expect(s.action_rates!.rank[0].share_rate).toBeCloseTo(1 / 3, 2);
+  });
+});
+
+describe('page admin : filtres et modes (D77)', () => {
+  it('voie qualifiée par le sport', () => {
+    expect([['trail', 'trail'], ['trail', 'any'], ['trail', 'road'], ['bike', 'mtb'], ['bike', 'gravel'], ['bike', 'road'], ['trail', '-']].map(([a, b]) => surfaceLabel(a, b)))
+      .toEqual(['Trail · Chemins', 'Trail · Mixte', 'Trail · Route', 'Vélo · VTT', 'Vélo · Gravel', 'Vélo · Route', 'Trail · —']);
+  });
+  it('options de filtre et query string (champs vides omis)', () => {
+    expect(SPORT_OPTIONS.map(([, l]) => l)).toEqual(['Tous', 'Trail', 'Trail · Chemins', 'Trail · Mixte', 'Trail · Route', 'Vélo', 'Vélo · VTT', 'Vélo · Gravel', 'Vélo · Route']);
+    expect(GOAL_OPTIONS.map(([v]) => v)).toEqual(['', 'max_dplus', 'target', 'min_distance']);
+    // chaque option se retraduit en libellé de filtre identique
+    for (const [v, l] of SPORT_OPTIONS.slice(1)) expect(filterText(filterOf(v, ''))).toBe(l);
+    const r = { from: '2026-10-01', to: '2026-10-07' };
+    expect(statsQuery(r, filterOf('', ''))).toBe('from=2026-10-01&to=2026-10-07');
+    expect(statsQuery(r, filterOf('bike/road', ''))).toBe('from=2026-10-01&to=2026-10-07&sport=bike&surface=road');
+    expect(statsQuery(r, filterOf('trail', 'target'))).toBe('from=2026-10-01&to=2026-10-07&sport=trail&goal=target');
+    expect(filterText(filterOf('bike/road', 'max_dplus'))).toBe('Vélo · Route, Max D+');
+    expect(filterText({})).toBe('');
+    expect(filterText(null)).toBe('');
+  });
+  it('menu courant selon le hash', () => {
+    expect([viewOf(''), viewOf('#visu'), viewOf('#surveillance'), viewOf('#autre')]).toEqual(['visu', 'visu', 'surveillance', 'visu']);
+  });
+  it('totaux par mode, coût par calcul', () => {
+    expect(modeTotals(s.modes)).toEqual({ n: 20, fail: 2, timeout: 1, timeoutRate: 0.05 });
+    expect(modeTotals(null)).toBeNull();
+    expect(modeTotals(undefined)).toBeNull();
+    expect(modeTotals([])).toEqual({ n: 0, fail: 0, timeout: 0, timeoutRate: null });
+    expect([costCalc(0.0002412), costCalc(null)]).toEqual(['0,00024 $', '—']);
+    expect(s.modes!.map((m) => m.p50)).toEqual([6.1, 4.1, null]);
+    expect(fmt(s.modes![2].p50, 1)).toBe('—');
   });
 });
 
@@ -74,7 +111,7 @@ describe('mesure d’audience : envoi', () => {
     const req = { lat: '45.18', lon: '5.72', goal: 'target', distance_km: '10', dplus_m: '300', climbs: 'balanced', surface: 'trail',
       no_repeat_junction: 'true', n_candidates: '3', seed: '0', polygon: '5.7,45.1;5.8,45.1;5.8,45.2', via: '45.1,5.7;45.2,5.8' };
     const b = eventBody('gpx', req, { length_m: 10_234, dplus_m: 312.4, trail_frac: 0.853 }, 2, 4.26, 'fr');
-    expect(b).toEqual({ event: 'gpx', lang: 'fr', goal: 'target', km: 10, dplus_m: 250, surface: 'trail', climbs: 'balanced', max_grade_pct: 60,
+    expect(b).toEqual({ event: 'gpx', lang: 'fr', sport: 'trail', goal: 'target', km: 10, dplus_m: 250, surface: 'trail', climbs: 'balanced', max_grade_pct: 60,
       zone: true, via_n: 2, no_repeat: true, rank: 2, got_km: 10, got_dplus_m: 250, trail_pct: 85, road_pct: 15, compute_s: 4 });
     // trois classes (aménagé) et « Sorties plus fluides » forcée
     const b3 = eventBody('gpx', { ...req, smooth: 'false' }, { length_m: 10_234, dplus_m: 312.4, trail_frac: 0.7, surface_share: [0.6, 0.2, 0.2] }, 2, 4.26, 'fr');

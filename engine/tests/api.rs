@@ -134,6 +134,163 @@ fn validation_stricte() {
     );
 }
 
+/// D70 : `sport` absent = trail à l'identique ; `surface` propre au sport ; défauts et bornes du profil.
+#[test]
+fn sport_et_profils() {
+    let ok = "lat=48.73&lon=2.27";
+    let p = |s: &str| parse(&q(&format!("{ok}{s}"))).unwrap().0;
+    // absent = trail : même requête que `sport=trail`, défauts d'avant (pente 60 %, surface trail)
+    let t = p("&distance_km=20");
+    assert_eq!(
+        format!("{t:?}"),
+        format!("{:?}", p("&distance_km=20&sport=trail"))
+    );
+    assert_eq!(
+        (t.sport.as_str(), t.surface.as_str(), t.max_grade),
+        ("trail", "trail", Some(0.6))
+    );
+    assert_eq!(p("&sport=trail&surface=road").surface, "road");
+    assert_eq!(code(&format!("{ok}&sport=ski")), Code::InvalidRequest);
+    assert_eq!(code(&format!("{ok}&sport=")), Code::InvalidRequest);
+    assert_eq!(
+        code(&format!("{ok}&sport=Bike&surface=nope")),
+        Code::InvalidRequest
+    );
+    // type de voie hors de la liste du sport ; `roads` réservé au trail
+    for bad in [
+        "&sport=bike&surface=trail",
+        "&sport=bike&surface=any",
+        "&sport=bike&roads=all",
+        "&sport=bike&surface=mtb&roads=all",
+        "&sport=trail&surface=mtb",
+        "&surface=gravel",
+    ] {
+        assert_eq!(code(&format!("{ok}{bad}")), Code::RoadsUnknown, "{bad}");
+    }
+    // défauts vélo : route (D78 : aucune pente max), pente de montée du profil sinon
+    let b = p("&sport=bike");
+    assert_eq!(
+        (b.sport.as_str(), b.surface.as_str(), b.max_grade),
+        ("bike", "road", None)
+    );
+    assert_eq!(p("&sport=bike&surface=road").max_grade, None);
+    for (s, g) in [("mtb", 0.25), ("gravel", 0.22)] {
+        assert_eq!(
+            p(&format!("&sport=bike&surface={s}")).max_grade,
+            Some(g),
+            "{s}"
+        );
+    }
+    // pente vélo : limite de montée 5–40 % ; « sans limite » (0) seulement en Route (D78) ; trail
+    // inchangé (0 ou 5–60)
+    assert_eq!(p("&sport=bike&max_grade_pct=40").max_grade, Some(0.4));
+    assert_eq!(p("&sport=bike&max_grade_pct=5").max_grade, Some(0.05));
+    assert_eq!(
+        p("&sport=bike&surface=road&max_grade_pct=0").max_grade,
+        None
+    );
+    for bad in [
+        "&sport=bike&surface=mtb&max_grade_pct=0",
+        "&sport=bike&surface=gravel&max_grade_pct=0",
+        "&sport=bike&max_grade_pct=41",
+        "&max_grade_pct=61",
+    ] {
+        assert_eq!(code(&format!("{ok}{bad}")), Code::MaxGradeInvalid, "{bad}");
+    }
+    assert_eq!(p("&max_grade_pct=0").max_grade, None);
+    // bornes de distance par profil (km) : (sport, surface, min, max)
+    for (sport, surface, lo, hi) in [
+        ("trail", "trail", 2.0, 100.0),
+        ("trail", "road", 2.0, 100.0),
+        ("bike", "mtb", 5.0, 100.0),
+        ("bike", "gravel", 10.0, 200.0), // D76 : comme la Route
+        ("bike", "road", 10.0, 200.0),
+    ] {
+        let at = |d: f64| format!("{ok}&sport={sport}&surface={surface}&distance_km={d}");
+        assert!(
+            parse(&q(&at(lo))).is_ok() && parse(&q(&at(hi))).is_ok(),
+            "{sport} {surface}"
+        );
+        for out in [lo - 0.1, hi + 0.1] {
+            let m = parse(&q(&at(out))).expect_err("hors bornes");
+            assert_eq!(m.code, Code::DistanceOutOfRange, "{sport} {surface} {out}");
+            let m = serde_json::to_value(&m).unwrap();
+            assert_eq!(
+                (&m["params"]["min_km"], &m["params"]["max_km"]),
+                (&json!(lo), &json!(hi))
+            );
+        }
+    }
+    // D76 : gravel 200 km accepté, 201 refusé
+    let at = |d: f64| format!("{ok}&sport=bike&surface=gravel&distance_km={d}");
+    assert!(parse(&q(&at(200.0))).is_ok());
+    assert_eq!(code(&at(201.0)), Code::DistanceOutOfRange);
+    // profil : deux limites de pente égales en v1 (D73), tous les profils vélo (verrou : le lot 2
+    // change `Request::grade`, pas ces valeurs)
+    for s in ["mtb", "gravel", "road"] {
+        let m = engine::profile::Profile::of("bike", s).unwrap();
+        assert_eq!(m.grade_up_max, m.grade_down_max, "{s}");
+    }
+    let m = engine::profile::Profile::of("bike", "mtb").unwrap();
+    assert_eq!((m.grade_up_max, m.grade_down_max), (0.25, 0.25)); // D81
+}
+
+/// D70 : un calcul vélo passe par le même moteur (E2 : coûts propres au vélo) ; la ligne de journal porte `sport`.
+#[test]
+fn sport_dans_le_journal() {
+    let Some((_, store)) = common::tiles(&[common::MASSY]) else {
+        return;
+    };
+    let never = |_: &str| -> Result<bool, String> { panic!("Turnstile ne doit pas être appelé") };
+    let run = |extra: &str| {
+        let qs = format!("lat=48.7309&lon=2.2713&distance_km=10&n_candidates=1{extra}");
+        handle(&q(&qs), None, true, &store, &key(), never)
+    };
+    let (t, b) = (run(""), run("&sport=bike&surface=road"));
+    assert_eq!((t.status, b.status), (200, 200), "{} {}", t.body, b.body);
+    assert_eq!(
+        (&t.log["sport"], &t.log["surface"]),
+        (&json!("trail"), &json!("trail"))
+    );
+    assert_eq!(
+        (&b.log["sport"], &b.log["surface"]),
+        (&json!("bike"), &json!("road"))
+    );
+    // sport invalide : rejeté avant tout calcul
+    let r = run("&sport=ski");
+    assert_eq!(
+        (r.status, &r.body["error"]["code"]),
+        (400, &json!("invalid_request"))
+    );
+}
+
+#[test]
+fn admin_par_sport() {
+    use engine::admin::{Row, queries, shape};
+    let qs = queries();
+    for name in ["mix", "hist", "events_mix"] {
+        let q = &qs.iter().find(|x| x.0 == name).unwrap().1;
+        assert!(q.contains("by ") && q.contains("sport,"), "{name}: {q}");
+    }
+    let row = |kv: &[(&str, &str)]| -> Row {
+        kv.iter()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
+    };
+    // ligne sans `sport` (d'avant D70) = trail
+    let mix = vec![
+        row(&[("sport", "bike"), ("goal", "target"), ("n", "3")]),
+        row(&[("goal", "target"), ("n", "2")]),
+        row(&[("sport", "trail"), ("goal", "target"), ("n", "2")]),
+    ];
+    let views = std::collections::BTreeMap::from([("mix", Some(mix))]);
+    let b = shape(20000, 20001, &views, 0.0);
+    assert_eq!(
+        b["sports"],
+        json!([{"sport": "trail", "n": 4.0}, {"sport": "bike", "n": 3.0}])
+    );
+}
+
 #[test]
 fn statuts_http() {
     assert_eq!(http_status(Code::InvalidRequest), 400);
@@ -708,6 +865,46 @@ fn partage_ancienne_boucle_sans_trail_frac() {
     let mut c = cand();
     c["trail_frac"] = json!(0.62);
     assert!(!invalid(&shared(c)));
+}
+
+/// D70 : `request.sport` est revalidé comme une requête (non signé) ; sans `sport` = trail.
+#[test]
+fn partage_avec_sport() {
+    let with = |f: &dyn Fn(&mut Value)| {
+        let mut v = unsigned(cand());
+        f(&mut v["request"]);
+        let s: share::SharedLoop = serde_json::from_value(v.clone()).unwrap();
+        v["candidate"]["sig"] = json!(share::signature(&key(), &s));
+        v
+    };
+    let bike = with(&|r| {
+        r["sport"] = json!("bike");
+        r["surface"] = json!("mtb");
+    });
+    assert!(
+        !invalid(&bike),
+        "{:?}",
+        share::validate(bike.to_string().as_bytes(), &key()).err()
+    );
+    let refused = |v: &Value| share::validate(v.to_string().as_bytes(), &key()).is_err();
+    assert!(refused(&with(&|r| r["sport"] = json!("ski"))));
+    assert!(refused(&with(&|r| r["surface"] = json!("mtb")))); // trail : pas de VTT
+    // même signature qu'avant : `request` n'est pas signé
+    let (a, b) = (with(&|_| {}), bike);
+    assert_eq!(a["candidate"]["sig"], b["candidate"]["sig"]);
+    // boucle stockée sans `sport` : relue en trail
+    let stored: Value = serde_json::from_slice(
+        &share::validate(shared(cand()).to_string().as_bytes(), &key()).unwrap(),
+    )
+    .unwrap();
+    assert!(stored["request"].get("sport").is_none());
+    let query: Vec<(String, String)> = stored["request"]
+        .as_object()
+        .unwrap()
+        .iter()
+        .map(|(k, v)| (k.clone(), v.as_str().map_or(v.to_string(), String::from)))
+        .collect();
+    assert_eq!(parse(&query).unwrap().0.sport, "trail");
 }
 
 #[test]

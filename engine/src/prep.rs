@@ -260,18 +260,20 @@ pub fn hyst_cum(z: &[f64]) -> Vec<f64> {
     c
 }
 
-/// Pente max (fraction) sur une fenêtre glissante de `GRADE_WINDOW_M` ; profil plus court que la
-/// fenêtre : pente moyenne |Δz| / L.
-pub fn max_grade(z: &[f64], s: &[f64]) -> f64 {
+/// Pente max EN MONTÉE (fraction) sur une fenêtre glissante de `GRADE_WINDOW_M`, dans chaque sens :
+/// `[u→v, v→u]` (D73) ; profil plus court que la fenêtre : pente moyenne Δz / L. Pas d'arrondi :
+/// `max_grade` en est le maximum, au bit près.
+pub fn max_climb(z: &[f64], s: &[f64]) -> [f64; 2] {
     let l = s.last().copied().unwrap_or(0.0);
     if l < GRADE_WINDOW_M {
         return if l > 0.0 {
-            (z[z.len() - 1] - z[0]).abs() / l
+            let d = z[z.len() - 1] - z[0];
+            [d.max(0.0) / l, (-d).max(0.0) / l]
         } else {
-            0.0
+            [0.0; 2]
         };
     }
-    let (mut g, mut j) = (0.0f64, 0);
+    let (mut up, mut dn, mut j) = (0.0f64, 0.0f64, 0);
     for i in 0..s.len() {
         while j < s.len() && s[j] < s[i] + GRADE_WINDOW_M {
             j += 1;
@@ -279,9 +281,43 @@ pub fn max_grade(z: &[f64], s: &[f64]) -> f64 {
         if j == s.len() {
             break;
         }
-        g = g.max((z[j] - z[i]).abs() / (s[j] - s[i]));
+        let d = s[j] - s[i];
+        up = up.max((z[j] - z[i]) / d);
+        dn = dn.max(-(z[j] - z[i]) / d);
     }
-    g
+    [up, dn]
+}
+
+/// Pente max (fraction), sans le sens : max des deux sens de `max_climb` (D30, D31).
+pub fn max_grade(z: &[f64], s: &[f64]) -> f64 {
+    let c = max_climb(z, s);
+    c[0].max(c[1])
+}
+
+/// D73 : limites de pente (fractions) en montée et en descente, `up <= down`. Seule source :
+/// `plan::Request::grade`. v1 : `down == up` (ajouter l'asymétrie = changer cette ligne).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Grade {
+    pub up: f64,
+    pub down: f64,
+}
+
+impl Grade {
+    /// Arête gardée : parcourable dans au moins un sens (montée <= up et descente <= down).
+    /// `up == down == g` : `max(climb) <= g`, le filtre de pente d'avant D73.
+    pub fn keeps(&self, c: [f64; 2]) -> bool {
+        c[0].min(c[1]) <= self.up && c[0].max(c[1]) <= self.down
+    }
+
+    /// Parcourable dans les deux sens (copies aller-retour, accès).
+    pub fn two_way(&self, c: [f64; 2]) -> bool {
+        c[0].max(c[1]) <= self.up
+    }
+
+    /// Le parcours u→v (`dir` 0) ou v→u (`dir` 1) est-il permis ?
+    pub fn allows(&self, c: [f64; 2], dir: usize) -> bool {
+        c[dir] <= self.up && c[1 - dir] <= self.down
+    }
 }
 
 /// Classes de voie (demande du fondateur 2026-10-07, D50) : chemin naturel, intermédiaire (voies
@@ -295,7 +331,9 @@ pub const N_CLS: usize = 4;
 pub const LAB_NOISY: usize = 0;
 pub const LAB_HIKE: usize = 1;
 pub const LAB_WATER: usize = 2;
-pub const N_LAB: usize = 3;
+/// Vélo : mètres de confort (coût par type de voie, `plan::pref_mask`) ; toujours 0 en trail.
+pub const LAB_PREF: usize = 3;
+pub const N_LAB: usize = 4;
 
 #[derive(Clone, Debug)]
 pub struct Edge {
@@ -307,6 +345,8 @@ pub struct Edge {
     pub w: f64,
     /// Pente max (fraction) sur 50 m glissants du profil de l'arête (`max_grade`, D31).
     pub grade: f64,
+    /// Pente max en montée dans chaque sens, [u→v, v→u] (`max_climb`, D73).
+    pub climb: [f64; 2],
     /// Pont ou tunnel.
     pub flat: bool,
     /// Longueur (m) par classe de voie (`Net::cls_t`, voir `CLS_*`).
@@ -323,6 +363,8 @@ pub struct Net<'a> {
     pub frame: Frame,
     /// Par tronçon : classe de voie (`CLS_*`), voir `plan::class_mask`. Vide : tout est route.
     pub cls_t: Vec<u8>,
+    /// Par tronçon : coût vélo en dixièmes de mètre de confort par mètre (`plan::pref_mask`). Vide : 0.
+    pub pref_t: Vec<u8>,
     pub xy: Vec<[f64; 2]>,
     pub key: Vec<i64>,
     pub key_of: HashMap<i64, usize>,
@@ -338,6 +380,7 @@ impl<'a> Net<'a> {
             t,
             frame,
             cls_t: Vec::new(),
+            pref_t: Vec::new(),
             xy: Vec::new(),
             key: Vec::new(),
             key_of: HashMap::new(),
@@ -408,6 +451,7 @@ impl<'a> Net<'a> {
             lab[LAB_NOISY] += l * (1.0 - f64::from(self.t.calm[t].min(15)) / 15.0);
             lab[LAB_HIKE] += if self.t.hike[t] > 0 { l } else { 0.0 };
             lab[LAB_WATER] += l * f64::from(self.t.water[t].min(15)) / 15.0;
+            lab[LAB_PREF] += l * self.pref_t.get(t).map_or(0.0, |&c| f64::from(c) / 10.0);
         }
         self.edges.push(Edge {
             u,
@@ -416,6 +460,7 @@ impl<'a> Net<'a> {
             len,
             w: 0.0,
             grade: 0.0,
+            climb: [0.0; 2],
             flat,
             cls,
             lab,
@@ -427,7 +472,8 @@ impl<'a> Net<'a> {
         for i in 1..xy.len() {
             s[i] = s[i - 1] + (xy[i][0] - xy[i - 1][0]).hypot(xy[i][1] - xy[i - 1][1]);
         }
-        self.edges[e].grade = max_grade(&z, &s);
+        self.edges[e].climb = max_climb(&z, &s);
+        self.edges[e].grade = self.edges[e].climb[0].max(self.edges[e].climb[1]);
         // D67 : D+ « montre » : hystérésis de `HYST_M` sur le profil de l'arête, soldée au bout
         self.edges[e].w = hyst_w(&z);
         e
@@ -705,13 +751,15 @@ impl<'a> Net<'a> {
     /// protégé : seul accès à une partie bouclable, pont sur une rivière, vallée à accès unique,
     /// col à sentier unique) et les ponts et tunnels des dalles (`flat`) entre deux carrefours. Le rayon libre du départ
     /// en était le cas particulier (port de `duplicate_near_start`). Renvoie (copies à moins de
-    /// `radius` de `center`, copies en tout, longueur copiée en m).
+    /// `radius` de `center`, copies en tout, longueur copiée en m). `two_way` (vélo) : seules les
+    /// arêtes parcourables dans les deux sens sont doublées (D73) ; trail : `None`.
     pub fn duplicate_unique(
         &mut self,
         ids: &mut Vec<usize>,
         center: [f64; 2],
         s: usize,
         radius: f64,
+        two_way: Option<Grade>,
     ) -> (usize, usize, f64) {
         let mut forced = access_bridges(self, ids, s);
         let mut deg = vec![0u32; self.xy.len()];
@@ -734,6 +782,7 @@ impl<'a> Net<'a> {
             .iter()
             .copied()
             .filter(|&e| free(e) && forced.contains(&e))
+            .filter(|&e| two_way.is_none_or(|g| g.two_way(self.edges[e].climb)))
             .collect();
         pick.sort_unstable();
         let (mut near, mut km) = (0, 0.0);
@@ -925,7 +974,11 @@ pub fn access_bridges(net: &Net, ids: &[usize], s: usize) -> HashSet<usize> {
             let (e, nb) = (e as usize, nb as usize);
             if alive.remove(&e) {
                 deg[n] -= 1;
-                deg[nb] -= 1;
+                // boucle isolée (u == v : un seul exemplaire dans `adj`) : ne pas décrémenter deux
+                // fois (dépassement en debug ; en release, `usize::MAX`, même résultat)
+                if nb != n {
+                    deg[nb] -= 1;
+                }
                 if deg[nb] == 1 && nb != s {
                     leaves.push(nb);
                 }

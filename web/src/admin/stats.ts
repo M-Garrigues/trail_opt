@@ -9,8 +9,11 @@ export type Stats = {
   codes: { code: string; n: number; rate: number }[] | null;
   rejected_codes: { code: string; n: number }[] | null;
   compute_s: { p50: number | null; p95: number | null; n: number; by_day: (Day & { p50: number; p95: number; n: number })[] | null } | null;
+  /** D70 : calculs par sport (absent des anciennes réponses) */
+  sports?: { sport: string; n: number }[] | null;
   goals: { goal: string; n: number }[] | null;
-  surfaces: { surface: string; n: number }[] | null;
+  /** v2 (D77) : voie qualifiée par le sport (absent = trail pour les anciennes réponses) */
+  surfaces: { sport?: string; surface: string; n: number }[] | null;
   climbs: { climbs: string; n: number }[] | null;
   hist_km: Hist | null;
   hist_dplus_m: Hist | null;
@@ -23,14 +26,21 @@ export type Stats = {
   /** D59 : actions par jour (clés = événements), taux d'action, combinaisons */
   events_by_day?: (Day & Partial<Record<EventName, number>>)[] | null;
   action_rates?: Record<RateDim, Rate[]> | null;
-  top_combos?: { goal: string; surface: string; km_bin: string; dplus_bin: string; rank: string; share: number; gpx: number }[] | null;
+  filter?: Filter | null;
+  /** liens créés / ouverts vus par le serveur (POST 201 / GET 200 de /api/loops), tous sports, sans refus de mesure */
+  shares?: { created: number; opened: number } | null;
+  modes?: Mode[] | null;
+  top_combos?: { sport?: string; goal: string; surface: string; km_bin: string; dplus_bin: string; rank: string; share: number; gpx: number }[] | null;
 };
+/** Filtres appliqués par le serveur, et surveillance par mode (v2). */
+export type Filter = { sport?: string; surface?: string; goal?: string };
+export type Mode = { sport: string; surface: string; goal: string; n: number; fail: number; timeout: number; p50: number | null; p95: number | null; cost_usd: number | null };
 export type EventName = 'share_click' | 'share_created' | 'gpx' | 'shared_open';
-export type RateDim = 'goal' | 'surface' | 'km' | 'dplus_m' | 'rank';
+export type RateDim = 'sport' | 'goal' | 'surface' | 'km' | 'dplus_m' | 'rank';
 export type Rate = { key: string; calcs: number; share: number; gpx: number; share_rate: number | null; gpx_rate: number | null };
 
 export const EVENTS: [EventName, string][] = [['share_click', 'Clics partager'], ['share_created', 'Liens créés'], ['gpx', 'GPX exportés'], ['shared_open', 'Liens ouverts']];
-export const DIMS: [RateDim, string][] = [['goal', 'Type de sortie'], ['surface', 'Type de voie'], ['km', 'Distance'], ['dplus_m', 'D+'], ['rank', 'Rang de la sortie']];
+export const DIMS: [RateDim, string][] = [['sport', 'Sport'], ['goal', 'Type de sortie'], ['surface', 'Sport et voie'], ['km', 'Distance'], ['dplus_m', 'D+'], ['rank', 'Rang de la sortie']];
 
 /** Libellé d'une clé de taux ou de combinaison : tranches de 5 km / 250 m, rang. */
 export function keyLabel(dim: RateDim | 'km_bin' | 'dplus_bin', k: string): string {
@@ -39,6 +49,8 @@ export function keyLabel(dim: RateDim | 'km_bin' | 'dplus_bin', k: string): stri
   if (dim === 'km' || dim === 'km_bin') return `${fmt(x)}–${fmt(x + 5)} km`;
   if (dim === 'dplus_m' || dim === 'dplus_bin') return `${fmt(x)}–${fmt(x + 250)} m`;
   if (dim === 'rank') return `n° ${k}`;
+  if (dim === 'sport') return sportLabel(k);
+  if (dim === 'surface') return k.includes('/') ? surfaceLabel(...(k.split('/') as [string, string])) : surfaceLabel('trail', k);
   return label(k);
 }
 
@@ -120,17 +132,58 @@ export function histBins(h: Hist | null): { labels: string[]; values: number[] }
 /** Libellés visibles (« - » = champ absent, lignes antérieures au journal v2). */
 const LABELS: Record<string, string> = {
   max_dplus: 'Max D+', target: 'Cible', min_distance: 'Le plus court',
-  trail: 'Chemins', any: 'Indifférent', road: 'Route',
+  trail: 'Chemins', any: 'Mixte', road: 'Route', mtb: 'VTT', gravel: 'Gravel',
   short: 'Courtes', balanced: 'Équilibrées', long: 'Longues',
   mobile: 'Mobile', desktop: 'Ordinateur', '-': DASH,
 };
 export const label = (k: string) => LABELS[k] ?? k;
+/** Sport (D70) : « trail » est aussi un type de voie (« Chemins ») ; ici c'est le sport. Absent = trail. */
+export const sportLabel = (k: string) => (k === 'bike' ? 'Vélo' : k === 'trail' || k === '-' ? 'Trail' : k);
+
+/** Voie qualifiée par le sport : « Vélo · Route » ; voie absente (`-`) : « Trail · — ». */
+export const surfaceLabel = (sport: string, surface: string) => `${sportLabel(sport)} · ${label(surface)}`;
+
+/** Options du menu « Sport et voie » : [valeur, libellé] ; la valeur est `sport` ou `sport/voie`. */
+export const SPORT_OPTIONS: [string, string][] = [
+  ['', 'Tous'], ['trail', 'Trail'], ['trail/trail', 'Trail · Chemins'], ['trail/any', 'Trail · Mixte'], ['trail/road', 'Trail · Route'],
+  ['bike', 'Vélo'], ['bike/mtb', 'Vélo · VTT'], ['bike/gravel', 'Vélo · Gravel'], ['bike/road', 'Vélo · Route'],
+];
+export const GOAL_OPTIONS: [string, string][] = [['', 'Tous'], ['max_dplus', 'Max D+'], ['target', 'Cible'], ['min_distance', 'Le plus court']];
+
+/** Filtre de l'API depuis les valeurs des deux menus (champs vides omis). */
+export function filterOf(sportSurface: string, goal: string): Filter {
+  const [sport, surface] = sportSurface.split('/');
+  return { ...(sport && { sport }), ...(surface && { surface }), ...(goal && { goal }) };
+}
+
+/** Query string de GET /api/admin/stats. */
+export const statsQuery = (range: { from: string; to: string }, f: Filter) => new URLSearchParams({ from: range.from, to: range.to, ...f }).toString();
+
+/** Rappel du filtre actif : « Vélo · Route, Max D+ » ('' sans filtre). */
+export function filterText(f: Filter | null | undefined): string {
+  if (!f) return '';
+  const where = f.sport ? (f.surface ? surfaceLabel(f.sport, f.surface) : sportLabel(f.sport)) : '';
+  return [where, f.goal && label(f.goal)].filter(Boolean).join(', ');
+}
+
+/** Vue de la page selon `location.hash` (défaut : Visu). */
+export const viewOf = (hash: string): 'visu' | 'surveillance' => (hash === '#surveillance' ? 'surveillance' : 'visu');
+
+/** Totaux de la vue `modes` (`null` si absente) : calculs, échecs, timeouts et leur taux. */
+export function modeTotals(modes: Mode[] | null | undefined) {
+  if (!modes) return null;
+  const n = sum(modes.map((m) => m.n)), timeout = sum(modes.map((m) => m.timeout));
+  return { n, fail: sum(modes.map((m) => m.fail)), timeout, timeoutRate: n ? timeout / n : null };
+}
+
+/** Coût Lambda d'un calcul : 5 décimales (quelques dixièmes de millième de dollar). */
+export const costCalc = (x: number | null | undefined) => (x == null ? DASH : `${fmt(x, 5)} $`);
 
 /** Parts d'un regroupement : [{ label, n, share }] trié par effectif. */
-export function shares<T>(rows: T[] | null, key: (r: T) => string, n: (r: T) => number) {
+export function shares<T>(rows: T[] | null, key: (r: T) => string, n: (r: T) => number, sport?: (r: T) => string) {
   if (!rows) return null;
   const total = sum(rows.map(n));
-  return rows.map((r) => ({ label: label(key(r)), n: n(r), share: total ? n(r) / total : 0 })).sort((a, b) => b.n - a.n);
+  return rows.map((r) => ({ sport: sport?.(r), label: label(key(r)), n: n(r), share: total ? n(r) / total : 0 })).sort((a, b) => b.n - a.n);
 }
 
 /** Consommation AWS du mois (GET /api/admin/usage) : postes, seuils gratuits, projection, budget. */

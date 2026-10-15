@@ -288,6 +288,13 @@
     "params": []
   },
   {
+    "code": "major_roads_share",
+    "kind": "warning",
+    "params": [
+      "pct"
+    ]
+  },
+  {
     "code": "admin_denied",
     "kind": "error",
     "params": []
