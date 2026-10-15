@@ -725,6 +725,44 @@ fn access_cost(net: &Net, e: usize, private: bool) -> f64 {
     }
 }
 
+/// D68 : Σ w (additif, ce que vise la recherche) dépasse le D+ affiché (hystérésis continue sur toute
+/// la sortie) des ondulations de moins de `HYST_M` étalées sur plusieurs arêtes courtes : 1 à 1,4 m/km
+/// en ville, ~0 en montagne (banc 2026-10-14). Excès par mètre estimé sur `HYST_WALKS` marches
+/// aléatoires sans demi-tour de longueur `len` dans l'arène, depuis le départ (graine fixe).
+/// Les marches empruntent des rues plates au hasard ; une sortie Cible choisit des arêtes en montée,
+/// où l'excès est moindre : la moitié de l'excès des marches en moyenne (banc D68, 42 Cibles :
+/// écart moyen à la cible −3 % en ville sans correction, +2,4 % avec l'excès entier).
+const HYST_EXCESS_SHARE: f64 = 0.5;
+const HYST_WALKS: usize = 8;
+fn hyst_excess(net: &Net, ids: &[usize], s: usize, len: f64) -> f64 {
+    let adj = prep::Adj::new(net, ids);
+    let mut rng = crate::Rng::new(0xD68);
+    let (mut excess, mut total) = (0.0, 0.0);
+    for _ in 0..HYST_WALKS {
+        let (mut steps, mut at, mut came, mut l, mut w) = (Vec::new(), s, u32::MAX, 0.0, 0.0);
+        while l < len {
+            // impasse : la marche s'arrête (un demi-tour n'existe pas dans une boucle)
+            let next: Vec<&(u32, u32)> = adj.of(at).iter().filter(|x| x.0 != came).collect();
+            if next.is_empty() {
+                break;
+            }
+            let &(e, to) = next[rng.below(next.len())];
+            steps.push((e as usize, at, to as usize));
+            l += net.edges[e as usize].len;
+            w += net.edges[e as usize].w;
+            (at, came) = (to as usize, e);
+        }
+        if steps.is_empty() {
+            break;
+        }
+        let z = route_geometry(net, &steps).1;
+        // Σ des montées par arête dans le sens de marche = Σ w + Δz / 2 (`prep::hyst_w`)
+        excess += w + (z[z.len() - 1] - z[0]) / 2.0 - prep::updown_hyst(&z).0;
+        total += l;
+    }
+    if total > 0.0 { excess / total } else { 0.0 }
+}
+
 /// Polyligne (xy, z) d'un parcours [(arête de l'arène, de, vers)].
 pub fn route_geometry(net: &Net, steps: &[(usize, usize, usize)]) -> (Vec<[f64; 2]>, Vec<f64>) {
     let (mut xy, mut z) = (Vec::new(), Vec::new());
@@ -1089,35 +1127,15 @@ pub struct Track {
     pub xy: Vec<[f64; 2]>,
     pub z: Vec<f64>,
     pub length: f64,
+    /// D68 : D+ « montre » du profil rendu entier (`prep::hyst_cum`, hystérésis continue, accès
+    /// compris) ; ≤ Σ w des arêtes à 0–3,5 % près.
     pub dplus: f64,
-    /// D67 : D+ recalculé arête par arête sur le profil rendu (`prep::updown_hyst`, dans le sens de
-    /// parcours) : doit égaler `dplus` (Σ w), contrôle `profile_mismatch`.
-    pub dplus_profile: f64,
-    /// D+ cumulé à chaque point de `z` (`cumulative_up`) : étapes additives (Σ = `dplus`).
+    /// D+ cumulé à chaque point de `z` (`prep::hyst_cum`) : étapes (Σ = `dplus`).
     pub cup: Vec<f64>,
     /// Longueur par classe de voie, étiquettes (accès compris).
     pub cls: [f64; N_CLS],
     pub lab: [f64; N_LAB],
     pub feasible: bool,
-}
-
-/// D+ cumulé le long du profil : la montée de chaque segment (arête, aller ou retour d'accès) est
-/// répartie sur ses points au prorata des montées brutes (linéairement s'il n'y en a pas), de sorte
-/// que la valeur aux bouts de segment est la somme exacte des montées des arêtes (D67).
-fn cumulative_up(z: &[f64], segs: &[(usize, usize, f64)]) -> Vec<f64> {
-    let mut c = vec![0.0; z.len()];
-    for &(i, j, up) in segs {
-        let raw: f64 = (i..j).map(|k| (z[k + 1] - z[k]).max(0.0)).sum();
-        for k in i..j {
-            let inc = if raw > 0.0 {
-                up * (z[k + 1] - z[k]).max(0.0) / raw
-            } else {
-                up / (j - i) as f64
-            };
-            c[k + 1] = c[k] + inc;
-        }
-    }
-    c
 }
 
 /// Port de `assemble` : la boucle, précédée et suivie de l'aller-retour d'accès. Préférence de
@@ -1146,22 +1164,6 @@ fn assemble(
         })
         .collect();
     let (mut xy, mut z) = route_geometry(net, &arena_steps);
-    // contrôle D67 : montée de chaque arête dans le sens de parcours, avec la même hystérésis
-    // (boucle fermée : Σ montées = Σ w, quel que soit le sens)
-    // segments (premier point, dernier point, montée) du profil, un par arête, pour le D+ cumulé
-    // (étapes, contrôle) : montée dans le sens de parcours = w + Δz / 2 (`prep::hyst_w`)
-    let mut segs: Vec<(usize, usize, f64)> = Vec::new();
-    let mut at = 0;
-    for &(e, a, _) in &arena_steps {
-        let (_, mut ez) = net.edge_points(e);
-        if net.edges[e].u != net.edges[e].v && a != net.edges[e].u {
-            ez.reverse();
-        }
-        let up = prep::hyst_w(&ez) + (ez[ez.len() - 1] - ez[0]) / 2.0;
-        segs.push((at, at + ez.len() - 1, up));
-        at += ez.len() - 1;
-    }
-    let mut dplus_profile: f64 = segs.iter().map(|s| s.2).sum();
     if gamma != 0 {
         let a = gbar(&xy, &z);
         xy.reverse();
@@ -1170,17 +1172,9 @@ fn assemble(
         if (gamma > 0) == (a >= b) {
             xy.reverse();
             z.reverse();
-        } else {
-            // parcours inversé : montée de chaque arête = w − Δz / 2 = montée − Δz
-            let n = z.len() - 1;
-            segs = segs
-                .iter()
-                .rev()
-                .map(|&(i, j, up)| (n - j, n - i, up - (z[n - j] - z[n - i])))
-                .collect();
         }
     }
-    let (mut length, mut dplus) = p.stats(loop_ids);
+    let mut length = p.stats(loop_ids).0;
     let (mut cls, mut lab) = ([0.0; N_CLS], [0.0; N_LAB]);
     for &e in loop_ids {
         add(&mut cls, &net.edges[ids[e]].cls, 1.0);
@@ -1206,24 +1200,15 @@ fn assemble(
             .chain(rev_z)
             .collect();
         length += 2.0 * a.length;
-        // aller-retour : la montée de l'aller plus celle du retour = montée + descente de l'accès
-        dplus += a.updown;
-        dplus_profile += a.updown;
-        let (na, dz) = (az.len() - 1, az[az.len() - 1] - az[0]);
-        let last = segs.last().map_or(0, |s| s.1) + na;
-        segs = std::iter::once((0, na, (a.updown + dz) / 2.0))
-            .chain(segs.iter().map(|&(i, j, up)| (i + na, j + na, up)))
-            .chain([(last, z.len() - 1, (a.updown - dz) / 2.0)])
-            .collect();
     }
-    let cup = cumulative_up(&z, &segs);
+    let cup = prep::hyst_cum(&z);
+    let dplus = cup[cup.len() - 1];
     let feasible = p.score(loop_ids).3;
     Ok(Track {
         xy,
         z,
         length,
         dplus,
-        dplus_profile,
         cup,
         cls,
         lab,
@@ -1929,10 +1914,16 @@ pub fn plan_with(
         tried.extend(c.ids.iter().copied());
         let acc_len = c.access.as_ref().map_or(0.0, |a| a.length);
         let l_eff = l - 2.0 * acc_len;
-        let d_eff = r.target_dplus.map(|d| match &c.access {
+        let mut d_eff = r.target_dplus.map(|d| match &c.access {
             Some(a) => (d - a.updown).max(1.0),
             None => d,
         });
+        // D68 : en cible, la recherche vise Σ w, plus haut que le D+ affiché de l'excès estimé
+        if r.mode == "target" {
+            let k = hyst_excess(&net, &c.ids, c.s, l_eff);
+            info.insert("hyst_excess_m_per_km".into(), json!(round1(1000.0 * k)));
+            d_eff = d_eff.map(|d| (d + HYST_EXCESS_SHARE * k * l_eff).max(1.0));
+        }
         let (mut p, _nodes) = to_problem(
             &net,
             &c.ids,
@@ -2079,13 +2070,6 @@ pub fn plan_with(
         }
     }
     let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma)?;
-    let prof = main.dplus_profile;
-    if (prof - main.dplus).abs() > 1e-6 * main.dplus.max(1.0) {
-        warns.push(Msg::new(
-            Code::ProfileMismatch,
-            json!({"profile_m": prof, "sum_w_m": main.dplus}),
-        ));
-    }
     if r.mode == "target" {
         let d = r.target_dplus.unwrap();
         if d > ub {
@@ -2280,7 +2264,7 @@ fn via_legs(
     let legs: Vec<Value> = cuts
         .windows(2)
         .map(|w| {
-            // D67 : D+ cumulé arête par arête (Σ des étapes = D+ de la sortie)
+            // D68 : D+ cumulé sur la sortie entière (Σ des étapes = D+ de la sortie)
             let (i, j) = (w[0].0, w[1].0);
             let up = tr.cup[j] - tr.cup[i];
             let down = up - (tr.z[j] - tr.z[i]);

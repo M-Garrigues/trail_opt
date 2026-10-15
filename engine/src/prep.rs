@@ -190,20 +190,15 @@ impl Piece {
 /// et au filtre `max_grade` des arêtes ; n'affecte pas le D+.
 pub const GRADE_WINDOW_M: f64 = 50.0;
 
-/// D67 (étude terrain_2026-10-08 § 2) : seuil d'hystérésis du D+ (m), calé sur les montres (sortie
-/// du fondateur : 399 m bruts, 373 m ici, 370 à la montre ; GoldenCheetah : 3 m, Strava : 2 m).
+/// D67/D68 : seuil d'hystérésis du D+ (m), calé sur les montres (sortie du fondateur du 08/10 :
+/// 368 m sur le profil entier, 370 à la montre ; GoldenCheetah : 3 m, Strava : 2 m).
 pub const HYST_M: f64 = 3.0;
 
-/// (montée, descente) d'un profil (m) avec hystérésis de `HYST_M`, comme une montre : on ne change
-/// de sens (montée ↔ descente) qu'après un écart de `HYST_M` depuis le dernier extrême ; dans un sens
-/// établi, chaque nouvel extrême compte aussitôt. L'écart restant est soldé au dernier point, de
-/// sorte que montée − descente = z(fin) − z(début) (additif d'une arête à l'autre). La MÊME fonction
-/// donne le poids des arêtes, l'accès, les étapes et le contrôle du profil rendu. (Étude terrain
-/// § 2.4 : `hyst_ud`, sortie du fondateur par tronçon 373 m.)
 /// Poids d'une arête (D67) : ½ (montée + descente) avec hystérésis, moyenne des deux sens (une
 /// hystérésis n'est pas symétrique : à l'envers, le sens établi et le solde final changent ; sans la
-/// moyenne, le D+ d'une boucle dépendrait du sens de parcours). Montée dans le sens a → b :
-/// `w + (z(b) − z(a)) / 2`, de sorte que le D+ d'une boucle fermée vaut exactement Σ w.
+/// moyenne, le Σ w d'une boucle dépendrait du sens de parcours). Additif : c'est ce que les solveurs
+/// optimisent. D68 : le D+ affiché ne le reprend plus (hystérésis continue sur toute la sortie,
+/// `hyst_cum`) ; Σ w le surestime de 0 à 3,5 % (plaine, ville : bruit aux carrefours).
 pub fn hyst_w(z: &[f64]) -> f64 {
     let (uf, df) = updown_hyst(z);
     let rev: Vec<f64> = z.iter().rev().copied().collect();
@@ -211,42 +206,58 @@ pub fn hyst_w(z: &[f64]) -> f64 {
     (uf + df + ur + dr) / 4.0
 }
 
+/// (montée, descente) d'un profil (m), hystérésis de `HYST_M` (`hyst_cum`).
 pub fn updown_hyst(z: &[f64]) -> (f64, f64) {
+    match (z.first(), z.last()) {
+        (Some(a), Some(b)) => {
+            let up = hyst_cum(z)[z.len() - 1];
+            (up, up - (b - a))
+        }
+        _ => (0.0, 0.0),
+    }
+}
+
+/// D+ cumulé à chaque point d'un profil (m), avec hystérésis de `HYST_M`, comme une montre : on ne
+/// change de sens (montée ↔ descente) qu'après un écart de `HYST_M` depuis le dernier extrême ; dans
+/// un sens établi, chaque nouvel extrême compte aussitôt (une montée qui s'établit compte au point qui
+/// la confirme). L'écart restant est soldé au dernier point : montée − descente = z(fin) − z(début).
+/// La MÊME fonction donne le poids des arêtes (`hyst_w`, profil de l'arête) et, D68, le D+ affiché de
+/// la sortie et de ses étapes, sur le profil rendu entier (accès compris), sans remise à zéro aux
+/// carrefours : une remise à zéro par arête comptait les oscillations de moins de `HYST_M` à chaque
+/// nœud (+2 à +3 % en ville : 349 m annoncés, 339 à la montre).
+pub fn hyst_cum(z: &[f64]) -> Vec<f64> {
+    let mut c = Vec::with_capacity(z.len());
     let Some(&first) = z.first() else {
-        return (0.0, 0.0);
+        return c;
     };
     // sens établi : Some(true) montée, Some(false) descente, None pas encore
-    let (mut up, mut down, mut r, mut climbing) = (0.0, 0.0, first, None);
+    let (mut up, mut r, mut climbing) = (0.0, first, None);
+    c.push(0.0);
     for &x in &z[1..] {
         match climbing {
             Some(true) if x > r => {
                 up += x - r;
                 r = x;
             }
-            Some(false) if x < r => {
-                down += r - x;
-                r = x;
-            }
+            Some(false) if x < r => r = x,
             _ if x - r >= HYST_M => {
                 up += x - r;
                 r = x;
                 climbing = Some(true);
             }
             _ if r - x >= HYST_M => {
-                down += r - x;
                 r = x;
                 climbing = Some(false);
             }
             _ => {}
         }
+        c.push(up);
     }
     let rest = z[z.len() - 1] - r;
     if rest > 0.0 {
-        up += rest;
-    } else {
-        down -= rest;
+        *c.last_mut().unwrap() += rest;
     }
-    (up, down)
+    c
 }
 
 /// Pente max (fraction) sur une fenêtre glissante de `GRADE_WINDOW_M` ; profil plus court que la

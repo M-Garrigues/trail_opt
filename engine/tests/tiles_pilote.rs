@@ -260,8 +260,9 @@ fn landmarks_within_distance() {
 #[test]
 fn surface_preference_never_rejects() {
     // D67 : D+ « montre » (hystérésis 3 m) : 500 m bruts ≈ 460 m ; à 12 km, Bourg a un palier vers
-    // 466–480 m (500 n'y est plus atteignable)
-    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 460.0)] {
+    // 466–480 m (500 n'y est plus atteignable) ; D68 : au bord du palier (460–465), 2 sorties sur 3
+    // selon la cible visée, d'où 455
+    for (site, km, dplus) in [(MASSY, 10.0, 250.0), (BOURG, 12.0, 455.0)] {
         let Some((_, store)) = common::tiles(&[site]) else {
             return;
         };
@@ -517,7 +518,8 @@ fn reduction_never_empties_network() {
 /// vérifiées identiques au binaire du commit 290e2c7 (dalle de test versionnée, cible) jusqu'à D63 ;
 /// D63 change volontairement les poids de confort de la Cible : valeurs régénérées avec `smooth: false`
 /// (garde contre toute dérive du calcul sans élégance) ; D67 (D+ « montre ») : valeurs régénérées,
-/// Bourg à 460 m (≈ 500 m bruts). Le défaut de la cible est actif.
+/// Bourg à 460 m (≈ 500 m bruts) ; D68 (D+ continu, cible corrigée de l'excès de Σ w) : régénérées.
+/// Le défaut de la cible est actif.
 #[test]
 fn smooth_off_is_stable() {
     let Ok(store) = engine::tiles::TileStore::open(std::path::Path::new("tests/data/tiles")) else {
@@ -528,13 +530,13 @@ fn smooth_off_is_stable() {
             MASSY,
             10.0,
             250.0,
-            [(9966.8, 247.2), (9937.1, 246.7), (10013.5, 245.6)],
+            [(10010.3, 254.2), (10117.6, 248.6), (10074.5, 244.6)],
         ),
         (
             BOURG,
             12.0,
             460.0,
-            [(11814.4, 459.3), (11946.7, 453.7), (12000.0, 460.0)],
+            [(11894.1, 456.3), (11847.6, 460.0), (12000.0, 460.7)],
         ),
     ];
     for (site, km, dplus, want) in cases {
