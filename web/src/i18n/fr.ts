@@ -7,13 +7,15 @@ export const fr = {
     tagline: 'Ta sortie trail sur mesure',
     langLabel: 'Langue',
   },
+  // D70 : l'accueil est neutre (choisir son sport = entrer) ; le reste suit le sport (sous-objet `bike`)
+  sport: { label: 'Sport', trail: 'Trail', bike: 'Vélo' },
   intro: {
-    text: 'Choisis un type de sortie et un départ : optrail trace une boucle (retour au départ) sur les chemins de la carte IGN.',
+    title: 'Tes sorties trail et vélo sur mesure',
+    text: 'Choisis ton sport, un type de sortie et un départ : optrail trace une boucle (retour au départ) sur les chemins et routes de la carte IGN.',
     coverage: 'Couverture : les zones non grisées de la carte.',
-    go: 'C’est parti',
   },
-  // D34 : public averti, pas de conseils ; seul l'avertissement minimal sur les sentiers reste.
-  safety: 'Sorties calculées automatiquement : un sentier peut être fermé, privé ou dangereux.',
+  // D34 : public averti, pas de conseils ; seul l'avertissement minimal sur les voies reste.
+  safety: 'Sorties calculées automatiquement : une voie peut être fermée, privée ou dangereuse.',
   start: {
     tapMap: 'Touche la carte pour choisir ton départ',
     myLocation: 'Ma position',
@@ -59,12 +61,16 @@ export const fr = {
   surface: {
     label: 'Type de voie',
     trail: 'Chemins',
-    any: 'Tout',
+    any: 'Mixte',
     road: 'Route',
+    mtb: 'VTT',
+    gravel: 'Gravel',
     help: {
       trail: 'Sentiers et chemins d’abord ; une route quand il n’y a pas mieux.',
       any: 'Chemins et routes, sans préférence.',
       road: 'Voies revêtues uniquement (bitume, béton, pavés) ; jamais un chemin de terre.',
+      mtb: 'Sentiers et chemins praticables à VTT, sans marches ; la route pour relier.',
+      gravel: 'Chemins carrossables et pistes d’abord, petites routes calmes pour relier.',
     },
     share: (p: P) => `${p.trail} % chemin · ${p.road} % route`,
     // trois classes (api.md v1.8) : chemin naturel, intermédiaire (allées, voies piétonnes, escaliers), route
@@ -83,6 +89,7 @@ export const fr = {
     title: 'Plus d’options',
     maxGrade: 'Pente max des chemins (sur 50 m)',
     noLimit: 'sans limite',
+    descent: (p: P) => `Descente : jusqu’à ${p.g} %`, // vélo : la descente suit la montée (D73)
     noRepeat: 'Jamais deux fois le même carrefour',
     pace: 'Allure',
     paceUnit: 'min/km-effort',
@@ -97,7 +104,7 @@ export const fr = {
   options: { title: 'Options', done: 'Terminé' },
   sheet: { fold: 'Replier', unfold: 'Déplier' },
   // D69 : fond de carte
-  base: { title: 'Fond de carte', plan: 'Plan IGN', hd: 'Plan IGN HD (bêta)', ortho: 'Satellite' },
+  base: { title: 'Fond de carte', mix: 'Plan IGN + HD', plan: 'Plan IGN', hd: 'Plan IGN HD (bêta)', ortho: 'Satellite' },
   via: {
     button: 'Point de passage',
     short: 'Passage',
@@ -221,7 +228,7 @@ export const fr = {
       'Sur l’appareil : langue, réglages, historique des sorties et dernière position arrondie (~1 km) restent dans la mémoire du navigateur (localStorage) et ne sont jamais envoyés ; effaçables dans Réglages. Strictement nécessaires au service demandé, ils ne requièrent pas de consentement (art. 82 de la loi Informatique et Libertés, lignes directrices de la CNIL) : d’où l’absence de bandeau cookies.\n\n' +
       'Adresse IP : optrail ne l’enregistre pas, mais elle est vue par Amazon Web Services (hébergement), Cloudflare (Turnstile, vérification anti-robot au calcul et au partage ; intérêt légitime : sécurité), l’IGN (fond de carte ; recherche de lieux, qui reçoit aussi le texte saisi) et Mapterhorn (relief de la vue 3D). Amazon et Cloudflare sont des sociétés américaines : transferts encadrés par le cadre UE–États-Unis de protection des données et les clauses contractuelles types.\n\n' +
       'Droits : accès, rectification, effacement, opposition et limitation, par e-mail à contact@optrail.eu ; réclamation possible auprès de la CNIL (cnil.fr). Sans compte, optrail ne peut pas relier les journaux à une personne.',
-    attributionsText: 'Fonds de carte : Plan IGN, Plan IGN HD et photographies aériennes (BD ORTHO®) © IGN – Géoplateforme, sous Licence Ouverte Etalab 2.0. Chemins et altitudes : © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, sous Licence Ouverte Etalab 2.0 ; cols et sommets : BD TOPO® IGN ; les données dérivées d’optrail sont publiées sous la même licence. Recherche de lieux : géocodage de la Géoplateforme IGN.\n\n' +
+    attributionsText: 'Fonds de carte : Plan IGN, Plan IGN HD et photographies aériennes (BD ORTHO®) © IGN – Géoplateforme, sous Licence Ouverte Etalab 2.0. Chemins et altitudes : © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, sous Licence Ouverte Etalab 2.0 ; cols et sommets : BD TOPO® IGN ; les données dérivées d’optrail sont publiées sous la même licence. Recherche de lieux : géocodage de la Géoplateforme IGN. Contours des parcs nationaux (itinéraires vélo) : © Parcs nationaux de France, Licence Ouverte 2.0.\n\n' +
       'Relief 3D et décor en courbes de niveau (Chartreuse) : © Mapterhorn (mapterhorn.com/attribution), MNT © IGN.\n\n' +
       'Logiciels : MapLibre GL JS (BSD-3-Clause), terra-draw (MIT).',
   },
@@ -245,6 +252,7 @@ export const fr = {
       max_grade_pct: 'Retirer la limite de pente ?', polygon: 'Retirer la zone ?',
       no_repeat_junction: 'Autoriser de repasser aux mêmes carrefours ?', via: 'Retirer les points de passage ?', max_distance_km: 'Doubler la distance max ?',
     },
+    raiseGrade: (p: P) => `Relever la pente max à ${p.v} % ?`,
     keep: 'Garder cette sortie',
     ok: 'OK',
   },
@@ -256,8 +264,8 @@ export const fr = {
     no_way_in_zone: () => 'Aucune voie praticable ici.',
     no_loop_of_distance: () => 'Aucune sortie de cette longueur depuis ce départ.',
     paved_network_major_roads: () =>
-      'Peu de routes revêtues calmes autour de ce départ : la sortie suivrait surtout de grands axes. Essaie un autre départ ou le type de voie « Tout ».',
-    paved_network_too_short: () => 'Pas assez de voies revêtues autour de ce départ pour cette sortie : essaie « Tout ».',
+      'Peu de routes revêtues calmes autour de ce départ : la sortie suivrait surtout de grands axes. Essaie un autre départ ou le type de voie « Mixte ».',
+    paved_network_too_short: () => 'Pas assez de voies revêtues autour de ce départ pour cette sortie : essaie « Mixte ».',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible : il faut au moins ${p.min_km} km.` : 'Pas assez de relief ici.',
     zone_invalid: () => 'Zone invalide : 3 à 50 points.',
@@ -281,8 +289,8 @@ export const fr = {
     long_distance: () => '', // D34 : pas de conseils (la distance est déjà affichée)
     zone_reduced: (p: P) => `Zone réduite à ${p.radius_km} km autour du départ.`,
     access_round_trip: (p: P) => `Inclut un aller-retour d’accès de ${p.access_m} m.`,
-    start_moved: (p: P) => `Départ déplacé de ${p.distance_m} m vers le chemin le plus proche.`,
-    start_far_from_network: (p: P) => `Départ à ${p.distance_m} m du premier chemin.`,
+    start_moved: (p: P) => `Départ déplacé de ${p.distance_m} m vers la voie praticable la plus proche.`,
+    start_far_from_network: (p: P) => `Départ à ${p.distance_m} m de la première voie praticable.`,
     distance_out_of_tolerance: () => 'Rien à ±5 % : voici la plus proche.',
     target_dplus_above_bound: (p: P) => `Au plus ~${p.max_dplus_m} m de D+ en ${p.max_km} km ici.`,
     target_dplus_probably_unreachable: () => 'D+ cible sans doute hors d’atteinte.',
@@ -294,6 +302,7 @@ export const fr = {
     via_missed: (p: P) => `La sortie ne passe pas par le point ${p.n}.`,
     coverage_edge: () => 'Zone en bord de couverture : chemins au-delà ignorés.',
     low_surface_share: (p: P) => `Seulement ${p.pct} % du type de voie voulu ici.`,
+    major_roads_share: () => 'Une part importante de la sortie emprunte de grandes routes.',
   },
   // Installation de l'app (PWA) : entrée du menu + suggestion unique après le premier GPX.
   install: {
@@ -303,5 +312,20 @@ export const fr = {
     later: 'Plus tard',
     ios: 'Touche Partager (sous ⋯ s’il n’est pas visible), puis « Sur l’écran d’accueil ».',
     manual: 'Dans le menu du navigateur (⋮) : « Ajouter à l’écran d’accueil » ou « Installer l’application ».',
+  },
+  // Vélo : SEULES les clés qui diffèrent, fusionnées par t() quand le sport est « vélo » (D70, étude a § 6)
+  bike: {
+    app: { tagline: 'Ta sortie vélo sur mesure' },
+    surface: {
+      help: { road: 'Routes revêtues uniquement, calmes de préférence ; pistes cyclables bienvenues.' },
+      lowTrail: (p: P) => `Seulement ${p.pct} % de chemins ici : peu de voies non revêtues autour de ce départ.`,
+    },
+    more: { maxGrade: 'Pente max en montée (sur 50 m)' },
+    share: { title: 'optrail : ma sortie vélo' },
+    err: {
+      paved_network_major_roads: () =>
+        'Peu de routes calmes autour de ce départ : la sortie suivrait surtout de grands axes. Essaie un autre départ ou « Gravel ».',
+      paved_network_too_short: () => 'Pas assez de routes revêtues autour de ce départ pour cette sortie : essaie « Gravel ».',
+    },
   },
 };

@@ -79,6 +79,6 @@ test('départ déplacé : ligne d’information, pas de popup', async ({ page })
   await placeStart(page);
   await page.getByRole('button', { name: T().find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
-  await expect(page.getByText(isFr() ? 'Départ déplacé de 404 m vers le chemin le plus proche.' : 'Start moved 404 m to the nearest path.').first()).toBeVisible();
+  await expect(page.getByText(isFr() ? 'Départ déplacé de 404 m vers la voie praticable la plus proche.' : 'Start moved 404 m to the nearest usable way.').first()).toBeVisible();
   await expect(page.getByRole('alertdialog')).toHaveCount(0);
 });

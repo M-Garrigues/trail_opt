@@ -1,5 +1,6 @@
 // GPX généré côté client (D11). Nom neutre en langue : « optrail 10.2 km +433 m ».
 import type { Candidate } from './types';
+import type { Sport } from './catalog';
 
 const esc = (s: string) => s.replace(/[<>&"]/g, (c) => ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c]!);
 
@@ -11,7 +12,7 @@ export function gpxFilename(c: Pick<Candidate, 'length_m' | 'dplus_m'>): string 
   return `optrail-${(c.length_m / 1000).toFixed(1)}km-${Math.round(c.dplus_m)}m.gpx`;
 }
 
-export function toGpx(c: Candidate, dataVersion = ''): string {
+export function toGpx(c: Candidate, dataVersion = '', sport: Sport = 'trail'): string {
   const name = esc(loopName(c));
   const pts = c.lat
     .map((la, i) => `<trkpt lat="${la.toFixed(6)}" lon="${c.lon[i].toFixed(6)}"><ele>${c.ele[i].toFixed(1)}</ele></trkpt>`)
@@ -19,19 +20,19 @@ export function toGpx(c: Candidate, dataVersion = ''): string {
   return `<?xml version="1.0" encoding="UTF-8"?>
 <gpx version="1.1" creator="optrail" xmlns="http://www.topografix.com/GPX/1/1">
 <metadata><name>${name}</name><desc>Données © IGN BD TOPO®, RGE ALTI® (Etalab 2.0) ${esc(dataVersion)}</desc><link href="https://optrail.eu"><text>optrail</text></link></metadata>
-<trk><name>${name}</name><type>trail_running</type><trkseg>
+<trk><name>${name}</name><type>${sport === 'bike' ? 'cycling' : 'trail_running'}</type><trkseg>
 ${pts}
 </trkseg></trk>
 </gpx>
 `;
 }
 
-export function gpxFile(c: Candidate, dataVersion = ''): File {
-  return new File([toGpx(c, dataVersion)], gpxFilename(c), { type: 'application/gpx+xml' });
+export function gpxFile(c: Candidate, dataVersion = '', sport: Sport = 'trail'): File {
+  return new File([toGpx(c, dataVersion, sport)], gpxFilename(c), { type: 'application/gpx+xml' });
 }
 
-export function downloadGpx(c: Candidate, dataVersion = ''): void {
-  const url = URL.createObjectURL(gpxFile(c, dataVersion));
+export function downloadGpx(c: Candidate, dataVersion = '', sport: Sport = 'trail'): void {
+  const url = URL.createObjectURL(gpxFile(c, dataVersion, sport));
   const a = Object.assign(document.createElement('a'), { href: url, download: gpxFilename(c) });
   document.body.append(a);
   a.click();
@@ -46,13 +47,13 @@ export function downloadGpx(c: Candidate, dataVersion = ''): void {
 export const canShareGpx = (c: Candidate) =>
   typeof matchMedia === 'function' && matchMedia('(pointer: coarse)').matches &&
   typeof navigator.canShare === 'function' && navigator.canShare({ files: [gpxFile(c)] });
-export async function saveGpx(c: Candidate, dataVersion = ''): Promise<void> {
-  if (!canShareGpx(c)) { downloadGpx(c, dataVersion); return; }
-  const f = gpxFile(c, dataVersion);
+export async function saveGpx(c: Candidate, dataVersion = '', sport: Sport = 'trail'): Promise<void> {
+  if (!canShareGpx(c)) { downloadGpx(c, dataVersion, sport); return; }
+  const f = gpxFile(c, dataVersion, sport);
   try {
     await navigator.share({ files: [f], title: f.name });
   } catch (e) {
     // refus du système (type de fichier, permission, certificat local…) : téléchargement ; annulation : rien
-    if ((e as DOMException)?.name !== 'AbortError') downloadGpx(c, dataVersion);
+    if ((e as DOMException)?.name !== 'AbortError') downloadGpx(c, dataVersion, sport);
   }
 }

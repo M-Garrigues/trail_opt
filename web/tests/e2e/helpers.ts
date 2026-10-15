@@ -6,8 +6,8 @@ export const plan4 = readFileSync(new URL('../fixtures/plan4.json', import.meta.
 
 export const isFr = () => test.info().project.name.endsWith('-fr');
 export const T = (fr = isFr()) => fr
-  ? { go: 'C’est parti', find: 'Trouver ma sortie', cancel: 'Annuler', details: 'Détail', back: 'Retour', other: 'Autres sorties', history: 'Mes sorties', clear: 'Effacer l’historique', share: 'Partager', create: 'Créer le lien', menu: 'Menu', download: 'Télécharger le GPX' }
-  : { go: 'Let’s go', find: 'Find my run', cancel: 'Cancel', details: 'Details', back: 'Back', other: 'Other runs', history: 'My runs', clear: 'Clear history', share: 'Share', create: 'Create link', menu: 'Menu', download: 'Download GPX' };
+  ? { go: 'Trail', find: 'Trouver ma sortie', cancel: 'Annuler', details: 'Détail', back: 'Retour', other: 'Autres sorties', history: 'Mes sorties', clear: 'Effacer l’historique', share: 'Partager', create: 'Créer le lien', menu: 'Menu', download: 'Télécharger le GPX' }
+  : { go: 'Trail', find: 'Find my run', cancel: 'Cancel', details: 'Details', back: 'Back', other: 'Other runs', history: 'My routes', clear: 'Clear history', share: 'Share', create: 'Create link', menu: 'Menu', download: 'Download GPX' };
 
 
 /** Départ mémorisé à Massy (cadre la carte) ; Turnstile coupé (jeton absent, accepté en local).
@@ -67,7 +67,7 @@ export async function placeStart(page: Page) {
 export async function openOptions(page: Page) {
   if (await page.locator('.sheet').count()) await page.locator('.bar .btn.ico').first().click();
   else if (await page.locator('details.more:not([open])').count()) await page.locator('details.more summary').click();
-  await expect(page.locator('#surface')).toBeVisible();
+  await expect(page.locator('#max-grade')).toBeVisible();
 }
 /** Mobile : referme la page Options (« Terminé ») ; bureau : sans effet. */
 export async function closeOptions(page: Page) {

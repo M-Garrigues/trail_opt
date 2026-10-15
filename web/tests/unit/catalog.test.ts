@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import bounds from '../fixtures/api-bounds.json';
 import plan from '../fixtures/plan1.json';
 import { CATALOG, byId, clampField } from '../../src/lib/catalog';
-import { buildQuery, defaultSettings, mergeSettings, durationMin, settingsFromRequest, MAX_GRADES, computeEstimateS, lowSurface } from '../../src/lib/settings';
+import { buildQuery, defaultSettings, mergeSettings, durationMin, settingsFromRequest, gradeChoices, computeEstimateS, lowSurface } from '../../src/lib/settings';
 import { surfaceText, lowSurfaceText, labelsText } from '../../src/i18n/format';
 import type { PlanResponse } from '../../src/lib/types';
 
@@ -77,7 +77,7 @@ describe('requête', () => {
     expect(surfaceText({}, 'fr')).toBe('');
     // trois classes (v1.8) : arrondi à 100 %, parts nulles omises ; `trail_frac` des anciennes sorties sinon
     expect(surfaceText({ trail_frac: 0.6, surface_share: [0.555, 0.105, 0.34] }, 'fr')).toBe('56 % chemin · 10 % aménagé · 34 % route');
-    expect(surfaceText({ surface_share: [0.333, 0.333, 0.334] }, 'en')).toBe('33% trail · 33% mixed · 34% road');
+    expect(surfaceText({ surface_share: [0.333, 0.333, 0.334] }, 'en')).toBe('33% trail · 33% paved path · 34% road'); // D70 : « mixed » ferait doublon avec le type de voie « Mixed »
     expect(surfaceText({ surface_share: [0, 0.004, 0.996] }, 'fr')).toBe('100 % route');
     expect(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' })).toEqual({ share: 0.38 });
     expect(lowSurfaceText(lowSurface({ trail_frac: 0.38 }, { surface: 'trail' }), 'fr')).toBe('Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.');
@@ -117,6 +117,7 @@ describe('requête', () => {
   it('pente max (api.md v1.2) : défaut 60 % absent, « sans limite » = 0, bornes 5–60', () => {
     const s = defaultSettings();
     expect(s.maxGrade).toBe(bounds.max_grade_pct_default);
+    const MAX_GRADES = gradeChoices('trail', 'trail');
     const g = MAX_GRADES.filter(Boolean);
     expect([Math.min(...g), Math.max(...g)]).toEqual(bounds.max_grade_pct);
     expect(MAX_GRADES).toContain(0);
@@ -134,7 +135,7 @@ describe('requête', () => {
     expect(settingsFromRequest({ goal: 'max_dplus', max_grade_pct: '0' }, s).maxGrade).toBe(0);
   });
   it('durée = (km + D+/100) × allure', () => {
-    expect(durationMin(10, 300, 360)).toBe(78);
+    expect(durationMin(10, 300, { paceS: 360, surface: 'trail' })).toBe(78);
   });
 });
 

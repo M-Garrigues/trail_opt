@@ -77,25 +77,22 @@ test('type de voie : trois choix, part de chemin affichée, avertissement sous 5
   });
   await page.goto('/');
   await placeStart(page);
-  await openOptions(page);
+  // D70 : le type de voie est sur l'écran principal (en tête des réglages), plus dans les Options
   const seg = page.locator('#surface');
-  await expect(seg.locator('label')).toHaveText(isFr() ? ['Chemins', 'Tout', 'Route'] : ['Trails', 'Any', 'Roads']);
+  await expect(seg.locator('label')).toHaveText(isFr() ? ['Chemins', 'Mixte', 'Route'] : ['Trails', 'Mixed', 'Roads']);
   await expect(seg.locator('label.on')).toHaveText(isFr() ? 'Chemins' : 'Trails');
-  await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   expect(calls[0].searchParams.get('surface')).toBe('trail');
   expect(calls[0].searchParams.has('roads')).toBe(false);
   const low = isFr() ? 'Seulement 38 % de chemins ici : peu de sentiers autour de ce départ.' : 'Only 38% trails here: few paths around this start.';
-  const share = isFr() ? '30 % chemin · 16 % aménagé · 54 % route' : '30% trail · 16% mixed · 54% road';
+  const share = isFr() ? '30 % chemin · 16 % aménagé · 54 % route' : '30% trail · 16% paved path · 54% road';
   await expect(page.getByText(share).first()).toBeVisible();
   await expect(page.locator('.warnings').first()).toHaveText(low); // une seule ligne : celle de la sortie affichée
   await expect(page.getByRole('alertdialog')).toHaveCount(0); // discret : pas de popup
   // « Route » : 80 % de route, jamais d'avertissement (D53 : revêtu par construction)
   await page.goBack();
-  await openOptions(page);
   await seg.locator('label').nth(2).click();
-  await closeOptions(page);
   await page.getByRole('button', { name: t.find }).click();
   await expect(page.getByText(isFr() ? '20 % chemin · 80 % route' : '20% trail · 80% road').first()).toBeVisible();
   expect(calls[1].searchParams.get('surface')).toBe('road');
@@ -106,7 +103,9 @@ test('langue et dernier type gardés (AC20, AC22)', async ({ page }) => {
   await setup(page);
   await page.goto('/');
   const other = isFr() ? 'EN' : 'FR';
-  await page.locator('.topbar').getByRole('radio', { name: other }).click();
+  // FR·EN : dans l'en-tête sur ordinateur, dans le Menu sur téléphone (la place du sélecteur de sport)
+  if (await page.locator('.topbar .lang').count()) await page.locator('.topbar .lang').getByRole('radio', { name: other }).click();
+  else { await page.getByRole('button', { name: 'Menu' }).click(); await page.getByRole('radio', { name: other, exact: true }).click(); await page.getByRole('button', { name: isFr() ? 'Close' : 'Fermer' }).click(); }
   await page.getByRole('radio', { name: isFr() ? /^Target/ : /^Cible/ }).click();
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('lang', other.toLowerCase());

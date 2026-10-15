@@ -36,5 +36,5 @@ test('menu : défilé tout en haut ; retour aux réglages : feuille à hauteur d
   // réglages : tout est visible d'emblée (recherche, type, valeurs, barre), la carte reste visible au-dessus ; menu non repliable
   await expect(page.locator('.search-open')).toBeInViewport({ ratio: 1 });
   await expect(page.locator('.sheet .bar .btn.primary')).toBeInViewport({ ratio: 1 });
-  await expect.poll(async () => (await page.locator('.sheet').boundingBox())!.height).toBeLessThan(page.viewportSize()!.height * 0.6);
+  await expect.poll(async () => (await page.locator('.sheet').boundingBox())!.height).toBeLessThan(page.viewportSize()!.height * 0.7); // D70 : type de voie + aide ajoutés en tête (~90 px), 0,6 avant W1
 });

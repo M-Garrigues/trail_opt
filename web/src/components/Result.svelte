@@ -5,6 +5,7 @@
   import { byId } from '../lib/catalog';
   import { durationMin, lowSurface } from '../lib/settings';
   import { LOOP_COLORS } from '../lib/map';
+  import { sport } from '../lib/sport.svelte';
   import { i18n, t } from '../i18n/i18n.svelte';
   import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText } from '../i18n/format';
   import Profile, { profileMarks } from './Profile.svelte';
@@ -14,6 +15,7 @@
   const c = $derived(current()!);
   const res = $derived(app.result!);
   const type = $derived(byId(app.settings.typeId));
+  const colors = $derived(LOOP_COLORS[sport.id]);
   const L = $derived(i18n.lang);
   // type de voie : l'avertissement est recalculé pour la sortie AFFICHÉE (celui du serveur vaut pour la première)
   const warnings = $derived([...res.warnings.filter((w) => !isImportant(w.code) && w.code !== 'low_surface_share').map((w) => warningText(L, w.code, w.params ?? {})),
@@ -30,8 +32,8 @@
       <div class="loops" role="radiogroup" aria-label={t().result.otherLoops}>
         {#each app.cands as k, i}
           <button class="loop" role="radio" aria-checked={i === app.sel} onclick={() => select(i)} aria-label={t().result.choose({ n: String(i + 1) })}
-            style:--i={i} style:--c={LOOP_COLORS[i]}>
-            <span class="badge" style:background={LOOP_COLORS[i]}>{i + 1}</span>
+            style:--i={i} style:--c={colors[i]}>
+            <span class="badge" style:background={colors[i]}>{i + 1}</span>
             <span>{km(L, k.length_m)}<br />+{num(L, k.dplus_m)} m</span>
           </button>
         {/each}
@@ -45,7 +47,7 @@
     <button class="icon-btn" onclick={close} aria-label={t().result.back} title={t().result.back}>
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M15 5l-7 7 7 7" fill="none" stroke="currentColor" stroke-width="2.5" /></svg>
     </button>
-    <span class="badge" style:background={LOOP_COLORS[app.sel]}>{app.sel + 1}</span>
+    <span class="badge" style:background={colors[app.sel]}>{app.sel + 1}</span>
     <div>
       <p class="headline" data-testid="headline">{type.headline(c, res, L)}</p>
       {#if type.goal === 'min_distance' && res.lower_bound_m}
@@ -54,7 +56,7 @@
     </div>
   </div>
   <p class="stats" data-testid="stats">
-    {km(L, c.length_m)} · +{num(L, c.dplus_m)} m · {num(L, c.dplus_m / (c.length_m / 1000))} {t().result.perKm} · {duration(durationMin(c.length_m / 1000, c.dplus_m, app.settings.paceS))}
+    {km(L, c.length_m)} · +{num(L, c.dplus_m)} m · {num(L, c.dplus_m / (c.length_m / 1000))} {t().result.perKm} · {duration(durationMin(c.length_m / 1000, c.dplus_m, app.settings, sport.id))}
   </p>
   {#if warnings.length && !app.wide}
     <ul class="warnings">{#each warnings as w}<li>{w}</li>{/each}</ul>
@@ -103,7 +105,7 @@
           <span class="cap">{t().result.again}</span>
         </button>
       {/if}
-      <button class="btn primary gpx" onclick={() => { track('gpx'); void saveGpx(c, res.data_version); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
+      <button class="btn primary gpx" onclick={() => { track('gpx'); void saveGpx(c, res.data_version, sport.id); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
     </div>
   {/if}
 {/if}

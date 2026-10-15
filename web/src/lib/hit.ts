@@ -4,6 +4,7 @@
 import { load } from './store';
 import { sha256hex, sharedId } from './share';
 import type { Candidate } from './types';
+import { gradeDefault, requestSport } from './settings';
 
 /** `forced` : tests e2e seulement (`window.optrailHitTest`), lève l'exclusion du développement local. */
 export type HitEnv = { dev: boolean; host: string; path: string; gpc: unknown; dnt: string | null; off: boolean; forced?: boolean };
@@ -44,8 +45,9 @@ export function eventBody(
   const pct = (x: number) => Math.round(x * 100);
   const b: Record<string, string | number | boolean | undefined> = {
     event, lang,
+    sport: has ? requestSport(req) : undefined, // D70 : absent = trail ; seulement si la requête est connue
     goal: has ? (req.goal ?? 'max_dplus') : undefined, km: bin(num('distance_km'), 5), dplus_m: bin(num('dplus_m'), 250),
-    surface: req.surface, climbs: req.climbs, max_grade_pct: has ? (num('max_grade_pct') ?? 60) : undefined,
+    surface: req.surface, climbs: req.climbs, max_grade_pct: has ? (num('max_grade_pct') ?? gradeDefault(requestSport(req), req.surface ?? '')) : undefined, // absent = défaut du profil (vélo : 22/20/0)
     zone: has ? 'polygon' in req : undefined, via_n: has ? (req.via ? req.via.split(';').length : 0) : undefined,
     no_repeat: req.no_repeat_junction != null ? req.no_repeat_junction !== 'false' : undefined,
     smooth: req.smooth != null ? req.smooth === 'true' || req.smooth === '1' : undefined, // D62 : seulement si forcé

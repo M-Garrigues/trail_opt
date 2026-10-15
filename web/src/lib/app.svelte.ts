@@ -1,7 +1,8 @@
 // État de l'application et actions (une seule source, partagée par les composants).
 import { load, save, remove, clearAll } from './store';
-import { type Settings, mergeSettings, buildQuery, expectedKm, computeEstimateS, settingsFromRequest, type Start } from './settings';
-import { byId } from './catalog';
+import { mergeSettings, buildQuery, expectedKm, computeEstimateS, settingsFromRequest, requestSport, type Start } from './settings';
+import { byId, type Sport } from './catalog';
+import { sport, useSport } from './sport.svelte';
 import { postLoop, getLoop, shareUrl, sharedId, type Shared } from './share';
 import { eventBody, sendEvent, type EventName } from './hit';
 import { fetchPlan, fetchDiagnose, PlanError } from './api';
@@ -10,8 +11,7 @@ import { routeGenerated } from './install.svelte';
 import * as hist from './history';
 import { roundStart, inGeometry, inPolygon, nearestIndex, parseVia, idxAt } from './geo';
 import type { Candidate, Msg, PlanResponse } from './types';
-import { dicts } from '../i18n/format';
-import { i18n } from '../i18n/i18n.svelte';
+import { i18n, t } from '../i18n/i18n.svelte';
 
 /** ?debug=1 (ui-spec §4) : versions, durées et codes affichés. */
 export const debug = new URLSearchParams(location.search).get('debug') === '1';
@@ -22,8 +22,11 @@ export const VIA_MAX = 5;
 
 export type Layer = 'computing' | 'result' | 'detail' | 'share' | 'history' | 'menu' | 'zone' | 'options' | 'pad';
 
+/** Un jeu de réglages mémorisé par sport : la clé trail d'origine ne change pas (aucune migration). */
+const skey = (sp: Sport) => (sp === 'bike' ? 'settings.bike' : 'settings');
+
 export const app = $state({
-  settings: mergeSettings(load('settings', null)),
+  settings: mergeSettings(load(skey(sport.id), null), sport.id),
   intro: !load('intro', false),
   start: null as Start | null,
   zone: null as [number, number][] | null, // anneau (lon, lat) validé
@@ -88,7 +91,9 @@ export function dismissNotice() { app.notice = null; }
 /** Libellé du bouton d'une suggestion (clé d'API inconnue : pas de bouton). */
 export function suggestLabel(sg: NonNullable<Msg['suggest']> | null | undefined) {
   if (!sg) return '';
-  return (dicts[i18n.lang].important.suggest as Record<string, string>)[Object.keys(sg)[0]] ?? '';
+  const [k, v] = Object.entries(sg)[0];
+  if (k === 'max_grade_pct' && Number(v) > 0) return t().important.raiseGrade({ v: String(v) }); // vélo : « relever à X % »
+  return (t().important.suggest as Record<string, string>)[k] ?? '';
 }
 /** Applique `suggest` (noms de paramètres de l'API ; null = retirer) puis relance. */
 export function applySuggest(sg: NonNullable<Msg['suggest']>) {
@@ -127,7 +132,7 @@ export const has = (l: Layer) => app.layers.includes(l);
 export const current = () => app.cands[app.sel] ?? null;
 
 $effect.root(() => {
-  $effect(() => { save('settings', $state.snapshot(app.settings)); });
+  $effect(() => { save(skey(sport.id), $state.snapshot(app.settings)); });
 });
 
 // ---- couches + bouton Retour (une entrée history par couche, ui-spec §4) ----
@@ -188,6 +193,26 @@ export const inCoverage = (p: Start) => !coverage || inGeometry([p.lon, p.lat], 
 /** Départ hors de la zone dessinée : la zone reste validable, la recherche le refuse (`compute`). */
 export const startOutsideZone = () => !!app.start && !!app.zone && !inPolygon([app.start.lon, app.start.lat], app.zone);
 
+// ---- sport (D70) ----
+/** Passe au sport `next` : ses réglages mémorisés remplacent ceux affichés, l'accent et les textes suivent. */
+function applySport(next: Sport) {
+  app.settings = mergeSettings(load(skey(next), null), next);
+  useSport(next);
+}
+/** Bascule désactivée pendant un calcul, l'édition de zone et la saisie d'une valeur (pavé). */
+export const sportLocked = () => has('computing') || has('zone') || has('pad');
+/** Change de sport : la sortie affichée se ferme (sans recalcul : 10 km de trail n'ont pas de sens à vélo) ; départ, zone et points sont gardés. */
+export async function setSport(next: Sport) {
+  if (next === sport.id || sportLocked()) return;
+  if (has('result')) await closeTo('result');
+  applySport(next);
+}
+/** Accueil : choisir son sport = entrer. */
+export function enter(next: Sport) {
+  if (next !== sport.id) applySport(next);
+  dismissIntro();
+}
+
 // ---- départ ----
 export function setStart(p: Start) {
   app.start = p;
@@ -236,7 +261,7 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
   if (mode === 'seed') app.seed = (app.seed + 1) % 1000;
   const n = mode === 'more' ? 4 : app.settings.nLoops;
   app.placing = false;
-  const q = buildQuery(app.settings, app.start, { n, seed: app.seed, polygon: app.zone, via: VIA ? app.via : [] });
+  const q = buildQuery(app.settings, app.start, { n, seed: app.seed, polygon: app.zone, via: VIA ? app.via : [], sport: sport.id });
   const keep = mode === 'more' ? current() : null;
   if (mode !== 'more') await closeAll();
   ctrl = new AbortController();
@@ -272,7 +297,7 @@ export async function compute(mode: 'new' | 'more' | 'seed' = 'new') {
     app.notice = null;
     if (mode !== 'more') { setNotice(res, q); routeGenerated(); }
     save('lastStart', roundStart(app.start!));
-    const d = dicts[i18n.lang];
+    const d = t();
     for (const c of keep ? cands.slice(1) : cands) {
       const r = hist.add({ settings: $state.snapshot(app.settings), start: { ...app.start! }, candidate: c, warnings: res.warnings,
         request: Object.fromEntries(q), effective_start: res.effective_start,
@@ -305,7 +330,9 @@ export function select(i: number) {
 
 export async function openEntry(e: hist.Entry) {
   await closeAll();
-  app.settings = mergeSettings(e.settings);
+  const sp = requestSport(e.request); // entrée sans sport = trail
+  if (sp !== sport.id) useSport(sp);
+  app.settings = mergeSettings(e.settings, sp);
   app.start = e.start;
   const res: PlanResponse = {
     solver_version: e.solver_version, data_version: e.data_version, compute_s: 0, lower_bound_m: e.lower_bound_m,
@@ -347,7 +374,7 @@ export async function shareLoop(): Promise<string | null> {
       track('share_created');
     }
     const url = shareUrl(id);
-    const d = dicts[i18n.lang];
+    const d = t();
     try {
       if (navigator.share) await navigator.share({ url, title: d.share.title });
       else { await navigator.clipboard.writeText(url); toast(d.share.copied); }
@@ -368,6 +395,8 @@ export async function shareLoop(): Promise<string | null> {
 export async function openShared(id: string) {
   try {
     const s = await getLoop(id);
+    const sp = requestSport(s.request); // le sport du lien est affiché ET mémorisé
+    if (sp !== sport.id) applySport(sp);
     app.settings = settingsFromRequest(s.request, app.settings);
     const lat = +s.request.lat, lon = +s.request.lon;
     app.start = Number.isFinite(lat) && Number.isFinite(lon) ? { lat, lon } : { lat: s.effective_start.lat, lon: s.effective_start.lon };
@@ -423,6 +452,8 @@ export function restoreSession(push = true): { view3d: boolean } | null {
   let s: Session | null = null;
   try { s = JSON.parse(sessionStorage.getItem(SESSION) ?? 'null') as Session | null; } catch { s = null; }
   if (!s || s.v !== 1 || !s.result?.candidates?.length) return null;
+  const sp = requestSport(s.request);
+  if (sp !== sport.id) applySport(sp);
   app.start = s.start; app.via = s.via ?? []; app.zone = s.zone ?? null; app.seed = s.seed ?? 0;
   // l'entrée d'historique courante est celle du résultat d'avant le rechargement : elle redevient l'accueil
   // (profondeur 0), pour que « Retour » ferme bien la sortie restaurée

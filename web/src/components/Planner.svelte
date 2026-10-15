@@ -4,8 +4,9 @@
   // rangée de puces, chaque valeur est un bouton qui ouvre le pavé numérique intégré (à la place des réglages, même
   // hauteur de feuille), options dans une couche à part.
   import { app, compute, cancel, locate, setStart, has, top, close, open as openLayer, startOutsideZone } from '../lib/app.svelte';
-  import { byId, clampField, type Field, type TypeId } from '../lib/catalog';
-  import { expectedKm, durationMin, MAX_GRADES, defaultSettings } from '../lib/settings';
+  import { byId, clampField, fieldsOf, SURFACES, type Field, type TypeId } from '../lib/catalog';
+  import { expectedKm, durationMin, gradeChoices, gradeDefault, defaultSettings, setSurface } from '../lib/settings';
+  import { sport } from '../lib/sport.svelte';
   import { i18n, t } from '../i18n/i18n.svelte';
   import { num, duration } from '../i18n/format';
   import Search from './Search.svelte';
@@ -17,18 +18,20 @@
 
   const s = $derived(app.settings);
   const type = $derived(byId(s.typeId));
+  // seule la distance change avec le sport et la voie (bornes, défaut, valeurs courantes)
+  const fields = $derived(fieldsOf(type, sport.id, s.surface));
   const computing = $derived(has('computing'));
   let clampMsg = $state<Record<string, string>>({});
   let locating = $state(false);
 
   const est = $derived.by(() => {
     const v = s.values[type.id];
-    return duration(durationMin(expectedKm(s), type.goal === 'max_dplus' ? 0 : (v.dplus_m ?? 0), s.paceS));
+    return duration(durationMin(expectedKm(s), type.goal === 'max_dplus' ? 0 : (v.dplus_m ?? 0), s, sport.id));
   });
 
   // Options hors défaut : pastille sur le bouton « Options » (mobile)
   const D = defaultSettings();
-  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== D.maxGrade || s.surface !== D.surface || s.noRepeat !== D.noRepeat || s.smooth !== D.smooth);
+  const optsChanged = $derived(s.climbs !== D.climbs || s.nLoops !== D.nLoops || s.maxGrade !== gradeDefault(sport.id, s.surface) || s.noRepeat !== D.noRepeat || s.smooth !== D.smooth);
   // mobile : valeur en cours de saisie au pavé (couche `pad` : le bouton Retour annule) ; le pavé reprend la hauteur
   // qu'avait le contenu de la feuille, pour que ni la feuille ni la carte ne bougent
   let editing = $state<Field | null>(null);
@@ -84,16 +87,6 @@
   </div>
 
   <div class="field">
-    <span class="label" id="surface-l">{t().surface.label}</span>
-    <div class="seg" id="surface" role="radiogroup" aria-labelledby="surface-l" aria-describedby="surface-help">
-      {#each ['trail', 'any', 'road'] as const as v}
-        <label class:on={s.surface === v}><input type="radio" name="surface" value={v} bind:group={app.settings.surface} />{t().surface[v]}</label>
-      {/each}
-    </div>
-    <p class="note" id="surface-help">{t().surface.help[s.surface]}</p>
-  </div>
-
-  <div class="field">
     <label for="loops">{t().more.loops} : <strong>{s.nLoops}</strong></label>
     <input id="loops" type="range" min="1" max="4" step="1" bind:value={app.settings.nLoops} aria-valuetext={String(s.nLoops)} />
   </div>
@@ -102,18 +95,22 @@
     <div class="field">
       <label for="max-grade">{t().more.maxGrade}</label>
       <select id="max-grade" bind:value={app.settings.maxGrade}>
-        {#each MAX_GRADES as g}<option value={g}>{g ? `${g} %` : t().more.noLimit}</option>{/each}
+        {#each gradeChoices(sport.id, s.surface) as g}<option value={g}>{g ? `${g} %` : t().more.noLimit}</option>{/each}
       </select>
+      <!-- vélo : une seule pente réglable (la montée) ; la descente la suit en v1 (D73) -->
+      {#if sport.id === 'bike' && s.maxGrade}<p class="note">{t().more.descent({ g: String(s.maxGrade) })}</p>{/if}
     </div>
     <div class="field check">
       <label><input type="checkbox" bind:checked={app.settings.noRepeat} /> {t().more.noRepeat}</label>
     </div>
-    <div class="field">
-      <label for="pace">{t().more.pace} ({t().more.paceUnit})</label>
-      <select id="pace" bind:value={app.settings.paceS}>
-        {#each PACES as p}<option value={p}>{pace(p)}</option>{/each}
-      </select>
-    </div>
+    {#if sport.id === 'trail'}
+      <div class="field">
+        <label for="pace">{t().more.pace} ({t().more.paceUnit})</label>
+        <select id="pace" bind:value={app.settings.paceS}>
+          {#each PACES as p}<option value={p}>{pace(p)}</option>{/each}
+        </select>
+      </div>
+    {/if}
     <!-- D62 : en bas des Options ; « selon le type » = rien d'envoyé, le moteur applique le défaut du mode -->
     <div class="field">
       <label for="smooth">{t().more.smooth}</label>
@@ -173,9 +170,19 @@
 
 <fieldset class="settings" disabled={computing}>
   <legend class="sr">{t().types.label}</legend>
+  <!-- D70 : type de voie en tête des réglages, au-dessus du type de sortie (donc des montées), dans les deux sports -->
+  <div class="field surface-field">
+    <span class="label sr" id="surface-l">{t().surface.label}</span>
+    <div class="seg" id="surface" role="radiogroup" aria-labelledby="surface-l" aria-describedby="surface-help">
+      {#each SURFACES[sport.id] as v (v)}
+        <label class:on={s.surface === v}><input type="radio" name="surface" value={v} checked={s.surface === v} onchange={() => setSurface(app.settings, sport.id, v)} />{t().surface[v]}</label>
+      {/each}
+    </div>
+    <p class="note" id="surface-help">{t().surface.help[s.surface]}</p>
+  </div>
   {#snippet typeFields()}
     {#if desktop}
-      {#each type.fields as f (type.id + f.param)}
+      {#each fields as f (type.id + f.param)}
         {@const v = s.values[type.id][f.param]}
         <div class="field">
           <label for="f-{f.param}">{t().fields[f.param]} <span class="unit">({f.unit})</span></label>
@@ -199,7 +206,7 @@
     {:else}
       <!-- mobile : chaque valeur est un bouton (toute la case) qui ouvre le pavé numérique intégré -->
       <div class="vals">
-        {#each type.fields as f (type.id + f.param)}
+        {#each fields as f (type.id + f.param)}
           {@const v = s.values[type.id][f.param]}
           {@const name = t().fields[f.param]}
           {@const txt = `${num(i18n.lang, shown(f), 1)} ${f.unit}`}

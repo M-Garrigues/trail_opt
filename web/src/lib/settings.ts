@@ -1,9 +1,8 @@
-import { byId, defaults, CATALOG, type TypeId, type Values } from './catalog';
+import { byId, defaults, fieldsOf, profile, CATALOG, SURFACES, SURFACE_DEFAULT, type Sport, type Surface, type TypeId, type Values } from './catalog';
 
 export type Climbs = 'short' | 'balanced' | 'long';
-/** Type de voie préféré (api.md v1.7) : jamais un filtre. */
-export type Surface = 'trail' | 'any' | 'road';
-const isSurface = (x: unknown): x is Surface => x === 'trail' || x === 'any' || x === 'road';
+/** Type de voie (api.md v1.7, § Sports) : préférence en trail, jamais un filtre sauf `road`. */
+const isSurface = (x: unknown): x is Surface => x === 'trail' || x === 'any' || x === 'road' || x === 'mtb' || x === 'gravel';
 /** D62 « Sorties plus fluides » : `auto` = défaut du mode (rien n'est envoyé), sinon forcé. */
 export type Smooth = 'auto' | 'on' | 'off';
 const isSmooth = (x: unknown): x is Smooth => x === 'auto' || x === 'on' || x === 'off';
@@ -11,7 +10,7 @@ export type Settings = {
   typeId: TypeId;
   values: Record<TypeId, Values>;
   climbs: Climbs;
-  /** % sur 50 m glissants (api.md v1.2) ; 0 = sans limite */
+  /** % sur 50 m glissants (api.md v1.2) ; 0 = sans limite (trail) ; vélo : la montée (D73) */
   maxGrade: number;
   surface: Surface;
   noRepeat: boolean;
@@ -20,18 +19,19 @@ export type Settings = {
   nLoops: number;
 };
 
-export const MAX_GRADE_DEFAULT = 60;
-/** Choix proposés : 5–60 % par pas de 5, puis 0 = sans limite (api.md v1.2). */
-export const MAX_GRADES = [...Array.from({ length: 12 }, (_, i) => 5 + i * 5), 0];
-const okGrade = (g: unknown) => typeof g === 'number' && MAX_GRADES.includes(g);
+/** Pente max : défaut du moteur et choix proposés selon le profil (trail 5–60 par 5 + sans limite ; vélo 5–40). */
+export const gradeDefault = (sport: Sport, surface: string) => profile(sport, surface).grade;
+export const gradeChoices = (sport: Sport, surface: string) => profile(sport, surface).grades;
+const okGrade = (sport: Sport, surface: string, g: unknown) => typeof g === 'number' && gradeChoices(sport, surface).includes(g);
 
-export function defaultSettings(): Settings {
+export function defaultSettings(sport: Sport = 'trail'): Settings {
+  const surface = SURFACE_DEFAULT[sport];
   return {
     typeId: 'target',
-    values: Object.fromEntries(CATALOG.map((t) => [t.id, defaults(t)])) as Record<TypeId, Values>,
+    values: Object.fromEntries(CATALOG.map((t) => [t.id, defaults(fieldsOf(t, sport, surface))])) as Record<TypeId, Values>,
     climbs: 'balanced',
-    maxGrade: MAX_GRADE_DEFAULT,
-    surface: 'trail',
+    maxGrade: gradeDefault(sport, surface),
+    surface,
     noRepeat: true,
     smooth: 'auto',
     paceS: 360,
@@ -39,9 +39,9 @@ export function defaultSettings(): Settings {
   };
 }
 
-/** Fusionne un objet mémorisé (peut-être ancien ou corrompu) avec les défauts. */
-export function mergeSettings(saved: unknown): Settings {
-  const d = defaultSettings();
+/** Fusionne un objet mémorisé (peut-être ancien ou corrompu) avec les défauts du sport. */
+export function mergeSettings(saved: unknown, sport: Sport = 'trail'): Settings {
+  const d = defaultSettings(sport);
   if (!saved || typeof saved !== 'object') return d;
   const s = { ...d, ...(saved as Partial<Settings>) };
   s.typeId = byId(s.typeId).id;
@@ -50,31 +50,46 @@ export function mergeSettings(saved: unknown): Settings {
   for (const t of CATALOG) s.values[t.id] = { ...d.values[t.id], ...((sv as Record<string, Values>)[t.id] ?? {}) };
   // avant v1.2 : { maxGradeOn: false } = pas de filtre → nouveau défaut 60 %
   const old = saved as { maxGradeOn?: boolean };
-  if (old.maxGradeOn === false || !okGrade(s.maxGrade)) s.maxGrade = MAX_GRADE_DEFAULT;
+  if (!SURFACES[sport].includes(s.surface)) s.surface = SURFACE_DEFAULT[sport]; // réglages d'un autre sport ou corrompus
+  if (old.maxGradeOn === false || !okGrade(sport, s.surface, s.maxGrade)) s.maxGrade = gradeDefault(sport, s.surface);
   delete (s as { maxGradeOn?: boolean }).maxGradeOn;
   if (!isSmooth(s.smooth)) s.smooth = 'auto';
   // avant v1.7 : filtre `roads` ; seul « toutes routes » (choisi exprès) devient « indifférent »
   const roads = (s as { roads?: string }).roads;
-  if (!isSurface((saved as Partial<Settings>).surface)) s.surface = roads === 'all' ? 'any' : d.surface;
+  if (!isSurface((saved as Partial<Settings>).surface)) s.surface = roads === 'all' && sport === 'trail' ? 'any' : d.surface;
   delete (s as { roads?: string }).roads;
   return s;
 }
 
+/** Change le type de voie : une distance ou une pente restée au défaut de l'ancienne voie prend celui de la nouvelle
+ *  (VTT 30 km → gravel 50 km), une valeur choisie est seulement ramenée dans les nouvelles bornes. */
+export function setSurface(s: Settings, sport: Sport, next: Surface) {
+  const a = profile(sport, s.surface), b = profile(sport, next);
+  for (const t of CATALOG) {
+    const v = s.values[t.id];
+    if (v.distance_km != null) v.distance_km = v.distance_km === a.dist.def ? b.dist.def : Math.min(b.dist.max, Math.max(b.dist.min, v.distance_km));
+  }
+  if (s.maxGrade === a.grade) s.maxGrade = b.grade;
+  s.surface = next;
+}
+
 export type Start = { lat: number; lon: number };
 
-/** Paramètres de GET /api/plan (api.md v1), rien d'autre. */
-export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: number; polygon?: [number, number][] | null; via?: Start[] }) {
+/** Paramètres de GET /api/plan (api.md v1), rien d'autre. `sport=bike` seulement en vélo (absent = trail). */
+export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: number; polygon?: [number, number][] | null; via?: Start[]; sport?: Sport }) {
   const t = byId(s.typeId);
   const v = s.values[t.id];
+  const sport = opts.sport ?? 'trail';
   const q = new URLSearchParams();
   q.set('lat', start.lat.toFixed(6));
   q.set('lon', start.lon.toFixed(6));
+  if (sport === 'bike') q.set('sport', 'bike');
   q.set('goal', t.goal);
   if (t.goal !== 'min_distance') q.set('distance_km', String(v.distance_km ?? 10));
   if (t.goal !== 'max_dplus') q.set('dplus_m', String(v.dplus_m));
   if (t.goal === 'min_distance' && v.max_distance_km != null) q.set('max_distance_km', String(v.max_distance_km));
   q.set('climbs', s.climbs);
-  if (s.maxGrade !== MAX_GRADE_DEFAULT) q.set('max_grade_pct', String(s.maxGrade)); // absent = 60 (api.md v1.2)
+  if (s.maxGrade !== gradeDefault(sport, s.surface)) q.set('max_grade_pct', String(s.maxGrade)); // absent = défaut du profil (60 trail, 22/20/20 vélo)
   q.set('surface', s.surface);
   q.set('no_repeat_junction', String(s.noRepeat));
   if (s.smooth !== 'auto') q.set('smooth', String(s.smooth === 'on')); // D62 : absent = défaut du mode
@@ -85,6 +100,9 @@ export function buildQuery(s: Settings, start: Start, opts: { n: number; seed: n
   return q;
 }
 
+/** Sport d'une requête (liens partagés, historique, session) : absent ou inconnu = trail. */
+export const requestSport = (req: Record<string, string> | undefined): Sport => (req?.sport === 'bike' ? 'bike' : 'trail');
+
 /** Type de voie d'une requête (liens partagés, historique) : `surface`, sinon l'ancien `roads` traduit comme le fait l'API
  *  et la migration des réglages (seul `all` devient `any`) ; null si absent. */
 export function requestSurface(req: Record<string, string>): Surface | null {
@@ -94,22 +112,25 @@ export function requestSurface(req: Record<string, string>): Surface | null {
   return null;
 }
 
-/** Part (0–1) de chemin d'une sortie en « Chemins », si elle est sous 50 % (avertissement) ; sinon null.
+/** Part (0–1) de chemin d'une sortie en « Chemins » (trail), VTT ou gravel, si elle est sous 50 % (avertissement) ; sinon null.
  *  Jamais en « Le plus court » (la préférence n'y agit pas) ni en « Route » (D53 : tout est revêtu). */
 export function lowSurface(c: { trail_frac?: number }, req: Record<string, string>): { share: number } | null {
-  if (c.trail_frac == null || requestSurface(req) !== 'trail' || req.goal === 'min_distance') return null;
+  const sf = requestSurface(req);
+  if (c.trail_frac == null || !(sf === 'trail' || sf === 'mtb' || sf === 'gravel') || req.goal === 'min_distance') return null;
   return c.trail_frac < 0.5 ? { share: c.trail_frac } : null;
 }
 
 /** Réglages préremplis depuis la requête d'une boucle partagée (« Recalculer depuis ici »). */
 export function settingsFromRequest(req: Record<string, string>, base: Settings): Settings {
-  const s = mergeSettings(base);
+  const sport = requestSport(req);
+  const s = mergeSettings(base, sport);
   const t = CATALOG.find((c) => c.goal === (req.goal ?? 'max_dplus'))!; // goal absent = max_dplus (défaut de l'API)
   s.typeId = t.id;
-  for (const f of t.fields) if (req[f.param] != null && Number.isFinite(+req[f.param])) s.values[t.id][f.param] = +req[f.param];
+  for (const f of fieldsOf(t, sport, s.surface)) if (req[f.param] != null && Number.isFinite(+req[f.param])) s.values[t.id][f.param] = +req[f.param];
   if (req.climbs === 'short' || req.climbs === 'balanced' || req.climbs === 'long') s.climbs = req.climbs;
-  s.surface = requestSurface(req) ?? s.surface;
-  s.maxGrade = req.max_grade_pct == null ? MAX_GRADE_DEFAULT : okGrade(+req.max_grade_pct) ? +req.max_grade_pct : s.maxGrade;
+  const rs = requestSurface(req);
+  if (rs && SURFACES[sport].includes(rs)) s.surface = rs;
+  s.maxGrade = req.max_grade_pct == null ? gradeDefault(sport, s.surface) : okGrade(sport, s.surface, +req.max_grade_pct) ? +req.max_grade_pct : s.maxGrade;
   if (req.no_repeat_junction) s.noRepeat = req.no_repeat_junction === 'true' || req.no_repeat_junction === '1';
   s.smooth = req.smooth == null ? 'auto' : req.smooth === 'true' || req.smooth === '1' ? 'on' : 'off';
   return s;
@@ -123,8 +144,12 @@ export function expectedKm(s: Settings): number {
   return v.distance_km ?? 10;
 }
 
-/** Durée (min) = (km + D+/100) × allure. */
-export const durationMin = (km: number, dplus: number, paceS: number) => ((km + dplus / 100) * paceS) / 60;
+/** Durée (min). Trail : (km + D+/100) × allure. Vélo : L/v + D+/v_z selon la voie (VTT 15 km/h et 600 m/h, gravel 20 et 800,
+ *  route 27 et 1 200) : estimation à recaler sur des traces réelles (synthèse sports § 1). */
+export function durationMin(km: number, dplus: number, s: Pick<Settings, 'paceS' | 'surface'>, sport: Sport = 'trail'): number {
+  const p = profile(sport, s.surface);
+  return sport === 'bike' && p.speed && p.climb ? (km / p.speed + dplus / p.climb) * 60 : ((km + dplus / 100) * s.paceS) / 60;
+}
 
 /** Estimation du temps de calcul (s), recalée sur la Lambda réelle (scripts/lambda_bench.sh, 2026-10-06 ;
  *  api.md § Durée estimée) : n ≤ 2 au-delà de 40 km ; « longues » ×1,8 sauf en cible, où la préférence de

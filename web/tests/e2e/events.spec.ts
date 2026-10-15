@@ -32,14 +32,14 @@ test('événements GPX et partage', async ({ page }) => {
   await page.getByRole('button', { name: t.download }).click();
   await expect.poll(() => sent.filter((b) => b.event === 'gpx').length).toBe(1);
   const gpx = sent.find((b) => b.event === 'gpx')!;
-  expect(gpx).toMatchObject({ goal: 'max_dplus', surface: 'trail', rank: 1, max_grade_pct: 60, zone: false, via_n: 0 });
+  expect(gpx).toMatchObject({ sport: 'trail', goal: 'max_dplus', surface: 'trail', rank: 1, max_grade_pct: 60, zone: false, via_n: 0 });
   expect([gpx.got_km, gpx.got_dplus_m]).toEqual([10, 250]); // tranches 5 km / 250 m (revue M4)
   for (const k of ['lat', 'lon', 'polygon', 'via', 'seed', 'id', 'sig']) expect(gpx, k).not.toHaveProperty(k);
   await page.getByRole('button', { name: t.share, exact: true }).click();
   await page.getByRole('button', { name: t.create }).click();
   await expect.poll(() => sent.map((b) => b.event).filter(Boolean)).toEqual(['gpx', 'share_click', 'share_created']);
   // tout ce qui part est dans la liste blanche du serveur (engine/src/hit.rs)
-  const allowed = ['event', 'lang', 'goal', 'km', 'dplus_m', 'surface', 'climbs', 'max_grade_pct', 'zone', 'via_n', 'no_repeat', 'rank',
+  const allowed = ['event', 'lang', 'sport', 'goal', 'km', 'dplus_m', 'surface', 'climbs', 'max_grade_pct', 'zone', 'via_n', 'no_repeat', 'rank',
     'got_km', 'got_dplus_m', 'trail_pct', 'mixed_pct', 'road_pct', 'compute_s', 'smooth'];
   for (const b of sent.filter((x) => x.event)) for (const k of Object.keys(b)) expect(allowed, k).toContain(k);
 });

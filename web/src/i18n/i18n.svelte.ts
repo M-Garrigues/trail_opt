@@ -1,4 +1,4 @@
-import { dicts, type Lang } from './format';
+import { D, type Lang } from './format';
 import { load, save } from '../lib/store';
 
 function detect(): Lang {
@@ -18,7 +18,7 @@ function detect(): Lang {
 
 export const i18n = $state({ lang: detect() });
 
-export const t = () => dicts[i18n.lang];
+export const t = () => D(i18n.lang);
 
 export function setLang(l: Lang) {
   i18n.lang = l;

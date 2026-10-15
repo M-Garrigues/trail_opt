@@ -7,6 +7,7 @@ import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?worker&url';
 
 maplibregl.setWorkerUrl(workerUrl);
 import type { Candidate } from './types';
+import type { Sport } from './catalog';
 import { Trail3D } from './trail3d';
 import { idxAt } from './geo';
 import { LM_PATH } from './icons';
@@ -18,10 +19,11 @@ const SHADOW =
   '&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
 // Fonds raster (D69) : WMTS Géoplateforme sans clé, Licence Ouverte Etalab 2.0 (BD ORTHO®, Plan IGN HD)
 // STYLE exact du GetCapabilities, sinon 400 (le HD, en bêta, est passé de « normal » à « PLAN-IGN-HD » le 2026-10-15)
-const wmts = (layer: string, tms: string, style = 'normal') =>
+const wmts = (layer: string, tms: string, style = 'normal', fmt = 'image/jpeg') =>
   `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style}&TILEMATRIXSET=${tms}` +
-  '&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
-export const BASES = ['plan', 'hd', 'ortho'] as const;
+  `&FORMAT=${fmt}&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
+/** D75 : `mix` (défaut) = Plan IGN + Plan IGN HD à 50 % + estompage IGN ; `plan` = Plan IGN seul (+ ombrage LiDAR HD). */
+export const BASES = ['mix', 'plan', 'hd', 'ortho'] as const;
 export type Base = (typeof BASES)[number];
 
 // Spike 3D (D27) : MNT Terrarium de Mapterhorn (IGN RGE ALTI 1 m / LiDAR HD en France, Licence Ouverte 2.0), z ≤ 17, CORS *.
@@ -31,12 +33,16 @@ const EXAG = 1.25;
 /** Caméra 3D (D57) : inclinaison. */
 const PITCH_3D = 68;
 
-/** Couverture (France métropolitaine, D42) : cadrage initial avant chargement de coverage.geojson. */
+/** France métropolitaine et Corse (D75) : cadrage du premier démarrage. La couverture (D42) inclut les DOM :
+ *  cadrer sur son emprise montrait le monde entier. */
 export const COVERAGE_BOUNDS: LngLatBoundsLike = [[-5.2, 41.3], [9.6, 51.1]];
 const WORLD: GeoJSON.Position[] = [[-180, -85], [180, -85], [180, 85], [-180, 85], [-180, -85]];
-// n°1 = accent de l'interface (D34) ; carte toujours claire → valeur claire fixe. Ni vert ni brun clair (forêts, courbes IGN).
-export const ACCENT = '#a8441c';
-export const LOOP_COLORS = [ACCENT, '#1565C0', '#6A1B9A', '#AD1457'];
+// n°1 = accent du sport (D34, D74) = `--map-accent` d'app.css ; carte toujours claire → valeurs claires fixes.
+// Trail : terre de Sienne ; vélo : vert (le bleu est réservé au futur ski). Pas de brun clair (courbes IGN).
+export const LOOP_COLORS: Record<Sport, string[]> = {
+  trail: ['#a8441c', '#1565C0', '#6A1B9A', '#AD1457'],
+  bike: ['#017d38', '#a8441c', '#6A1B9A', '#AD1457'],
+};
 
 type Handlers = {
   onClick: (p: { lat: number; lon: number }) => void;
@@ -57,14 +63,15 @@ export class TrailMap {
   private loops: Candidate[] = [];
   /** ligne drapée du tracé choisi : affichée en 2D, et en 3D tant que le ruban n'est pas posé (relief en cours de chargement) */
   private drapedOn = true;
+  /** fonds sombres ou chargés (photo, HD plein) : halo sombre sous le liseré du tracé */
+  private dark = () => this.base === 'hd' || this.base === 'ortho';
   private draped = (on: boolean) => {
     this.drapedOn = on;
     for (const l of ['loops-casing', 'loops-sel']) this.map.setLayoutProperty(l, 'visibility', on ? 'visible' : 'none');
-    this.map.setLayoutProperty('loops-halo', 'visibility', on && this.base !== 'plan' ? 'visible' : 'none');
+    this.map.setLayoutProperty('loops-halo', 'visibility', on && this.dark() ? 'visible' : 'none');
   };
-  private trail3d = new Trail3D(LOOP_COLORS[0], EXAG, (shown) => { if (this.is3d) this.draped(!shown); });
+  private trail3d = new Trail3D(LOOP_COLORS.trail[0], EXAG, (shown) => { if (this.is3d) this.draped(!shown); });
   private viaMarkers: maplibregl.Marker[] = [];
-  private coverageBounds: LngLatBoundsLike = COVERAGE_BOUNDS;
   /** Clics carte ignorés (zone en cours : terra-draw les prend). */
   drawing = false;
 
@@ -99,7 +106,7 @@ export class TrailMap {
     });
   }
   private markerLabel: string;
-  private base: Base = 'plan';
+  private base: Base = 'mix';
   private baseHide: Record<Base, string[]> | null = null;
 
   /** Fond de carte (D69), en 2D comme en 3D ; appliqué au chargement du style s'il n'est pas prêt. */
@@ -110,14 +117,14 @@ export class TrailMap {
     if (!hide) return;
     const m = this.map, off = new Set(hide[this.base]);
     // seulement les calques qui changent : écrire « visible » sur un calque vectoriel déjà visible recharge toutes ses tuiles
-    for (const id of new Set([...hide.ortho, ...hide.hd])) {
+    for (const id of new Set([...hide.ortho, ...hide.hd, ...hide.mix])) {
       const want = off.has(id) ? 'none' : 'visible';
       if ((m.getLayoutProperty(id, 'visibility') ?? 'visible') !== want) m.setLayoutProperty(id, 'visibility', want);
     }
-    m.setLayoutProperty('ortho', 'visibility', this.base === 'ortho' ? 'visible' : 'none');
-    for (const id of ['hd', 'hd-low']) m.setLayoutProperty(id, 'visibility', this.base === 'hd' ? 'visible' : 'none');
-    m.setLayoutProperty('loops-halo', 'visibility', this.drapedOn && this.base !== 'plan' ? 'visible' : 'none');
-    this.trail3d.setHalo(this.base !== 'plan');
+    const show: Record<Base, string[]> = { mix: ['hd-mix', 'shade'], plan: [], hd: ['hd', 'hd-low'], ortho: ['ortho'] };
+    for (const id of ['hd-mix', 'shade', 'hd', 'hd-low', 'ortho']) m.setLayoutProperty(id, 'visibility', show[this.base].includes(id) ? 'visible' : 'none');
+    m.setLayoutProperty('loops-halo', 'visibility', this.drapedOn && this.dark() ? 'visible' : 'none');
+    this.trail3d.setHalo(this.dark());
     // sorties non choisies : gris clair sur la photo sombre
     m.setPaintProperty('loops-other', 'line-color', this.base === 'ortho' ? '#e6e6e6' : '#757575');
   }
@@ -149,8 +156,18 @@ export class TrailMap {
     m.addLayer({ id: 'ortho', type: 'raster', source: 'ortho', layout: { visibility: 'none' } }, over);
     m.addLayer({ id: 'hd-low', type: 'raster', source: 'ortho', maxzoom: 6, layout: { visibility: 'none' } }, over); // le HD commence à z6
     m.addLayer({ id: 'hd', type: 'raster', source: 'hd', layout: { visibility: 'none' } }, over);
+    // D75 (défaut) : HD à 50 % sur les aplats du Plan (forêts, bâti), sous ses courbes, routes et libellés ; estompage
+    // RGE ALTI de l'IGN (z0–15, 12–30 Ko la tuile) à la place de l'ombrage LiDAR HD (50–60 Ko), plus léger et dès la France entière
+    // minzoom 10 : le HD (bêta) a encore des trous (tuiles blanches, ~10 % du territoire, ex. Bretagne, Limousin) ; aux
+    // petits zooms ils faisaient un damier sur la France, aux grands zooms le Plan y paraît seulement plus pâle
+    m.addLayer({ id: 'hd-mix', type: 'raster', source: 'hd', minzoom: 10, layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.5 } },
+      layers.find((l) => l.id.startsWith('oro - courbe'))?.id ?? firstSymbol);
+    m.addSource('shade', { type: 'raster', tiles: [wmts('ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW', 'PM_0_15', 'estompage_grayscale', 'image/png')],
+      tileSize: 256, maxzoom: 15, attribution: '© IGN' });
+    m.addLayer({ id: 'shade', type: 'raster', source: 'shade', layout: { visibility: 'none' }, paint: { 'raster-opacity': 0.3 } }, firstSymbol);
     const shapes = layers.filter((l) => l.type !== 'symbol' && l.id !== 'bckgrd' && l.layout?.visibility !== 'none');
     this.baseHide = {
+      mix: ['shadow'],
       plan: [],
       ortho: ['shadow', ...shapes.map((l) => l.id)],
       hd: ['shadow', ...shapes.filter((l) => !l.id.startsWith('oro - courbe')).map((l) => l.id)],
@@ -192,16 +209,12 @@ export class TrailMap {
     m.getContainer().dataset.ready = '1'; // tests e2e : carte et sources prêtes
   }
 
-  /** Grise l'extérieur de la couverture ; fit = recadrer dessus (premier lancement). */
-  async setCoverage(g: GeoJSON.Polygon | GeoJSON.MultiPolygon, fit: boolean) {
+  /** Grise l'extérieur de la couverture. */
+  async setCoverage(g: GeoJSON.Polygon | GeoJSON.MultiPolygon) {
     await this.ready;
     const outers = (g.type === 'Polygon' ? [g.coordinates] : g.coordinates).map((p) => p[0]);
-    const b = new maplibregl.LngLatBounds();
-    outers.forEach((r) => r.forEach((c) => b.extend(c as [number, number])));
-    this.coverageBounds = b;
     (this.map.getSource('outside') as GeoJSONSource).setData({ type: 'Feature', properties: {},
       geometry: { type: 'Polygon', coordinates: [WORLD, ...outers] } });
-    if (fit) this.fitCoverage();
   }
 
   async setStart(p: { lat: number; lon: number } | null) {
@@ -218,14 +231,14 @@ export class TrailMap {
     } else this.marker.setLngLat([p.lon, p.lat]);
   }
 
-  async setLoops(cands: Candidate[], sel: number) {
+  async setLoops(cands: Candidate[], sel: number, colors = LOOP_COLORS.trail) {
     await this.ready;
     this.loops = cands;
-    this.trail3d.setColor(LOOP_COLORS[sel % LOOP_COLORS.length]);
+    this.trail3d.setColor(colors[sel % colors.length]);
     this.trail3d.setLine(cands[sel] ?? null);
     const features: GeoJSON.Feature[] = cands.map((c, i) => ({
       type: 'Feature',
-      properties: { idx: i, sel: i === sel, color: LOOP_COLORS[i % LOOP_COLORS.length] },
+      properties: { idx: i, sel: i === sel, color: colors[i % colors.length] },
       geometry: { type: 'LineString', coordinates: c.lon.map((lo, k) => [lo, c.lat[k]]) },
     }));
     // la boucle choisie dessinée en dernier (au-dessus)
@@ -354,8 +367,9 @@ export class TrailMap {
     (this.map.getSource('landmarks') as GeoJSONSource).setData({ type: 'FeatureCollection', features });
   }
 
-  fitCoverage() {
-    this.map.fitBounds(this.coverageBounds, { padding: 20, duration: 0 });
+  /** France métropolitaine juste en entier dans la partie visible (padding : barre du haut, feuille du bas). */
+  fitCoverage(padding: maplibregl.PaddingOptions) {
+    this.map.fitBounds(COVERAGE_BOUNDS, { padding, duration: 0 });
   }
 }
 

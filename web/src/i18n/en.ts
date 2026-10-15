@@ -2,19 +2,23 @@ import type { fr } from './fr';
 
 type P = Record<string, string>;
 type Widen<T> = T extends string ? string : T extends (...a: infer A) => string ? (...a: A) => string : { [K in keyof T]: Widen<T[K]> };
-export type Dict = Widen<typeof fr>;
+type Base = Widen<Omit<typeof fr, 'bike'>>;
+type DeepPartial<T> = T extends (...a: never[]) => unknown ? T : T extends object ? { [K in keyof T]?: DeepPartial<T[K]> } : T;
+/** Dictionnaire complet + `bike` : les seules clés qui changent en vélo (fusionnées par `t()`). */
+export type Dict = Base & { bike: DeepPartial<Base> };
 
 export const en: Dict = {
   app: {
     tagline: 'Your tailor-made trail run',
     langLabel: 'Language',
   },
+  sport: { label: 'Sport', trail: 'Trail', bike: 'Bike' },
   intro: {
-    text: 'Pick a run type and a start: optrail plans a loop (back to the start) on the paths of the IGN map.',
+    title: 'Tailor-made trail runs and bike rides',
+    text: 'Pick your sport, a type and a start: optrail plans a loop (back to the start) on the paths and roads of the IGN map.',
     coverage: 'Coverage: the areas of the map that are not greyed out.',
-    go: 'Let’s go',
   },
-  safety: 'Runs are planned automatically: a path may be closed, private or dangerous.',
+  safety: 'Routes are planned automatically: a path or road may be closed, private or dangerous.',
   start: {
     tapMap: 'Tap the map to set your start',
     myLocation: 'My location',
@@ -59,15 +63,19 @@ export const en: Dict = {
   surface: {
     label: 'Surface',
     trail: 'Trails',
-    any: 'Any',
+    any: 'Mixed',
     road: 'Roads',
+    mtb: 'MTB',
+    gravel: 'Gravel',
     help: {
       trail: 'Trails and paths first; a road when there is nothing better.',
       any: 'Trails and roads, no preference.',
       road: 'Paved ways only (asphalt, concrete, paving); never a dirt track.',
+      mtb: 'Trails and tracks you can ride, no steps; roads only to link up.',
+      gravel: 'Gravel tracks first, quiet lanes to link up.',
     },
     share: (p: P) => `${p.trail}% trail · ${p.road}% road`,
-    parts: { trail: 'trail', mixed: 'mixed', road: 'road' },
+    parts: { trail: 'trail', mixed: 'paved path', road: 'road' },
     lowTrail: (p: P) => `Only ${p.pct}% trails here: few paths around this start.`,
   },
   labels: {
@@ -81,6 +89,7 @@ export const en: Dict = {
     title: 'More options',
     maxGrade: 'Max path grade (over 50 m)',
     noLimit: 'no limit',
+    descent: (p: P) => `Descents: up to ${p.g}%`,
     noRepeat: 'No repeated junctions',
     pace: 'Pace',
     paceUnit: 'min/effort-km',
@@ -94,7 +103,7 @@ export const en: Dict = {
   estimate: 'Estimated time',
   options: { title: 'Options', done: 'Done' },
   sheet: { fold: 'Collapse', unfold: 'Expand' },
-  base: { title: 'Base map', plan: 'IGN map', hd: 'IGN HD map (beta)', ortho: 'Satellite' },
+  base: { title: 'Base map', mix: 'IGN map + HD', plan: 'IGN map', hd: 'IGN HD map (beta)', ortho: 'Satellite' },
   via: {
     button: 'Waypoint',
     short: 'Via',
@@ -181,12 +190,12 @@ export const en: Dict = {
     title: 'optrail: my trail run',
   },
   history: {
-    title: 'My runs',
+    title: 'My routes',
     clear: 'Clear history',
-    confirmClear: 'Delete all runs kept on this device?',
-    empty: 'No runs yet.',
+    confirmClear: 'Delete all routes kept on this device?',
+    empty: 'No routes yet.',
     remove: 'Delete',
-    full: 'Browser storage full: run not saved.',
+    full: 'Browser storage full: route not saved.',
     unavailable: 'Browser storage unavailable: history disabled.',
   },
   menu: {
@@ -216,7 +225,7 @@ export const en: Dict = {
       'On your device: language, settings, run history and a rounded last position (~1 km) stay in your browser storage (localStorage) and are never sent; erase them in Settings. Being strictly necessary for the service you request, they need no consent (French Data Protection Act art. 82, CNIL guidelines): hence no cookie banner.\n\n' +
       'IP address: optrail does not record it, but it is seen by Amazon Web Services (hosting), Cloudflare (Turnstile bot check when planning and sharing; legitimate interest: security), IGN (base map; place search, which also receives what you type) and Mapterhorn (3D relief). Amazon and Cloudflare are US companies: transfers covered by the EU–US Data Privacy Framework and standard contractual clauses.\n\n' +
       'Your rights: access, rectification, erasure, objection and restriction, by e-mail to contact@optrail.eu; you may complain to the CNIL (cnil.fr). Without accounts, optrail cannot link logs to a person.',
-    attributionsText: 'Base maps: Plan IGN, Plan IGN HD and aerial photographs (BD ORTHO®) © IGN – Géoplateforme, under the Etalab Open Licence 2.0. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding.\n\n' +
+    attributionsText: 'Base maps: Plan IGN, Plan IGN HD and aerial photographs (BD ORTHO®) © IGN – Géoplateforme, under the Etalab Open Licence 2.0. Paths and elevation: © IGN – BD TOPO®, RGE ALTI®, LiDAR HD, under the Etalab Open Licence 2.0; passes and summits: BD TOPO® IGN; optrail’s derived data are published under the same licence. Place search: IGN Géoplateforme geocoding. National park boundaries (bike routing): © Parcs nationaux de France, Etalab Open Licence 2.0.\n\n' +
       '3D relief and contour-line backdrop (Chartreuse): © Mapterhorn (mapterhorn.com/attribution), DEM © IGN.\n\n' +
       'Software: MapLibre GL JS (BSD-3-Clause), terra-draw (MIT).',
   },
@@ -240,6 +249,7 @@ export const en: Dict = {
       max_grade_pct: 'Remove the grade limit?', polygon: 'Remove the area?',
       no_repeat_junction: 'Allow revisiting junctions?', via: 'Remove waypoints?', max_distance_km: 'Double the max distance?',
     },
+    raiseGrade: (p: P) => `Raise max grade to ${p.v}%?`,
     keep: 'Keep this run',
     ok: 'OK',
   },
@@ -251,8 +261,8 @@ export const en: Dict = {
     no_way_in_zone: () => 'No usable path here.',
     no_loop_of_distance: () => 'No run of this length from this start.',
     paved_network_major_roads: () =>
-      'Few quiet paved roads around this start: the run would mostly follow major roads. Try another start or the “Any” surface.',
-    paved_network_too_short: () => 'Not enough paved ways around this start for this run: try “Any”.',
+      'Few quiet paved roads around this start: the run would mostly follow major roads. Try another start or the “Mixed” surface.',
+    paved_network_too_short: () => 'Not enough paved ways around this start for this run: try “Mixed”.',
     dplus_unreachable_proven: (p: P) =>
       p.min_km ? `+${p.dplus_m} m impossible: needs at least ${p.min_km} km.` : 'Not enough relief here.',
     zone_invalid: () => 'Invalid area: 3 to 50 points.',
@@ -276,8 +286,8 @@ export const en: Dict = {
     long_distance: () => '',
     zone_reduced: (p: P) => `Area reduced to ${p.radius_km} km around the start.`,
     access_round_trip: (p: P) => `Includes a ${p.access_m} m access out-and-back.`,
-    start_moved: (p: P) => `Start moved ${p.distance_m} m to the nearest path.`,
-    start_far_from_network: (p: P) => `Start is ${p.distance_m} m from the nearest path.`,
+    start_moved: (p: P) => `Start moved ${p.distance_m} m to the nearest usable way.`,
+    start_far_from_network: (p: P) => `Start is ${p.distance_m} m from the nearest usable way.`,
     distance_out_of_tolerance: () => 'Nothing within ±5%: here is the closest.',
     target_dplus_above_bound: (p: P) => `At most ~${p.max_dplus_m} m climb in ${p.max_km} km here.`,
     target_dplus_probably_unreachable: () => 'Target climb probably out of reach.',
@@ -289,6 +299,7 @@ export const en: Dict = {
     via_missed: (p: P) => `The run does not pass through point ${p.n}.`,
     coverage_edge: () => 'Area at the edge of coverage: paths beyond are ignored.',
     low_surface_share: (p: P) => `Only ${p.pct}% of the preferred surface here.`,
+    major_roads_share: () => 'A large share of this run follows major roads.',
   },
   install: {
     title: 'Install the app',
@@ -297,5 +308,36 @@ export const en: Dict = {
     later: 'Not now',
     ios: 'Tap Share (under ⋯ if it isn’t visible), then “Add to Home Screen”.',
     manual: 'In the browser menu (⋮): “Add to Home screen” or “Install app”.',
+  },
+  // vélo : « run » → « ride » et les textes propres au vélo
+  bike: {
+    app: { tagline: 'Your tailor-made bike ride' },
+    types: { label: 'Ride type' },
+    surface: {
+      help: { road: 'Paved roads only, quiet ones first; cycle paths welcome.' },
+      lowTrail: (p: P) => `Only ${p.pct}% trails here: few unpaved ways around this start.`,
+    },
+    more: { maxGrade: 'Max climbing grade (over 50 m)', loops: 'Rides suggested', smooth: 'Smoother rides' },
+    compute: { find: 'Find my ride', computing: 'Finding your ride…' },
+    result: {
+      otherLoops: 'Other rides', otherLoopsN: (p: P) => `Other rides (${p.n})`, noOther: 'No other ride here.',
+      loop: (p: P) => `Ride ${p.n}`, choose: (p: P) => `Choose ride ${p.n}`,
+    },
+    detail: { title: 'Ride details' },
+    share: { banner: 'Shared ride', title: 'optrail: my bike ride' },
+    important: { keep: 'Keep this ride' },
+    err: {
+      via_too_far: (p: P) => `Point ${p.n} is too far from the start for a ride of this length (max ${p.max_km} km as the crow flies).`,
+      no_loop_of_distance: () => 'No ride of this length from this start.',
+      paved_network_major_roads: () =>
+        'Few quiet roads around this start: the ride would mostly follow major roads. Try another start or “Gravel”.',
+      paved_network_too_short: () => 'Not enough paved roads around this start for this ride: try “Gravel”.',
+    },
+    warn: {
+      candidates_reduced: (p: P) => `Over ${p.km} km: at most ${p.max_n} rides.`,
+      fewer_loops: (p: P) => `${p.got} ride${Number(p.got) === 1 ? '' : 's'} found out of ${p.asked} requested.`,
+      via_missed: (p: P) => `The ride does not pass through point ${p.n}.`,
+      major_roads_share: () => 'A large share of this ride follows major roads.',
+    },
   },
 };

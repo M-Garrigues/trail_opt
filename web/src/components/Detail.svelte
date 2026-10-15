@@ -5,6 +5,7 @@
   import { LM_PATH } from '../lib/icons';
   import { durationMin, lowSurface } from '../lib/settings';
   import { saveGpx, canShareGpx } from '../lib/gpx';
+  import { sport } from '../lib/sport.svelte';
   import { i18n, t } from '../i18n/i18n.svelte';
   import { num, km, duration, warningText, climbsText, surfaceText, lowSurfaceText, labelsText } from '../i18n/format';
   import Profile, { profileMarks } from './Profile.svelte';
@@ -44,7 +45,7 @@
   {/if}
   {#if !app.dock}<Profile cand={c} bind:cursor={app.cursor} height={170} onpick={mapUi.center} marks={profileMarks(c, vi)} />{/if}
   <div class="actions-grid">
-    <button class="btn primary" onclick={() => { track('gpx'); void saveGpx(c, res.data_version); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
+    <button class="btn primary" onclick={() => { track('gpx'); void saveGpx(c, res.data_version, sport.id); }}>{canShareGpx(c) ? t().detail.gpxShare : t().detail.gpx}</button>
     {#if c.sig || app.shared}<button class="btn secondary" onclick={() => openLayer('share')} disabled={app.offline}>{t().result.share}</button>{/if}
     {#if !embedded}<button class="btn secondary" onclick={replan}>{t().detail.replan}</button>{/if}
   </div>
@@ -54,8 +55,8 @@
     <div><dt>{t().detail.altMin}</dt><dd>{num(L, c.alt_min_m)} m</dd></div>
     <div><dt>{t().detail.altMax}</dt><dd>{num(L, c.alt_max_m)} m</dd></div>
     <div><dt>{t().detail.maxGrade}</dt><dd>{num(L, c.max_grade_pct)} %</dd></div>
-    <div><dt>{t().detail.kmEffort}</dt><dd>{num(L, kmEffort, 1)}</dd></div>
-    <div><dt>{t().detail.duration}</dt><dd>{duration(durationMin(c.length_m / 1000, c.dplus_m, app.settings.paceS))}</dd></div>
+    {#if sport.id === 'trail'}<div><dt>{t().detail.kmEffort}</dt><dd>{num(L, kmEffort, 1)}</dd></div>{/if}
+    <div><dt>{t().detail.duration}</dt><dd>{duration(durationMin(c.length_m / 1000, c.dplus_m, app.settings, sport.id))}</dd></div>
   </dl>
   {#if surface}
     <h3>{t().surface.label}</h3>

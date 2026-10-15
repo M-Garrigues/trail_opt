@@ -4,6 +4,7 @@
   import { i18n, t, setLang } from '../i18n/i18n.svelte';
   import Install from './Install.svelte';
   import { load, remove, save } from '../lib/store';
+  import { sport } from '../lib/sport.svelte';
 
   // mesure d'audience (admin.md § 7) : opposition mémorisée sur l'appareil
   let stats = $state(!load('nostats', false));
@@ -28,10 +29,12 @@
       <button role="radio" aria-checked={i18n.lang === 'en'} onclick={() => setLang('en')} lang="en">EN</button>
     </div>
   </div>
-  <div class="row">
-    <label for="m-pace">{t().more.pace} ({t().more.paceUnit})</label>
-    <select id="m-pace" bind:value={app.settings.paceS}>{#each PACES as p}<option value={p}>{pace(p)}</option>{/each}</select>
-  </div>
+  {#if sport.id === 'trail'}
+    <div class="row">
+      <label for="m-pace">{t().more.pace} ({t().more.paceUnit})</label>
+      <select id="m-pace" bind:value={app.settings.paceS}>{#each PACES as p}<option value={p}>{pace(p)}</option>{/each}</select>
+    </div>
+  {/if}
   <div class="row">
     <label for="m-loops">{t().more.loops}</label>
     <select id="m-loops" bind:value={app.settings.nLoops}>{#each [1, 2, 3, 4] as n}<option value={n}>{n}</option>{/each}</select>

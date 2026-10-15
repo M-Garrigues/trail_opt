@@ -1,14 +1,18 @@
 <script lang="ts">
   import { onMount } from 'svelte';
-  import { app, top, has, current, compute, close, cancel, setStart, select, open as openLayer, dismissIntro, openShared, mapUi, level, loadCoverage, debug, addVia, moveVia, viaIdx, dismissNotice, applySuggest, suggestLabel, saveSession, restoreSession, toast } from './lib/app.svelte';
+  import { app, top, has, current, compute, close, cancel, setStart, select, open as openLayer, openShared, mapUi, level, loadCoverage, debug, addVia, moveVia, viaIdx, dismissNotice, applySuggest, suggestLabel, saveSession, restoreSession, toast, enter } from './lib/app.svelte';
   import Profile, { profileMarks } from './components/Profile.svelte';
   import { sharedId } from './lib/share';
-  import { TrailMap, BASES, type Base } from './lib/map';
+  import { TrailMap, BASES, LOOP_COLORS, type Base } from './lib/map';
+  import { sport } from './lib/sport.svelte';
+  import { SPORTS, fieldsOf } from './lib/catalog';
+  import { SPORT_PATH } from './lib/icons';
   import { nearestIndex } from './lib/geo';
   import { load, save } from './lib/store';
   import { REJECTED, errorText, km, num } from './i18n/format';
   import { byId } from './lib/catalog';
   import { i18n, t, setLang } from './i18n/i18n.svelte';
+  import SportPicker from './components/SportPicker.svelte';
   import Sheet from './components/Sheet.svelte';
   import Planner from './components/Planner.svelte';
   import Result from './components/Result.svelte';
@@ -35,11 +39,13 @@
     : { top: 60, bottom: resultH() + 20, left: 30, right: 30 };
   const cap = new URLSearchParams(location.search).get('cap') === 'km1' ? 'km1' : 'centroid';
   // D69 : fond de carte mémorisé (valeur inconnue → Plan IGN)
-  const saved = load<string>('base', 'plan');
-  let base = $state<Base>(BASES.includes(saved as Base) ? (saved as Base) : 'plan');
+  // D75 : clé « basemap » (l'ancienne « base » était écrite au chargement : « plan » chez tous) ; un choix HD ou Satellite
+  // d'avant est repris. Écrit seulement quand on choisit : un futur changement de défaut s'appliquera à tous.
+  const old = load<string>('base', ''), saved = load<string>('basemap', old === 'hd' || old === 'ortho' ? old : 'mix');
+  let base = $state<Base>(BASES.includes(saved as Base) ? (saved as Base) : 'mix');
   let baseOpen = $state(false);
   let baseEl = $state<HTMLDivElement>();
-  $effect(() => { tmap?.setBase(base); save('base', base); });
+  $effect(() => { tmap?.setBase(base); });
   $effect(() => {
     if (!baseOpen) return;
     const out = (e: PointerEvent) => { if (!baseEl?.contains(e.target as Node)) baseOpen = false; };
@@ -66,6 +72,12 @@
     tmap.centerOn(c, i, desktop ? (app.dock ? DOCK_H / 2 : 0) : (sheet?.offsetHeight ?? 0) / 2);
   };
 
+  // France entière au-dessus de la feuille (mobile) et sous la barre du haut (D75)
+  const coverPad = () => {
+    const sheet = document.querySelector('.sheet')?.getBoundingClientRect();
+    const bottom = sheet ? Math.max(20, innerHeight - sheet.top + 12) : 20;
+    return { top: 70, bottom, left: 12, right: desktop ? 60 : 12 };
+  };
   onMount(() => {
     const mq = matchMedia('(min-width: 1024px)');
     const onMq = () => (desktop = mq.matches);
@@ -93,7 +105,7 @@
     }, last ?? undefined, t().start.marker);
     if (import.meta.env.DEV) (window as unknown as { tmap: TrailMap }).tmap = tmap;
     const map = tmap;
-    void loadCoverage().then((g) => { if (g) void map.setCoverage(g, !last && !sharedId() && !app.start); });
+    void loadCoverage().then((g) => { if (g) void map.setCoverage(g); });
     const sid = sharedId();
     if (sid) { app.intro = false; void openShared(sid); }
     else {
@@ -102,6 +114,8 @@
       const rs = restoreSession();
       if (rs) { app.intro = false; if (rs.view3d && !matchMedia('(pointer: coarse)').matches) view3d = true; }
     }
+    // premier démarrage (ni position mémorisée, ni lien, ni sortie restaurée) : la France métropolitaine en entier (D75)
+    if (!last && !sid && !app.start) requestAnimationFrame(() => map.fitCoverage(coverPad()));
     const on = () => (app.offline = false), off = () => (app.offline = true);
     addEventListener('online', on);
     addEventListener('offline', off);
@@ -114,7 +128,7 @@
   $effect(() => { tmap?.setStart(app.start); });
   $effect(() => { tmap?.setVia([...app.via], (n) => t().via.marker({ n: String(n) }), moveVia); });
   $effect(() => { tmap?.setLandmarks(current()); });
-  $effect(() => { tmap?.setLoops(app.cands, app.sel); });
+  $effect(() => { tmap?.setLoops(app.cands, app.sel, LOOP_COLORS[sport.id]); });
   $effect(() => { tmap?.setCursor(current(), app.cursor); });
   $effect(() => {
     const z = app.result?.zone;
@@ -161,7 +175,7 @@
     if (layer === 'result' || layer === 'detail') { const c = current(); return c ? `${km(L, c.length_m)} · +${num(L, c.dplus_m)} m` : ''; }
     if (layer) return '';
     const ty = byId(app.settings.typeId), v = app.settings.values[ty.id];
-    return [t().types[ty.id].name, ...ty.fields.filter((f) => v[f.param] != null).map((f) => `${f.param === 'dplus_m' ? '+' : ''}${num(L, v[f.param]!, 1)} ${f.unit}`)].join(' · ');
+    return [t().types[ty.id].name, ...fieldsOf(ty, sport.id, app.settings.surface).filter((f) => v[f.param] != null).map((f) => `${f.param === 'dplus_m' ? '+' : ''}${num(L, v[f.param]!, 1)} ${f.unit}`)].join(' · ');
   });
   const sgLabel = $derived(suggestLabel(app.error?.suggest));
   // E13 : action proposée par code
@@ -170,7 +184,7 @@
     if (!c) return null;
     const a = t().actions;
     if (c === 'offline' || c === 'service_paused') return null;
-    if (c === 'outside_coverage') return { label: a.seeCoverage, run: () => tmap?.fitCoverage() };
+    if (c === 'outside_coverage') return { label: a.seeCoverage, run: () => tmap?.fitCoverage(coverPad()) };
     if (c === 'no_loop_of_distance' || c === 'distance_out_of_range' || c === 'dplus_out_of_range' || c === 'dplus_unreachable_proven')
       return { label: a.changeSettings, run: () => { app.snap = 2; document.querySelector<HTMLElement>('[id^=f-]')?.focus(); } };
     if (c === 'zone_invalid') return { label: a.redraw, run: () => { app.zone = null; openLayer('zone'); } };
@@ -190,11 +204,15 @@
       <svg class="logo" viewBox="0 0 32 32" width="26" height="26" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
         <path d="M3 24c5-1 7-9 13-9s8 6 13 4" /><path d="M7 28c4-1 6-6 10-6s6 3 9 2" opacity=".7" /><path d="M11 17c2-5 4-9 8-9s5 4 7 6" opacity=".85" /><circle cx="19" cy="8" r="1.6" fill="currentColor" stroke="none" />
       </svg>OPTRAIL</span>
-    <div class="lang" role="radiogroup" aria-label={t().app.langLabel}>
-      <button role="radio" aria-checked={i18n.lang === 'fr'} onclick={() => setLang('fr')} lang="fr">FR</button>
-      <span aria-hidden="true">·</span>
-      <button role="radio" aria-checked={i18n.lang === 'en'} onclick={() => setLang('en')} lang="en">EN</button>
-    </div>
+    <SportPicker labels={desktop} />
+    <!-- mobile : FR·EN quitte l'en-tête (place du sélecteur de sport) ; reste dans le Menu et sur l'accueil -->
+    {#if desktop}
+      <div class="lang" role="radiogroup" aria-label={t().app.langLabel}>
+        <button role="radio" aria-checked={i18n.lang === 'fr'} onclick={() => setLang('fr')} lang="fr">FR</button>
+        <span aria-hidden="true">·</span>
+        <button role="radio" aria-checked={i18n.lang === 'en'} onclick={() => setLang('en')} lang="en">EN</button>
+      </div>
+    {/if}
     <button class="icon-btn" onclick={() => openLayer('history')} aria-label={t().history.title} title={t().history.title}>
       <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true"><path d="M3 12a9 9 0 1 0 3-6.7M3 4v5h5M12 7v5l3 3" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
     </button>
@@ -232,7 +250,7 @@
       <fieldset id="basemap-pop" class="basemap-pop">
         <legend>{t().base.title}</legend>
         {#each BASES as b (b)}
-          <label><input type="radio" name="basemap" value={b} bind:group={base} /> {t().base[b]}</label>
+          <label><input type="radio" name="basemap" value={b} bind:group={base} onchange={() => save('basemap', b)} /> {t().base[b]}</label>
         {/each}
       </fieldset>
     {/if}
@@ -267,11 +285,18 @@
             <button role="radio" aria-checked={i18n.lang === 'en'} onclick={() => setLang('en')} lang="en">EN</button>
           </div>
         </div>
-        <h1 id="intro-h">{t().app.tagline}</h1>
+        <h1 id="intro-h">{t().intro.title}</h1>
         <p class="intro-text">{t().intro.text}</p>
         <p class="muted">{t().intro.coverage}</p>
         <p class="safety" data-testid="safety">{t().safety}</p>
-        <button class="btn primary wide" onclick={dismissIntro}>{t().intro.go}</button>
+        <!-- choisir son sport = entrer ; chaque bouton porte l'accent de son sport -->
+        <div class="go">
+          {#each SPORTS as s (s)}
+            <button class="btn primary" data-sport={s} onclick={() => enter(s)}>
+              <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d={SPORT_PATH[s]} /></svg>{t().sport[s]}
+            </button>
+          {/each}
+        </div>
       </div>
     </div>
   {/if}
@@ -312,8 +337,10 @@
   .topbar > * { pointer-events: auto; }
   .brand {
     display: inline-flex; align-items: center; gap: 8px; font-weight: 800; font-size: 1.05rem; letter-spacing: 0.14em; background: var(--bg); color: var(--accent-text); padding: 8px 12px; border-radius: 10px;
-    box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); margin-right: auto;
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.3);
   }
+  /* mobile : logo rogné pour que logo + sports + historique + menu tiennent à 360 px */
+  .app:not(.desktop) .brand { padding: 8px 8px; gap: 6px; letter-spacing: 0.1em; }
   .lang { display: flex; align-items: center; background: var(--bg); color: var(--text); border-radius: 10px; box-shadow: 0 1px 4px rgb(0 0 0 / 0.3); }
   .lang button { all: unset; min-width: 40px; min-height: 44px; text-align: center; cursor: pointer; font-weight: 600; color: var(--muted); }
   .lang button[aria-checked='true'] { color: var(--accent-text); text-decoration: underline; text-underline-offset: 4px; }
@@ -379,7 +406,8 @@
   .intro .lang { box-shadow: none; background: transparent; }
   .intro h1 { font-size: 2.1rem; line-height: 1.1; margin: 0 0 12px; }
   .intro-text { font-size: 1.1rem; margin: 0 0 8px; }
-  .intro .btn { margin-top: 16px; box-shadow: var(--sh-2); }
+  .go { display: flex; gap: 10px; margin-top: 16px; }
+  .go .btn { flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 8px; font-size: 1.1rem; box-shadow: var(--sh-2); }
   .safety { color: var(--muted); border-left: 3px solid var(--border); padding: 2px 0 2px 10px; line-height: 1.45; margin: 16px 0 0; font-size: 0.95rem; }
   .muted { color: var(--muted); }
 </style>

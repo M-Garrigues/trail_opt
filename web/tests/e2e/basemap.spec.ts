@@ -25,8 +25,12 @@ test('fond de carte : choix, clavier, mémorisation, 3D', async ({ page }, info)
   await btn.click();
   await expect(btn).toHaveAttribute('aria-expanded', 'true');
   const group = page.getByRole('group', { name: title });
-  await expect(group.getByRole('radio')).toHaveCount(3);
-  await expect(group.getByRole('radio', { name: fr ? 'Plan IGN' : 'IGN map', exact: true })).toBeChecked();
+  await expect(group.getByRole('radio')).toHaveCount(4);
+  // D75 : défaut Plan IGN + HD à 50 % + estompage, sans ombrage LiDAR
+  await expect(group.getByRole('radio', { name: fr ? 'Plan IGN + HD' : 'IGN map + HD', exact: true })).toBeChecked();
+  expect(await page.evaluate(visible, 'hd-mix')).toBe('visible');
+  expect(await page.evaluate(visible, 'shade')).toBe('visible');
+  expect(await page.evaluate(visible, 'shadow')).toBe('none');
   expect(await page.evaluate(visible, 'loops-halo')).toBe('none');
   const shot = async (name: string) => {
     if (!process.env.SHOTS) return;
@@ -35,7 +39,7 @@ test('fond de carte : choix, clavier, mémorisation, 3D', async ({ page }, info)
   };
   await shot('menu');
   await btn.click();
-  await shot('plan');
+  await shot('mix');
   await btn.click();
 
   await group.getByRole('radio', { name: sat }).check();
@@ -59,6 +63,13 @@ test('fond de carte : choix, clavier, mémorisation, 3D', async ({ page }, info)
   expect(await page.evaluate(visible, 'ortho')).toBe('none');
   await btn.click();
   await shot('hd');
+  // Plan IGN seul : ombrage LiDAR HD, ni HD ni estompage
+  await btn.click();
+  await group.getByRole('radio', { name: fr ? 'Plan IGN' : 'IGN map', exact: true }).check();
+  await expect.poll(() => page.evaluate(visible, 'shadow')).toBe('visible');
+  expect(await page.evaluate(visible, 'hd-mix')).toBe('none');
+  await btn.click();
+  await shot('plan');
 
   // mémorisé au rechargement (la sortie revient sans recalcul), et la 3D garde le fond
   await btn.click();

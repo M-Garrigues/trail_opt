@@ -3,6 +3,8 @@
   import { close, openEntry, toast } from '../lib/app.svelte';
   import * as hist from '../lib/history';
   import { byId } from '../lib/catalog';
+  import { requestSport } from '../lib/settings';
+  import { SPORT_PATH } from '../lib/icons';
   import { i18n, t } from '../i18n/i18n.svelte';
   import { num, km } from '../i18n/format';
 
@@ -33,10 +35,15 @@
 {:else}
   <ul class="list" data-testid="history">
     {#each entries as e (e.id)}
+      {@const sp = requestSport(e.request)}
       <li>
         <button class="open" onclick={() => openEntry(e)}>
-          <strong>{t().types[byId(e.settings.typeId).id].name} · {km(L, e.candidate.length_m)} · +{num(L, e.candidate.dplus_m)} m</strong>
-          <span>{date(e.ts)}</span>
+          <!-- pictogramme du sport de la ligne (son accent) ; entrée sans sport = trail -->
+          <svg class="sp" data-sport={sp} viewBox="0 0 24 24" width="22" height="22" role="img" aria-label={t().sport[sp]} fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d={SPORT_PATH[sp]} /></svg>
+          <span class="txt">
+            <strong>{t().types[byId(e.settings.typeId).id].name} · {km(L, e.candidate.length_m)} · +{num(L, e.candidate.dplus_m)} m</strong>
+            <span>{date(e.ts)}</span>
+          </span>
         </button>
         <button class="icon-btn" onclick={() => del(e.id)} aria-label="{t().history.remove} : {km(L, e.candidate.length_m)}, {date(e.ts)}">✕</button>
       </li>
@@ -49,8 +56,10 @@
   h2 { font-size: 1.25rem; margin: 0; flex: 1; }
   .list { list-style: none; padding: 0; margin: 8px 0; }
   .list li { display: flex; align-items: center; gap: 4px; border-bottom: 1px solid var(--border); }
-  .open { all: unset; box-sizing: border-box; flex: 1; padding: 10px 4px; cursor: pointer; display: flex; flex-direction: column; min-height: 44px; }
+  .open { all: unset; box-sizing: border-box; flex: 1; padding: 10px 4px; cursor: pointer; display: flex; align-items: center; gap: 10px; min-height: 44px; }
+  .txt { display: flex; flex-direction: column; }
+  .sp { flex: none; color: var(--accent-text); }
   .open:focus-visible { outline: 3px solid var(--accent); }
-  .open span { color: var(--muted); font-size: 0.875rem; }
+  .txt span { color: var(--muted); font-size: 0.875rem; }
   .muted { color: var(--muted); }
 </style>
