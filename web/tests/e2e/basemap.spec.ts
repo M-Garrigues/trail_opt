@@ -13,6 +13,9 @@ test('fond de carte : choix, clavier, mémorisation, 3D', async ({ page }, info)
   const sat = 'Satellite';
   await setup(page);
   await mockPlan(page);
+  // tuiles WMTS refusées (ex. 2026-10-15 : style du HD renommé par l'IGN → 400)
+  const refused: string[] = [];
+  page.on('response', (r) => { if (r.url().includes('data.geopf.fr/wmts') && r.status() >= 400) refused.push(`${r.status()} ${r.url()}`); });
   await page.goto('/');
   await placeStart(page);
   await page.getByRole('button', { name: t.find }).click();
@@ -51,6 +54,8 @@ test('fond de carte : choix, clavier, mémorisation, 3D', async ({ page }, info)
   await group.getByRole('radio', { name: fr ? 'Plan IGN HD (bêta)' : 'IGN HD map (beta)' }).focus();
   await page.keyboard.press('Space');
   await expect.poll(() => page.evaluate(visible, 'hd')).toBe('visible');
+  await expect.poll(() => page.evaluate(() => (window as unknown as { tmap: { map: { isSourceLoaded: (s: string) => boolean } } }).tmap.map.isSourceLoaded('hd')), { timeout: 20_000 }).toBe(true);
+  expect(refused).toEqual([]);
   expect(await page.evaluate(visible, 'ortho')).toBe('none');
   await btn.click();
   await shot('hd');

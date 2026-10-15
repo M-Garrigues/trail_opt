@@ -17,8 +17,9 @@ const SHADOW =
   '&LAYER=IGNF_LIDAR-HD_MNT_ELEVATION.ELEVATIONGRIDCOVERAGE.SHADOW&STYLE=normal&TILEMATRIXSET=PM' +
   '&FORMAT=image/png&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
 // Fonds raster (D69) : WMTS Géoplateforme sans clé, Licence Ouverte Etalab 2.0 (BD ORTHO®, Plan IGN HD)
-const wmts = (layer: string, tms: string) =>
-  `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=normal&TILEMATRIXSET=${tms}` +
+// STYLE exact du GetCapabilities, sinon 400 (le HD, en bêta, est passé de « normal » à « PLAN-IGN-HD » le 2026-10-15)
+const wmts = (layer: string, tms: string, style = 'normal') =>
+  `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0&LAYER=${layer}&STYLE=${style}&TILEMATRIXSET=${tms}` +
   '&FORMAT=image/jpeg&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}';
 export const BASES = ['plan', 'hd', 'ortho'] as const;
 export type Base = (typeof BASES)[number];
@@ -108,7 +109,11 @@ export class TrailMap {
     const hide = this.baseHide;
     if (!hide) return;
     const m = this.map, off = new Set(hide[this.base]);
-    for (const id of new Set([...hide.ortho, ...hide.hd])) m.setLayoutProperty(id, 'visibility', off.has(id) ? 'none' : 'visible');
+    // seulement les calques qui changent : écrire « visible » sur un calque vectoriel déjà visible recharge toutes ses tuiles
+    for (const id of new Set([...hide.ortho, ...hide.hd])) {
+      const want = off.has(id) ? 'none' : 'visible';
+      if ((m.getLayoutProperty(id, 'visibility') ?? 'visible') !== want) m.setLayoutProperty(id, 'visibility', want);
+    }
     m.setLayoutProperty('ortho', 'visibility', this.base === 'ortho' ? 'visible' : 'none');
     for (const id of ['hd', 'hd-low']) m.setLayoutProperty(id, 'visibility', this.base === 'hd' ? 'visible' : 'none');
     m.setLayoutProperty('loops-halo', 'visibility', this.drapedOn && this.base !== 'plan' ? 'visible' : 'none');
@@ -140,7 +145,7 @@ export class TrailMap {
     // sur photo (essai : leur réseau blanc concurrençait le tracé) ; le HD les dessine déjà, on n'y garde que les courbes.
     const over = layers[1]?.id;
     m.addSource('ortho', { type: 'raster', tiles: [wmts('ORTHOIMAGERY.ORTHOPHOTOS', 'PM')], tileSize: 256, maxzoom: 19, attribution: '© IGN – BD ORTHO®' });
-    m.addSource('hd', { type: 'raster', tiles: [wmts('IGNF_PLAN-IGN-HD', 'PM_6_18')], tileSize: 256, minzoom: 6, maxzoom: 18, attribution: '© IGN – Plan IGN HD' });
+    m.addSource('hd', { type: 'raster', tiles: [wmts('IGNF_PLAN-IGN-HD', 'PM_6_18', 'PLAN-IGN-HD')], tileSize: 256, minzoom: 6, maxzoom: 18, attribution: '© IGN – Plan IGN HD' });
     m.addLayer({ id: 'ortho', type: 'raster', source: 'ortho', layout: { visibility: 'none' } }, over);
     m.addLayer({ id: 'hd-low', type: 'raster', source: 'ortho', maxzoom: 6, layout: { visibility: 'none' } }, over); // le HD commence à z6
     m.addLayer({ id: 'hd', type: 'raster', source: 'hd', layout: { visibility: 'none' } }, over);

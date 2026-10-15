@@ -4,7 +4,8 @@ import { setup, mockPlan, placeStart, T, isFr } from './helpers';
 
 test('3D : sélection de boucle, profil, couleur', async ({ page, browserName }, info) => {
   test.slow(); // relief 3D sans carte graphique sur le runner de CI : rendu très lent
-  test.setTimeout(180_000);
+  // CI : 1,2 min mi-octobre, puis 2,0 à 2,9 min (rendu logiciel) : 3 min ne laissait plus de marge ; même budget que memoire.spec
+  test.setTimeout(240_000);
   const t = T();
   await setup(page);
   await mockPlan(page, async (route) => { await route.fulfill({ contentType: 'application/json', body: (await import('./helpers')).plan4 }); return true; });
