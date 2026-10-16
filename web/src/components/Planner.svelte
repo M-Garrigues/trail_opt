@@ -179,6 +179,8 @@
       {/each}
     </div>
     <p class="note" id="surface-help">{t().surface.help[s.surface]}</p>
+    <!-- D85 : à retirer à la v1.1 -->
+    {#if sport.id === 'bike' && (s.surface === 'gravel' || s.surface === 'road')}<p class="note dev" role="note" data-testid="surface-dev">{t().surface.dev[s.surface]}</p>{/if}
   </div>
   {#snippet typeFields()}
     {#if desktop}
@@ -290,6 +292,7 @@
   .seg label:has(input:focus-visible) { outline: 3px solid var(--accent); outline-offset: -3px; }
   input[type='range'] { width: 100%; min-height: 32px; accent-color: var(--accent); }
   .note { margin: 6px 0 0; font-size: 0.9rem; color: var(--muted); }
+  .note.dev { padding: 6px 10px; border-radius: 6px; background: var(--warn-bg); color: var(--warn-text); } /* D85 */
   .more summary { cursor: pointer; padding: 10px 0; min-height: 24px; font-weight: 600; color: var(--accent-text); }
   .check label { display: flex; gap: 8px; align-items: center; min-height: 44px; font-weight: 400; }
   .estimate { margin: 8px 0; }

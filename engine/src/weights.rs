@@ -316,12 +316,12 @@ pub fn compute(
         }
         let nat = natures.get(t.nature[i] as usize).map_or("", String::as_str);
         // raison : étiquette seulement (l'exclusion elle-même vient de `plan::network`)
-        let shut = plan::closed(&t, i, natures, &prof);
+        let shut = plan::closed(&t, i, &prof);
         let why = if plan::walkable_i(&t, i, natures) && (bike || !shut) {
             if road && !pv[i] {
                 "non_revetu"
             } else if shut {
-                "acces_interdit" // vélo : interdit au vélo ou sens unique
+                "acces_interdit" // vélo : interdit au vélo ou pied à terre
             } else {
                 "autre" // vélo : escalier, technicité, cœur de parc
             }

@@ -456,14 +456,61 @@ fn usable(t: &Troncons, i: usize, natures: &[String], p: &Profile, paved: &[bool
 
 /// Exclusion que l'aller-retour d'accès d'un départ peut seul emprunter. Trail : accès interdit au
 /// piéton (D66, `osm_access` = 2). Vélo (D72) : `osm_bike` ≥ 4 (interdit explicite ou implicite :
-/// autoroute, trunk, bridleway…), 2 (pied à terre : footway) ; sens unique (1, 2) sauf ronds-points
-/// (bit 128, nature) et double sens cyclable (3). `osm_access` (piéton) est ignoré en vélo.
-pub fn closed(t: &Troncons, i: usize, natures: &[String], p: &Profile) -> bool {
+/// autoroute, trunk, bridleway…), 2 (pied à terre : footway). Les sens uniques ne ferment plus
+/// (D84, palliatif 0a : réseau connexe, contresens mesuré par `wrong_way`). `osm_access` (piéton)
+/// est ignoré en vélo.
+pub fn closed(t: &Troncons, i: usize, p: &Profile) -> bool {
     if !p.bike() {
         return t.osm_access[i] == ACCESS_CLOSED;
     }
-    let round = t.osm_flags[i] & 128 != 0 || nature_of(t, i, natures) == "Rond-point";
-    t.osm_bike[i] >= 4 || t.osm_bike[i] == 2 || (matches!(t.osm_oneway[i], 1 | 2) && !round)
+    t.osm_bike[i] >= 4 || t.osm_bike[i] == 2
+}
+
+/// D84 : surcoût de confort (m par m, au-delà du plafond de 1,5) d'un tronçon à sens unique en vélo : le
+/// réseau reste connexe, mais la recherche ne l'emprunte qu'en passage obligé. Banc 0a (Route, 9
+/// sorties) : 0 → 5,1 % de contresens (médiane), 1,5 → 3,1 %, 3 → 1,5 %, 6 → 1,0 %, 12 → 0,8 % (max 1,3 %).
+const ONEWAY_PEN: f64 = 12.0;
+
+/// Vélo (D84) : sens unique effectif par tronçon, 1 (u→v seulement) ou 2 (v→u), 0 sinon ; les
+/// ronds-points (bit 128, nature) et le double sens cyclable (3) ne comptent pas. Trail : vide.
+pub fn oneway_mask(t: &Troncons, natures: &[String], p: &Profile) -> Vec<u8> {
+    if !p.bike() {
+        return Vec::new();
+    }
+    (0..t.len())
+        .map(|i| {
+            let round = t.osm_flags[i] & 128 != 0 || nature_of(t, i, natures) == "Rond-point";
+            if round || !matches!(t.osm_oneway[i], 1 | 2) {
+                0
+            } else {
+                t.osm_oneway[i]
+            }
+        })
+        .collect()
+}
+
+/// Mètres parcourus à contresens d'un sens unique (`oneway_mask`), dans le sens du circuit [0] et
+/// dans le sens inverse [1]. Le sens d'un tronçon est celui de ses points de profil (lo → hi) ;
+/// `steps` : parcours [(arête de l'arène, de, vers)] comme `route_geometry`. Vide : [0, 0].
+pub fn wrong_way(net: &Net, ow: &[u8], steps: &[(usize, usize, usize)]) -> [f64; 2] {
+    let mut m = [0.0; 2];
+    if ow.is_empty() {
+        return m;
+    }
+    for &(e, a, _) in steps {
+        let ed = &net.edges[e];
+        let fwd_edge = ed.u == ed.v || a == ed.u;
+        for p in &ed.pieces {
+            let o = ow[p.t as usize];
+            if o != 0 {
+                // fwd : le circuit longe le tronçon de u vers v ; à contresens dans le sens du
+                // circuit ssi (o == 1) != fwd → [0], sinon dans le sens inverse → [1]
+                let fwd = !p.rev == fwd_edge;
+                m[usize::from((o == 1) == fwd)] += net.piece_len(p);
+            }
+        }
+    }
+    m
 }
 
 /// Codes de nature (manifeste) → (réseau bouclable, tronçons fermés réservés à l'accès) : voies
@@ -473,7 +520,7 @@ pub fn network(t: &Troncons, natures: &[String], p: &Profile) -> (Vec<usize>, Ve
     let paved = paved_mask(t, natures);
     (0..t.len())
         .filter(|&i| usable(t, i, natures, p, &paved))
-        .partition(|&i| !closed(t, i, natures, p))
+        .partition(|&i| !closed(t, i, p))
 }
 
 /// Réseau trail « Tout » (tests C4) : `network` du profil `TRAIL_ANY`.
@@ -531,7 +578,7 @@ pub fn paved_mask(t: &Troncons, natures: &[String]) -> Vec<bool> {
 }
 
 /// Vélo (D72, études b, c, d ; valeurs [E] à régler au banc B1) : par tronçon, coût de confort en
-/// dixièmes de mètre par mètre (0–15 : unité D63, borné à 1,5), posé sur `Net::pref_t` ; vide en
+/// dixièmes de mètre par mètre (unité D63, borné à 1,5, plus `ONEWAY_PEN` sur un sens unique), posé sur `Net::pref_t` ; vide en
 /// trail. Voie = type OSM (`osm_hw`) si apparié, sinon nature IGN et importance ; `cls` : classes
 /// de `class_mask`, dont le grand axe.
 ///
@@ -550,6 +597,7 @@ pub fn pref_mask(t: &Troncons, natures: &[String], p: &Profile, cls: &[u8]) -> V
         return Vec::new();
     }
     let paved = paved_mask(t, natures);
+    let ow = oneway_mask(t, natures, p);
     (0..t.len())
         .map(|i| {
             let hw = if t.osm_hw[i] != 0 {
@@ -661,7 +709,8 @@ pub fn pref_mask(t: &Troncons, natures: &[String], p: &Profile, cls: &[u8]) -> V
                 1 if hw != HW_PEDESTRIAN => 0.3,
                 _ => 0.0,
             };
-            (c.clamp(0.0, 1.5) * 10.0).round() as u8
+            let c = c.clamp(0.0, 1.5) + if ow[i] != 0 { ONEWAY_PEN } else { 0.0 };
+            (c * 10.0).round() as u8
         })
         .collect()
 }
@@ -824,6 +873,8 @@ pub struct AccessPath {
     pub z: Vec<f64>,
     pub updown: f64,
     pub snap: f64,
+    /// D84 : mètres à contresens d'un sens unique, aller et retour (vélo ; 0 en trail).
+    pub wrong_way_m: f64,
 }
 
 /// Réseau d'accès (toutes les voies de la zone), construit à la demande (port de `Access`).
@@ -837,6 +888,8 @@ pub struct Access<'a> {
     private: bool,
     /// Vélo : l'aller-retour d'accès ne prend que des arêtes parcourables dans les deux sens.
     two_way: Option<Grade>,
+    /// D84 : `oneway_mask` (vide en trail).
+    ow: Vec<u8>,
     snap0: f64,
     dist: Vec<f64>,
     prev: Vec<Option<(usize, usize)>>,
@@ -853,6 +906,7 @@ impl<'a> Access<'a> {
         pref_t: &[u8],
         region: &Region,
         two_way: Option<Grade>,
+        ow: &[u8],
     ) -> Option<Access<'a>> {
         let mut net = Net::new(t, frame);
         net.cls_t = cls_t.to_vec();
@@ -876,6 +930,7 @@ impl<'a> Access<'a> {
             closed_t,
             private,
             two_way,
+            ow: ow.to_vec(),
             snap0,
             dist,
             prev,
@@ -942,6 +997,8 @@ impl<'a> Access<'a> {
             z,
             updown,
             snap: self.snap0,
+            // aller et retour : chaque sens unique de l'accès est pris une fois à contresens
+            wrong_way_m: wrong_way(&self.net, &self.ow, &path).iter().sum(),
         })
     }
 }
@@ -1385,6 +1442,8 @@ pub struct Track {
     /// D73 : la boucle est permise dans les deux sens (`climb_violation`) ; calculé, pas encore
     /// sérialisé (le bouton « Inverser » le lira). Toujours vrai en v1.
     pub reversible: bool,
+    /// D84 : mètres à contresens d'un sens unique (vélo, aller-retour d'accès compris) ; 0 en trail.
+    pub wrong_way_m: f64,
 }
 
 /// D73 : longueur (m) des pas du circuit non permis (`Grade::allows`) dans le sens du circuit [0] et
@@ -1418,6 +1477,7 @@ fn allowed_dirs(v: [f64; 2], g: Grade) -> Option<[bool; 2]> {
 
 /// Port de `assemble` : la boucle, précédée et suivie de l'aller-retour d'accès. Préférence de
 /// montées γ ≠ 0 : sens de parcours de plus grand Ḡ (longues) ou de plus petit (courtes).
+#[allow(clippy::too_many_arguments)]
 fn assemble(
     net: &Net,
     ids: &[usize],
@@ -1426,6 +1486,7 @@ fn assemble(
     acc: Option<&AccessPath>,
     gamma: i8,
     grade: Option<Grade>,
+    ow: &[u8],
 ) -> Result<Track, Msg> {
     let circuit = p
         .euler(loop_ids)
@@ -1454,18 +1515,27 @@ fn assemble(
                 "no travel direction within grade limits",
             )
         })?;
+    let wrong = wrong_way(net, ow, &arena_steps);
+    let mut flip = false;
     if allowed[0] && allowed[1] {
         if gamma != 0 {
             let a = gbar(&xy, &z);
             xy.reverse();
             z.reverse();
             let b = gbar(&xy, &z);
-            if (gamma > 0) == (a >= b) {
+            flip = (gamma > 0) != (a >= b);
+            if !flip {
                 xy.reverse();
                 z.reverse();
             }
+        } else if wrong[1] < wrong[0] {
+            // D84 : sans préférence de montée, le sens qui évite le plus de contresens
+            flip = true;
+            xy.reverse();
+            z.reverse();
         }
     } else if allowed[1] {
+        flip = true;
         xy.reverse();
         z.reverse();
     }
@@ -1509,6 +1579,7 @@ fn assemble(
         lab,
         feasible,
         reversible: allowed[0] && allowed[1],
+        wrong_way_m: wrong[usize::from(flip)] + acc.map_or(0.0, |a| a.wrong_way_m),
     })
 }
 
@@ -1962,6 +2033,7 @@ pub fn plan_with(
     // réseau du sport (D72) : exclusions sans exception, AVANT le plafond de tronçons (vélo : il se
     // compte sur le réseau filtré) ; trail : les mêmes tronçons que toujours, dans le même ordre
     let (sel, closed) = network(&t, natures, &prof);
+    let ow = oneway_mask(&t, natures, &prof);
     // Grande zone : on compte les tronçons et on réduit si c'est trop dense (MAX_WAYS).
     let mut reduced_radius = None;
     if r.enforce_limits && area_km2 > FALLBACK_AREA_KM2 {
@@ -2165,6 +2237,7 @@ pub fn plan_with(
                         &pref_t,
                         &region,
                         grade.filter(|_| bike),
+                        &ow,
                     ));
                 }
                 access_net.as_mut().and_then(|a| a.as_mut())
@@ -2393,7 +2466,7 @@ pub fn plan_with(
         }
     }
     let dir = grade.filter(|_| bike);
-    let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma, dir)?;
+    let main = assemble(&net, &ids, &p, &out.ids, acc.as_ref(), gamma, dir, &ow)?;
     if r.mode == "target" {
         let d = r.target_dplus.unwrap();
         if d > ub {
@@ -2413,7 +2486,7 @@ pub fn plan_with(
     }
     let mut loops = vec![main];
     for a in &out.alternatives {
-        loops.push(assemble(&net, &ids, &p, a, acc.as_ref(), gamma, dir)?);
+        loops.push(assemble(&net, &ids, &p, a, acc.as_ref(), gamma, dir, &ow)?);
     }
     match r.mode.as_str() {
         // D+ décroissant ; avec un type de voie préféré, D+ plus sa prime (ce que la recherche maximise)
@@ -2487,6 +2560,17 @@ pub fn plan_with(
             json!({}),
             format!("every loop is longer than {:.0} m", lmax),
         ));
+    }
+    // D84 (palliatif 0a) : contresens de la première sortie, mesuré, jamais interdit
+    if bike {
+        if loops[0].wrong_way_m.round() >= 1.0 {
+            warns.push(Msg::new(
+                Code::OnewayAgainst,
+                json!({"m": loops[0].wrong_way_m.round()}),
+            ));
+        }
+        let m: Vec<f64> = loops.iter().map(|t| round1(t.wrong_way_m)).collect();
+        dbg.insert("wrong_way_m".into(), json!(m));
     }
     let via_pts: Vec<(usize, [f64; 2], f64)> = best_via
         .iter()

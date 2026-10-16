@@ -69,6 +69,8 @@ pub enum Code {
     PavedNetworkMajorRoads,
     // Route vélo : part de grands axes (D72, D54 non bloquant en vélo)
     MajorRoadsShare,
+    // Route vélo : mètres à contresens d'un sens unique (D84, palliatif 0a)
+    OnewayAgainst,
     // Admin (contracts/admin.md, D47)
     AdminDenied,
     AdminLocked,
@@ -82,7 +84,7 @@ pub enum Kind {
 }
 
 impl Code {
-    pub const ALL: [Code; 49] = {
+    pub const ALL: [Code; 50] = {
         use Code::*;
         [
             ZoneInvalid,
@@ -132,6 +134,7 @@ impl Code {
             PavedNetworkTooShort,
             PavedNetworkMajorRoads,
             MajorRoadsShare,
+            OnewayAgainst,
             AdminDenied,
             AdminLocked,
         ]
@@ -189,6 +192,7 @@ impl Code {
             TargetNotReached => (Warning, &["dplus_m", "best_dplus_m", "km", "best_km"]),
             FewerLoops => (Warning, &["asked", "got"]),
             LowSurfaceShare | MajorRoadsShare => (Warning, &["pct"]),
+            OnewayAgainst => (Warning, &["m"]),
         }
     }
 }

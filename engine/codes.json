@@ -295,6 +295,13 @@
     ]
   },
   {
+    "code": "oneway_against",
+    "kind": "warning",
+    "params": [
+      "m"
+    ]
+  },
+  {
     "code": "admin_denied",
     "kind": "error",
     "params": []

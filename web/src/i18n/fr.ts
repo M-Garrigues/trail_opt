@@ -72,6 +72,8 @@ export const fr = {
       mtb: 'Sentiers et chemins praticables à VTT, sans marches ; la route pour relier.',
       gravel: 'Chemins carrossables et pistes d’abord, petites routes calmes pour relier.',
     },
+    // D85 : à retirer à la v1.1
+    dev: { gravel: 'Gravel : algorithme en cours de développement, les itinéraires proposés ne sont pas encore optimaux.', road: 'Route : algorithme en cours de développement, les itinéraires proposés ne sont pas encore optimaux.' },
     share: (p: P) => `${p.trail} % chemin · ${p.road} % route`,
     // trois classes (api.md v1.8) : chemin naturel, intermédiaire (allées, voies piétonnes, escaliers), route
     parts: { trail: 'chemin', mixed: 'aménagé', road: 'route' },
@@ -303,6 +305,7 @@ export const fr = {
     coverage_edge: () => 'Zone en bord de couverture : chemins au-delà ignorés.',
     low_surface_share: (p: P) => `Seulement ${p.pct} % du type de voie voulu ici.`,
     major_roads_share: () => 'Une part importante de la sortie emprunte de grandes routes.',
+    oneway_against: (p: P) => `Environ ${p.m} m de la sortie sont à contresens de rues à sens unique.`,
   },
   // Installation de l'app (PWA) : entrée du menu + suggestion unique après le premier GPX.
   install: {

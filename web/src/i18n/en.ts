@@ -74,6 +74,8 @@ export const en: Dict = {
       mtb: 'Trails and tracks you can ride, no steps; roads only to link up.',
       gravel: 'Gravel tracks first, quiet lanes to link up.',
     },
+    // D85: remove in v1.1
+    dev: { gravel: 'Gravel: routing is still in development, suggested routes are not optimal yet.', road: 'Road: routing is still in development, suggested routes are not optimal yet.' },
     share: (p: P) => `${p.trail}% trail · ${p.road}% road`,
     parts: { trail: 'trail', mixed: 'paved path', road: 'road' },
     lowTrail: (p: P) => `Only ${p.pct}% trails here: few paths around this start.`,
@@ -300,6 +302,7 @@ export const en: Dict = {
     coverage_edge: () => 'Area at the edge of coverage: paths beyond are ignored.',
     low_surface_share: (p: P) => `Only ${p.pct}% of the preferred surface here.`,
     major_roads_share: () => 'A large share of this run follows major roads.',
+    oneway_against: (p: P) => `About ${p.m} m of this ride go against one-way streets.`,
   },
   install: {
     title: 'Install the app',

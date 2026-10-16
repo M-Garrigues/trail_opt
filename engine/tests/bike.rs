@@ -248,14 +248,15 @@ fn bike_closed_access() {
 
 #[test]
 fn bike_oneway() {
-    // 1 et 2 : exclus (gardés pour l'accès) ; 3 (double sens cyclable), ronds-points : gardés
-    for (v, flags, nature, in_net) in [
-        (1, 0u8, "Route à 1 chaussée", false),
-        (2, 0, "Route à 1 chaussée", false),
-        (3, 0, "Route à 1 chaussée", true),
-        (1, 128, "Route à 1 chaussée", true),
-        (2, 0, "Rond-point", true),
-        (0, 0, "Route à 1 chaussée", true),
+    // D84 (palliatif 0a) : les sens uniques (1, 2) restent dans le réseau, mesurés à part ;
+    // seul `osm_bike` 4 (interdit) et 2 (pied à terre) ferment encore, comme les trail
+    for (v, flags, nature) in [
+        (1, 0u8, "Route à 1 chaussée"),
+        (2, 0, "Route à 1 chaussée"),
+        (3, 0, "Route à 1 chaussée"),
+        (1, 128, "Route à 1 chaussée"),
+        (2, 0, "Rond-point"),
+        (0, 0, "Route à 1 chaussée"),
     ] {
         let t = one(nature, |t| {
             t.osm_oneway[0] = v;
@@ -263,23 +264,89 @@ fn bike_oneway() {
         });
         assert_eq!(
             net_of(&t, &bike("road")),
-            (in_net, !in_net),
+            (true, false),
             "oneway {v} flags {flags} {nature}"
         );
-        // en trail, le sens unique n'existe pas
         assert_eq!(net_of(&t, &TRAIL_ANY), (true, false));
     }
-    // carré dont un côté est un sens unique : plus de boucle en vélo, boucle en trail
-    let build = |oneway: u8| {
+    for b in [4, 2] {
+        let t = one("Route à 1 chaussée", |t| {
+            t.osm_oneway[0] = 1;
+            t.osm_bike[0] = b;
+        });
+        assert_eq!(net_of(&t, &bike("road")), (false, true), "osm_bike {b}");
+    }
+}
+
+#[test]
+fn bike_oneway_is_penalized() {
+    // D84 : un sens unique coûte 12 m de confort par m de plus (cost en dixièmes) ; double sens
+    // cyclable (3), rond-point (bit 128) et voie à double sens : pas de surcoût
+    let cost = |ow: u8, flags: u8| {
+        let t = one("Route à 1 chaussée", |t| {
+            t.osm_oneway[0] = ow;
+            t.osm_flags[0] = flags;
+        });
+        let cls = class_mask(&t, &natures(), true);
+        pref_mask(&t, &natures(), &bike("road"), &cls)[0]
+    };
+    let base = cost(0, 0);
+    assert_eq!((cost(1, 0), cost(2, 0)), (base + 120, base + 120));
+    assert_eq!((cost(3, 0), cost(1, 128)), (base, base));
+}
+
+#[test]
+fn bike_wrong_way_measured() {
+    // carré de 400 m dont les côtés 1 (est) et 3 (ouest) sont des sens uniques ; le côté 1 est
+    // dessiné dans le sens trigonométrique (u→v), le côté 3 aussi
+    let run = |ow: [u8; 2], flags: u8, sport: &str, surface: &str| {
         let mut w = World::new(rolling);
         let s = w.square(-200.0, -200.0, 400.0, "Route à 1 chaussée", 5);
-        w.t.osm_oneway[s[1]] = oneway;
-        w
+        w.t.osm_oneway[s[1]] = ow[0];
+        w.t.osm_oneway[s[3]] = ow[1];
+        w.t.osm_flags[s[3]] = flags;
+        w.run(json!({"sport": sport, "surface": surface, "distance_km": 1.6}))
+            .unwrap()
     };
-    let req = |sport: &str, surface: &str| json!({"sport": sport, "surface": surface, "distance_km": 1.6});
-    assert!(build(1).run(req("bike", "road")).is_err());
-    assert!(build(3).run(req("bike", "road")).is_ok());
-    assert!(build(1).run(req("trail", "any")).is_ok());
+    let wrong = |o: &Value| o["debug"]["wrong_way_m"][0].as_f64();
+    // un seul sens unique : le circuit choisit le sens qui le respecte, 0 m, pas d'avertissement
+    let o = run([1, 0], 0, "bike", "road");
+    assert_eq!(wrong(&o), Some(0.0));
+    assert!(!warning_codes(&o).contains(&"oneway_against".to_string()));
+    // deux sens uniques opposés l'un à l'autre : un côté (400 m) à contresens dans les deux sens
+    let o = run([1, 2], 0, "bike", "road");
+    let m = wrong(&o).unwrap();
+    assert!((399.0..=401.0).contains(&m), "{m}");
+    let w = o["warnings"].as_array().unwrap();
+    let w = w
+        .iter()
+        .find(|x| x["code"] == json!("oneway_against"))
+        .unwrap();
+    assert!((m - w["params"]["m"].as_f64().unwrap()).abs() <= 0.5, "{w}");
+    // double sens cyclable (3) et rond-point (bit 128) ne comptent pas
+    assert_eq!(wrong(&run([1, 3], 0, "bike", "road")), Some(0.0));
+    assert_eq!(wrong(&run([1, 2], 128, "bike", "road")), Some(0.0));
+    // trail : ni mesure ni avertissement, quel que soit `osm_oneway`
+    let o = run([1, 2], 0, "trail", "any");
+    assert!(o["debug"].get("wrong_way_m").is_none());
+    assert!(!warning_codes(&o).contains(&"oneway_against".to_string()));
+    // sens réel du tracé RENDU (lat/lon) : le côté est est numérisé vers le nord (u→v) ; 1 impose
+    // le sens trigonométrique (aire signée > 0), 2 le sens horaire (l'aller-retour d'accès est nul)
+    let area = |o: &Value| {
+        let c = &o["candidates"][0];
+        let (la, lo) = (c["lat"].as_array().unwrap(), c["lon"].as_array().unwrap());
+        let f = |v: &Value| v.as_f64().unwrap();
+        (1..la.len())
+            .map(|i| f(&lo[i - 1]) * f(&la[i]) - f(&lo[i]) * f(&la[i - 1]))
+            .sum::<f64>()
+    };
+    for (ow, ccw) in [(1, true), (2, false)] {
+        for surface in ["road", "gravel", "mtb"] {
+            let o = run([ow, 0], 0, "bike", surface);
+            assert_eq!(area(&o) > 0.0, ccw, "oneway {ow} {surface}");
+            assert_eq!(wrong(&o), Some(0.0));
+        }
+    }
 }
 
 #[test]
@@ -302,6 +369,11 @@ fn bike_start_on_oneway_uses_access_both_ways() {
         out["warnings"]
     );
     assert_eq!(out["effective_start"]["kind"], "access");
+    // D84 : l'aller ou le retour longe le sens unique à contresens (100 m), compté dans la mesure
+    let m = out["debug"]["wrong_way_m"][0].as_f64().unwrap();
+    assert!((99.0..=101.0).contains(&m), "{m}");
+    let out = build(0).run(req).unwrap();
+    assert_eq!(out["debug"]["wrong_way_m"][0].as_f64(), Some(0.0));
 }
 
 #[test]
@@ -569,7 +641,7 @@ fn bike_twins_and_access_respect_up() {
     );
     let cls = class_mask(t, &natures(), true);
     let entry = |two_way: Option<Grade>| {
-        let a = Access::new(t, frame, &sel, &closed, &cls, &[], &region, two_way).unwrap();
+        let a = Access::new(t, frame, &sel, &closed, &cls, &[], &region, two_way, &[]).unwrap();
         a.best_entry(&[key])
     };
     assert_eq!(entry(None), Some(key));

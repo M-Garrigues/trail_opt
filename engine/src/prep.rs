@@ -435,7 +435,7 @@ impl<'a> Net<'a> {
         (xy, z)
     }
 
-    fn piece_len(&self, p: &Piece) -> f64 {
+    pub fn piece_len(&self, p: &Piece) -> f64 {
         let t = p.t as usize;
         (self.t.abscissa(t, p.hi as usize) - self.t.abscissa(t, p.lo as usize)) / self.frame.k
     }

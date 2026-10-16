@@ -34,6 +34,15 @@ test('bascule de sport : accent vert, voies et réglages du vélo, sport mémori
   await expect(surfaces(page)).toHaveText(isFr() ? ['VTT', 'Gravel', 'Route'] : ['MTB', 'Gravel', 'Roads']);
   await expect(page.locator('#surface label.on')).toHaveText(isFr() ? 'VTT' : 'MTB');
   await expect(page.getByRole('button', { name: find() })).toBeVisible();
+  // D85 : avertissement « algorithme en développement » en Gravel et Route seulement
+  const dev = page.getByTestId('surface-dev');
+  await expect(dev).toHaveCount(0);
+  await surfaces(page).nth(1).click();
+  await expect(dev).toContainText(isFr() ? 'Gravel : algorithme en cours' : 'Gravel: routing is still in development');
+  await surfaces(page).nth(2).click();
+  await expect(dev).toContainText(isFr() ? 'Route : algorithme en cours' : 'Road: routing is still in development');
+  await surfaces(page).nth(0).click();
+  await expect(dev).toHaveCount(0);
 
   // VTT : 30 km, pente de la montée par défaut (25 %) non envoyée, sport=bike
   await page.getByRole('button', { name: find() }).click();
@@ -58,6 +67,7 @@ test('bascule de sport : accent vert, voies et réglages du vélo, sport mémori
   await trailBtn(page).click();
   await expect(page.locator('html')).toHaveAttribute('data-sport', 'trail');
   await expect(surfaces(page)).toHaveText(isFr() ? ['Chemins', 'Mixte', 'Route'] : ['Trails', 'Mixed', 'Roads']);
+  await expect(page.getByTestId('surface-dev')).toHaveCount(0); // D85 : pas en trail
   await page.getByRole('button', { name: find() }).click();
   await expect(page.getByTestId('headline')).toBeVisible();
   q = calls[2].searchParams;
