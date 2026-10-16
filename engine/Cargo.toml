@@ -13,7 +13,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 serde_json = { version = "1.0.151", features = ["float_roundtrip"] }
 tokio = { version = "1.53.2", features = ["macros"] }
 ureq = { version = "3.4.2", default-features = false, features = ["rustls", "json"] }
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+zip = { version = "9.0.3", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # Crate autonome : son propre espace de travail.
 [workspace]
